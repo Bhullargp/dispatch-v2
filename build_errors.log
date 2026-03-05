@@ -1,0 +1,34 @@
+▲ Next.js 16.1.6 (Turbopack)
+
+  Creating an optimized production build ...
+
+> Build error occurred
+Error: Turbopack build failed with 1 errors:
+./src/app/globals.css
+Error evaluating Node.js code
+Error: Cannot find module '../lightningcss.darwin-x64.node'
+Require stack:
+- /Users/gurneet/.openclaw/workspace/2nd-brain/node_modules/lightningcss/node/index.js
+- /Users/gurneet/.openclaw/workspace/2nd-brain/node_modules/@tailwindcss/node/dist/index.js
+- /Users/gurneet/.openclaw/workspace/2nd-brain/node_modules/@tailwindcss/postcss/dist/index.js
+- /Users/gurneet/.openclaw/workspace/2nd-brain/.next/build/chunks/[root-of-the-server]__51225daf._.js
+- /Users/gurneet/.openclaw/workspace/2nd-brain/.next/build/chunks/[turbopack]_runtime.js
+- /Users/gurneet/.openclaw/workspace/2nd-brain/.next/build/postcss.js
+    [at Module._resolveFilename (node:internal/modules/cjs/loader:1447:15)]
+    [at defaultResolveImpl (node:internal/modules/cjs/loader:1058:19)]
+    [at resolveForCJSWithHooks (node:internal/modules/cjs/loader:1063:22)]
+    [at Module._load (node:internal/modules/cjs/loader:1233:25)]
+    [at TracingChannel.traceSync (node:diagnostics_channel:328:14)]
+    [at wrapModuleLoad (node:internal/modules/cjs/loader:245:24)]
+    [at Module.require (node:internal/modules/cjs/loader:1547:12)]
+    [at require (node:internal/modules/helpers:152:16)]
+    [at Object.<anonymous> (/Users/gurneet/.openclaw/workspace/2nd-brain/node_modules/lightningcss/node/index.js:22:22)]
+    [at Module._compile (node:internal/modules/cjs/loader:1803:14)]
+
+Import trace:
+  Client Component Browser:
+    ./src/app/globals.css [Client Component Browser]
+    ./src/app/layout.tsx [Server Component]
+
+
+    at ignore-listed frames

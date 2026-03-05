@@ -1,0 +1,35 @@
+
+> 2nd-brain@0.1.0 dev
+> next dev -p 3005 -H 0.0.0.0
+
+▲ Next.js 16.1.6 (Turbopack)
+- Local:         http://localhost:3005
+- Network:       http://0.0.0.0:3005
+
+✓ Starting...
+✓ Ready in 1430ms
+ GET /dispatch/T051073 200 in 2.0s (compile: 1761ms, render: 239ms)
+ GET /dispatch 200 in 150ms (compile: 84ms, render: 66ms)
+ GET /dispatch/T051191 200 in 56ms (compile: 23ms, render: 33ms)
+ GET /dispatch/T051292 200 in 43ms (compile: 7ms, render: 36ms)
+ PUT /api/dispatch/extra 200 in 713ms (compile: 684ms, render: 29ms)
+ GET /dispatch 200 in 266ms (compile: 105ms, render: 161ms)
+ GET /dispatch/T051191 200 in 93ms (compile: 33ms, render: 60ms)
+ PUT /api/dispatch/extra 200 in 149ms (compile: 71ms, render: 78ms)
+ PUT /api/dispatch/extra 200 in 42ms (compile: 29ms, render: 14ms)
+ PUT /api/dispatch/extra 200 in 30ms (compile: 8ms, render: 22ms)
+ PUT /api/dispatch/extra 200 in 41ms (compile: 17ms, render: 24ms)
+ PUT /api/dispatch/extra 200 in 27ms (compile: 3ms, render: 24ms)
+ PUT /api/dispatch/extra 200 in 22ms (compile: 6ms, render: 16ms)
+ GET /dispatch 200 in 50ms (compile: 9ms, render: 41ms)
+ GET /dispatch/T051191 200 in 62ms (compile: 26ms, render: 35ms)
+ PATCH /api/dispatch/T051191 200 in 2.1s (compile: 2.1s, render: 18ms)
+ GET /dispatch 200 in 47ms (compile: 11ms, render: 36ms)
+ GET /dispatch/T051191 200 in 76ms (compile: 21ms, render: 55ms)
+ GET /dispatch 200 in 37ms (compile: 3ms, render: 34ms)
+ GET /dispatch/T051292 200 in 58ms (compile: 18ms, render: 40ms)
+ GET /dispatch 200 in 69ms (compile: 16ms, render: 52ms)
+ GET /dispatch/T050849 200 in 61ms (compile: 28ms, render: 33ms)
+ GET /dispatch 200 in 37ms (compile: 5ms, render: 32ms)
+✓ Compiled in 891ms
+✓ Compiled in 56ms
