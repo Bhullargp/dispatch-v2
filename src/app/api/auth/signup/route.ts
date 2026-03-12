@@ -17,11 +17,24 @@ export async function POST(request: Request) {
     if (password.length < 8) {
       return NextResponse.json({ error: 'Password must be at least 8 characters' }, { status: 400 });
     }
-    if (securityQuestions.length !== 3 || securityQuestions.some((q: any) => !q?.question || !q?.answer)) {
+    if (securityQuestions.length !== 3) {
       return NextResponse.json({ error: 'Exactly 3 security questions and answers are required' }, { status: 400 });
     }
 
-    const id = createUser({ username, email, password, securityQuestions });
+    const normalizedQuestions = securityQuestions.map((q: any) => ({
+      question: String(q?.question || '').trim(),
+      answer: String(q?.answer || '').trim(),
+    }));
+
+    if (normalizedQuestions.some((q: any) => !q.question || !q.answer)) {
+      return NextResponse.json({ error: 'Security questions and answers cannot be empty' }, { status: 400 });
+    }
+
+    if (new Set(normalizedQuestions.map((q: any) => q.question.toLowerCase())).size !== 3) {
+      return NextResponse.json({ error: 'Security questions must be unique' }, { status: 400 });
+    }
+
+    const id = createUser({ username, email, password, securityQuestions: normalizedQuestions });
     return NextResponse.json({ success: true, userId: id });
   } catch (error: any) {
     const msg = error?.message || 'Signup failed';

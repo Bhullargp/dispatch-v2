@@ -254,6 +254,9 @@ export default function TripSheet({ initialTrips }: { initialTrips: any[] }) {
           <Link href="/dispatch/active" className="hidden md:inline-flex text-[10px] font-black uppercase tracking-widest bg-blue-600 hover:bg-blue-500 px-6 py-3 rounded-xl border border-blue-700 transition-all shadow-[0_0_20px_rgba(37,99,235,0.2)]">
             ⚡ Active Trip
           </Link>
+          <Link href="/dispatch/admin" className="hidden md:inline-flex text-[10px] font-black uppercase tracking-widest bg-purple-700 hover:bg-purple-600 px-6 py-3 rounded-xl border border-purple-600 transition-all shadow-[0_0_20px_rgba(147,51,234,0.2)]">
+            🛡️ Admin
+          </Link>
           <Link href="/" className="hidden md:inline-flex text-[10px] font-black uppercase tracking-widest bg-zinc-900 hover:bg-zinc-800 px-6 py-3 rounded-xl border border-zinc-800 transition-all shadow-xl">
             ← Dashboard
           </Link>

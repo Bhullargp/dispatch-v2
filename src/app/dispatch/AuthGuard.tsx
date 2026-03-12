@@ -37,18 +37,25 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
 
 export function LogoutButton() {
   const router = useRouter();
+  const [loggingOut, setLoggingOut] = useState(false);
 
   const handleLogout = async () => {
-    await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
-    router.replace('/dispatch/login');
+    setLoggingOut(true);
+    try {
+      await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+      router.replace('/dispatch/login');
+    } finally {
+      setLoggingOut(false);
+    }
   };
 
   return (
     <button
       onClick={handleLogout}
-      className="text-[10px] font-black uppercase tracking-widest bg-zinc-900 hover:bg-red-600 px-3 py-2 rounded-xl border border-zinc-800 hover:border-red-700 transition-all shadow-xl text-zinc-400 hover:text-white text-xs"
+      disabled={loggingOut}
+      className="text-[10px] font-black uppercase tracking-widest bg-zinc-900 hover:bg-red-600 disabled:opacity-60 px-3 py-2 rounded-xl border border-zinc-800 hover:border-red-700 transition-all shadow-xl text-zinc-400 hover:text-white text-xs"
     >
-      Logout
+      {loggingOut ? 'Logging out…' : 'Logout'}
     </button>
   );
 }

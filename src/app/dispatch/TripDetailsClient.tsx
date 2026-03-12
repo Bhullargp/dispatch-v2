@@ -30,6 +30,11 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
   const [extraMinutes, setExtraMinutes] = useState<{[key: string]: number}>({});
   const [showAddHUD, setShowAddHUD] = useState(false);
   const [showAllPayables, setShowAllPayables] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionSuccess, setActionSuccess] = useState<string | null>(null);
+  const [addingStop, setAddingStop] = useState(false);
+  const [deletingStopId, setDeletingStopId] = useState<number | null>(null);
+  const [addingFuel, setAddingFuel] = useState(false);
 
   useEffect(() => { setMounted(true); }, []);
 
@@ -47,25 +52,41 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
 
   const updateField = async (field: string, value: any) => {
     setIsSaving(true);
+    setActionError(null);
     try {
       const res = await fetch(`/api/dispatch/${currentTrip.trip_number}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ [field]: value })
       });
-      if (res.ok) setCurrentTrip({ ...currentTrip, [field]: value });
-    } catch (err) { alert('Save failed'); } finally { setIsSaving(false); }
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.error || 'Save failed');
+      }
+      setCurrentTrip({ ...currentTrip, [field]: value });
+    } catch (err: any) {
+      setActionError(err?.message || 'Save failed');
+    } finally { setIsSaving(false); }
   };
 
   const deleteStop = async (stopId: number, index: number) => {
     if (!confirm('Delete this stop?')) return;
+    setActionError(null);
+    setDeletingStopId(stopId);
     try {
-      const res = await fetch(`/api/dispatch/${currentTrip.trip_number}/stop/${stopId}`, { method: 'DELETE' });
-      if (res.ok) {
-        const newStops = currentStops.filter((_: any, i: number) => i !== index);
-        setCurrentStops(newStops);
+      const res = await fetch(`/api/dispatch/${currentTrip.trip_number}/stop?stopId=${stopId}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.error || 'Delete failed');
       }
-    } catch (err) { console.error('Delete failed', err); }
+      const newStops = currentStops.filter((_: any, i: number) => i !== index);
+      setCurrentStops(newStops);
+      setActionSuccess('Stop deleted');
+    } catch (err: any) {
+      setActionError(err?.message || 'Delete failed');
+    } finally {
+      setDeletingStopId(null);
+    }
   };
 
   const updatePayableQty = async (typeName: string, delta: number) => {
@@ -234,6 +255,13 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
       </header>
 
       <main className="max-w-6xl mx-auto space-y-8 pb-20">
+        {(isSaving || actionError || actionSuccess) && (
+          <div className="text-xs font-bold rounded-xl border px-4 py-3 bg-zinc-900/50 border-zinc-800">
+            {isSaving && <p className="text-blue-400">Saving changes…</p>}
+            {!isSaving && actionError && <p className="text-red-400">{actionError}</p>}
+            {!isSaving && !actionError && actionSuccess && <p className="text-green-400">{actionSuccess}</p>}
+          </div>
+        )}
         
         {/* OVERVIEW - Mobile View */}
         <section className="md:hidden bg-zinc-900/30 border border-zinc-800 rounded-[2.5rem] p-8 md:p-10 shadow-2xl relative overflow-hidden">
@@ -490,7 +518,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
             <section className="bg-zinc-900/30 border border-zinc-800 rounded-[2rem] p-8 group">
               <div className="flex justify-between items-center mb-10">
                 <h2 className="text-[10px] font-black uppercase text-zinc-500 tracking-[0.3em]">Route and Stops</h2>
-                <button className="bg-zinc-900 hover:bg-zinc-800 text-[9px] font-black uppercase px-4 py-2 rounded-lg border border-zinc-800 transition-all">+ Add Stop</button>
+                <button onClick={() => setShowAddHUD(true)} className="bg-zinc-900 hover:bg-zinc-800 text-[9px] font-black uppercase px-4 py-2 rounded-lg border border-zinc-800 transition-all">+ Add Stop</button>
               </div>
               <div className="space-y-10 relative">
                 {currentStops.map((stop: any, i) => (
@@ -502,7 +530,13 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                     <div className="-mt-1.5 flex-grow">
                       <div className="flex justify-between items-start">
                         <p className="text-[9px] font-black text-blue-500 uppercase tracking-widest mb-2 font-mono">{formatDateDisplay(stop.date)}</p>
-                        <button onClick={() => deleteStop(stop.id, i)} className="bg-zinc-900/50 hover:bg-red-900 p-1.5 rounded-lg text-red-500 hover:text-white text-[9px] font-black transition-all border border-zinc-800 shadow-md uppercase tracking-tighter">Delete</button>
+                        <button
+                          onClick={() => deleteStop(stop.id, i)}
+                          disabled={deletingStopId === stop.id}
+                          className="bg-zinc-900/50 hover:bg-red-900 disabled:opacity-60 p-1.5 rounded-lg text-red-500 hover:text-white text-[9px] font-black transition-all border border-zinc-800 shadow-md uppercase tracking-tighter"
+                        >
+                          {deletingStopId === stop.id ? 'Deleting…' : 'Delete'}
+                        </button>
                       </div>
                       <p className="text-md font-black text-zinc-100 leading-tight mb-2 tracking-tight">{stop.location}</p>
                       <span className="text-[9px] font-black text-zinc-500 uppercase bg-black/40 px-3 py-1.5 rounded-xl border border-zinc-800/50">{stop.stop_type || 'Stop'} • {stop.miles_from_last || 0} mi</span>
@@ -597,24 +631,32 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                 <input id="newStopMiles" type="number" placeholder="Miles" className="bg-black/40 border border-zinc-800 rounded-xl p-4 text-sm font-mono outline-none focus:border-blue-500" />
               </div>
               <button onClick={async () => {
+                setActionError(null);
+                setActionSuccess(null);
+                setAddingStop(true);
                 const loc = (document.getElementById('newStopLocation') as HTMLInputElement).value;
                 const date = (document.getElementById('newStopDate') as HTMLInputElement).value;
                 const miles = parseFloat((document.getElementById('newStopMiles') as HTMLInputElement).value) || 0;
-                if (!loc) return alert('Location required');
+                if (!loc?.trim()) {
+                  setActionError('Stop location is required');
+                  setAddingStop(false);
+                  return;
+                }
                 try {
                   const res = await fetch(`/api/dispatch/${currentTrip.trip_number}/stop`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ location: loc, date: date || null, miles_from_last: miles, stop_type: 'Stop' })
+                    body: JSON.stringify({ location: loc.trim(), date: date || null, miles_from_last: miles, stop_type: 'Stop' })
                   });
-                  if (res.ok) {
-                    const newStop = await res.json();
-                    setCurrentStops([...currentStops, newStop]);
-                    (document.getElementById('newStopLocation') as HTMLInputElement).value = '';
-                    (document.getElementById('newStopMiles') as HTMLInputElement).value = '';
-                  }
-                } catch (err) { console.error(err); }
-              }} className="mt-4 w-full bg-blue-600 hover:bg-blue-500 p-4 rounded-xl font-black uppercase text-xs tracking-widest border border-blue-500 transition-all">+ Add Stop</button>
+                  const data = await res.json().catch(() => ({}));
+                  if (!res.ok) throw new Error(data?.error || 'Unable to add stop');
+                  setCurrentStops([...currentStops, data]);
+                  (document.getElementById('newStopLocation') as HTMLInputElement).value = '';
+                  (document.getElementById('newStopMiles') as HTMLInputElement).value = '';
+                  setActionSuccess('Stop added');
+                } catch (err: any) { setActionError(err?.message || 'Unable to add stop'); }
+                finally { setAddingStop(false); }
+              }} disabled={addingStop} className="mt-4 w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-60 p-4 rounded-xl font-black uppercase text-xs tracking-widest border border-blue-500 transition-all">{addingStop ? 'Adding Stop…' : '+ Add Stop'}</button>
             </div>
 
             {/* Quick Add - Payables */}
@@ -664,13 +706,20 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                 <input id="fuelDate" type="date" className="bg-black/40 border border-zinc-800 rounded-xl p-4 text-sm font-mono outline-none focus:border-blue-500" />
               </div>
               <button onClick={async () => {
+                setActionError(null);
+                setActionSuccess(null);
+                setAddingFuel(true);
                 const city = (document.getElementById('fuelCity') as HTMLInputElement).value;
                 const province = (document.getElementById('fuelProvince') as HTMLSelectElement).value;
                 const amount = parseFloat((document.getElementById('fuelAmount') as HTMLInputElement).value) || 0;
                 const price = parseFloat((document.getElementById('fuelPrice') as HTMLInputElement).value) || 0;
                 const odometer = parseFloat((document.getElementById('fuelOdometer') as HTMLInputElement).value) || 0;
                 const date = (document.getElementById('fuelDate') as HTMLInputElement).value || new Date().toISOString().split('T')[0];
-                if (!city || !province || !amount) return alert('City, Province and Amount required');
+                if (!city || !province || !amount) {
+                  setActionError('City, province, and amount are required');
+                  setAddingFuel(false);
+                  return;
+                }
                 const isCanada = ['ON','BC','AB','QC','MB','SK','NB','NS','PE'].includes(province);
                 const unit = isCanada ? 'L' : 'Gal';
                 try {
@@ -679,9 +728,12 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ trip_number: currentTrip.trip_number, city, province, amount, price_per_unit: price, odometer, date, unit })
                   });
-                  if (res.ok) alert('Fuel added!');
-                } catch (err) { console.error(err); }
-              }} className="w-full bg-green-600 hover:bg-green-500 p-4 rounded-xl font-black uppercase text-xs tracking-widest border border-green-500 transition-all">+ Add Fuel</button>
+                  const data = await res.json().catch(() => ({}));
+                  if (!res.ok) throw new Error(data?.error || 'Failed to add fuel');
+                  setActionSuccess('Fuel entry added');
+                } catch (err: any) { setActionError(err?.message || 'Failed to add fuel'); }
+                finally { setAddingFuel(false); }
+              }} disabled={addingFuel} className="w-full bg-green-600 hover:bg-green-500 disabled:opacity-60 p-4 rounded-xl font-black uppercase text-xs tracking-widest border border-green-500 transition-all">{addingFuel ? 'Adding Fuel…' : '+ Add Fuel'}</button>
             </div>
           </div>
         </div>

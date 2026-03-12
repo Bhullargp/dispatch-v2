@@ -203,6 +203,19 @@ export function createUser(payload: SignupPayload) {
     throw new Error('Exactly 3 security questions are required');
   }
 
+  const normalizedSecurity = payload.securityQuestions.map((q) => ({
+    question: String(q.question || '').trim(),
+    answer: String(q.answer || '').trim(),
+  }));
+
+  if (normalizedSecurity.some((q) => !q.question || !q.answer)) {
+    throw new Error('Security questions and answers cannot be empty');
+  }
+
+  if (new Set(normalizedSecurity.map((q) => q.question.toLowerCase())).size !== 3) {
+    throw new Error('Security questions must be unique');
+  }
+
   const username = payload.username.trim().toLowerCase();
   const email = payload.email.trim().toLowerCase();
 
@@ -225,12 +238,12 @@ export function createUser(payload: SignupPayload) {
       email,
       hashSecret(payload.password),
       payload.role || 'user',
-      payload.securityQuestions[0].question,
-      hashSecret(payload.securityQuestions[0].answer.trim().toLowerCase()),
-      payload.securityQuestions[1].question,
-      hashSecret(payload.securityQuestions[1].answer.trim().toLowerCase()),
-      payload.securityQuestions[2].question,
-      hashSecret(payload.securityQuestions[2].answer.trim().toLowerCase())
+      normalizedSecurity[0].question,
+      hashSecret(normalizedSecurity[0].answer.toLowerCase()),
+      normalizedSecurity[1].question,
+      hashSecret(normalizedSecurity[1].answer.toLowerCase()),
+      normalizedSecurity[2].question,
+      hashSecret(normalizedSecurity[2].answer.toLowerCase())
     );
 
   return Number(result.lastInsertRowid);
@@ -249,6 +262,12 @@ export function getUserByEmail(email: string) {
   const db = getDb();
   ensureDispatchAuthSchemaAndSeed();
   return db.prepare('SELECT * FROM users WHERE email = ?').get(email.trim().toLowerCase()) as any;
+}
+
+export function getSecurityQuestionsByEmail(email: string): string[] | null {
+  const user = getUserByEmail(email);
+  if (!user) return null;
+  return [user.security_q1, user.security_q2, user.security_q3].map((q) => String(q || ''));
 }
 
 export function resetPasswordBySecurityAnswers(email: string, answers: string[], newPassword: string) {

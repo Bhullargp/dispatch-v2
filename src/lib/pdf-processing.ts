@@ -25,6 +25,7 @@ export type ParsedTrip = {
   notes: string;
   stops: ParsedStop[];
   placeholders: string[];
+  hasDetectedTripNumber: boolean;
 };
 
 export function ensureUploadSchema(db: Database.Database) {
@@ -36,6 +37,7 @@ export function ensureUploadSchema(db: Database.Database) {
       stored_path TEXT NOT NULL,
       mime_type TEXT,
       size_bytes INTEGER,
+      content_hash TEXT,
       status TEXT NOT NULL DEFAULT 'queued',
       trip_number TEXT,
       error_message TEXT,
@@ -46,6 +48,13 @@ export function ensureUploadSchema(db: Database.Database) {
     );
     CREATE INDEX IF NOT EXISTS idx_upload_jobs_user_status ON upload_jobs(user_id, status, created_at DESC);
   `);
+
+  const cols = db.prepare('PRAGMA table_info(upload_jobs)').all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === 'content_hash')) {
+    db.exec('ALTER TABLE upload_jobs ADD COLUMN content_hash TEXT');
+  }
+
+  db.exec('CREATE INDEX IF NOT EXISTS idx_upload_jobs_user_hash ON upload_jobs(user_id, content_hash, created_at DESC)');
 }
 
 function monthToNumber(month: string): number {
@@ -66,7 +75,22 @@ function fmtDate(year: number, month: string, day: string): string {
 function parseDateFromLine(line: string, fallbackYear: number): string | null {
   const m = line.match(/(?:MON|TUE|WED|THU|FRI|SAT|SUN)?\s*,?\s*([A-Z][a-z]{2})\s+(\d{1,2})(?:,?\s*(\d{4}))?/i);
   if (!m) return null;
-  return fmtDate(Number(m[3] || fallbackYear), m[1], m[2]);
+
+  const year = Number(m[3] || fallbackYear);
+  const monthNum = monthToNumber(m[1]);
+  const dayNum = Number(m[2]);
+  const candidate = new Date(Date.UTC(year, monthNum - 1, dayNum));
+
+  if (
+    Number.isNaN(candidate.getTime()) ||
+    candidate.getUTCFullYear() !== year ||
+    candidate.getUTCMonth() !== monthNum - 1 ||
+    candidate.getUTCDate() !== dayNum
+  ) {
+    return null;
+  }
+
+  return fmtDate(year, m[1], m[2]);
 }
 
 export async function extractTextFromPdf(buffer: Buffer): Promise<string> {
@@ -88,6 +112,7 @@ export async function extractTextFromPdf(buffer: Buffer): Promise<string> {
 
 export function parseDriverItinerary(text: string): ParsedTrip {
   const tripMatch = text.match(/Trip Itinerary\s+(T\d{4,})/i) || text.match(/Driver Trip Itinerary\s+(T\d{4,})/i);
+  const hasDetectedTripNumber = Boolean(tripMatch?.[1]);
   const tripNumber = tripMatch?.[1]?.toUpperCase() || `T${Date.now().toString().slice(-6)}`;
 
   const startMatch = text.match(/Start Date:\s*(?:[A-Za-z]{3}\s+)?([A-Za-z]{3})\s+(\d{1,2}),\s*(\d{4})/i);
@@ -165,6 +190,7 @@ export function parseDriverItinerary(text: string): ParsedTrip {
     notes: '',
     stops,
     placeholders,
+    hasDetectedTripNumber,
   };
 }
 
