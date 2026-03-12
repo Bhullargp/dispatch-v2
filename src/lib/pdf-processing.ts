@@ -41,6 +41,12 @@ export function ensureUploadSchema(db: Database.Database) {
       status TEXT NOT NULL DEFAULT 'queued',
       trip_number TEXT,
       error_message TEXT,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      max_attempts INTEGER NOT NULL DEFAULT 3,
+      cancel_requested INTEGER NOT NULL DEFAULT 0,
+      started_at TEXT,
+      last_error_at TEXT,
+      processing_by TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       processed_at TEXT,
@@ -49,12 +55,34 @@ export function ensureUploadSchema(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_upload_jobs_user_status ON upload_jobs(user_id, status, created_at DESC);
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS upload_worker_lock (
+      lock_name TEXT PRIMARY KEY,
+      owner TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
   const cols = db.prepare('PRAGMA table_info(upload_jobs)').all() as Array<{ name: string }>;
-  if (!cols.some((c) => c.name === 'content_hash')) {
-    db.exec('ALTER TABLE upload_jobs ADD COLUMN content_hash TEXT');
+  const requiredColumns: Array<[string, string]> = [
+    ['content_hash', 'TEXT'],
+    ['attempt_count', 'INTEGER NOT NULL DEFAULT 0'],
+    ['max_attempts', 'INTEGER NOT NULL DEFAULT 3'],
+    ['cancel_requested', 'INTEGER NOT NULL DEFAULT 0'],
+    ['started_at', 'TEXT'],
+    ['last_error_at', 'TEXT'],
+    ['processing_by', 'TEXT'],
+  ];
+
+  for (const [name, definition] of requiredColumns) {
+    if (!cols.some((c) => c.name === name)) {
+      db.exec(`ALTER TABLE upload_jobs ADD COLUMN ${name} ${definition}`);
+    }
   }
 
   db.exec('CREATE INDEX IF NOT EXISTS idx_upload_jobs_user_hash ON upload_jobs(user_id, content_hash, created_at DESC)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_upload_jobs_status_id ON upload_jobs(status, id)');
 }
 
 function monthToNumber(month: string): number {
@@ -254,4 +282,155 @@ export function mergeTripAndStops(db: Database.Database, userId: number, parsed:
   }
 
   return effectiveTripNumber;
+}
+
+export type UploadJob = {
+  id: number;
+  user_id: number;
+  original_filename: string;
+  stored_path: string;
+  status: 'queued' | 'processing' | 'done' | 'failed' | 'cancelled';
+  content_hash?: string | null;
+  trip_number?: string | null;
+  error_message?: string | null;
+  attempt_count: number;
+  max_attempts: number;
+};
+
+function isRetryableUploadError(message: string): boolean {
+  const m = String(message || '').toLowerCase();
+  return !(
+    m.includes('invalid pdf') ||
+    m.includes('trip number') ||
+    m.includes('document format') ||
+    m.includes('only pdf files are supported')
+  );
+}
+
+export function acquireUploadWorkerLock(db: Database.Database, owner: string, ttlSeconds = 120): boolean {
+  ensureUploadSchema(db);
+  const tx = db.transaction(() => {
+    db.prepare("DELETE FROM upload_worker_lock WHERE lock_name = 'upload_queue' AND datetime(expires_at) <= datetime('now')").run();
+    const existing = db.prepare("SELECT owner FROM upload_worker_lock WHERE lock_name = 'upload_queue'").get() as { owner: string } | undefined;
+    if (existing) return false;
+
+    db.prepare(`
+      INSERT INTO upload_worker_lock (lock_name, owner, expires_at, updated_at)
+      VALUES ('upload_queue', ?, datetime('now', ?), datetime('now'))
+    `).run(owner, `+${Math.max(10, ttlSeconds)} seconds`);
+    return true;
+  });
+
+  return tx();
+}
+
+export function releaseUploadWorkerLock(db: Database.Database, owner: string) {
+  ensureUploadSchema(db);
+  db.prepare("DELETE FROM upload_worker_lock WHERE lock_name = 'upload_queue' AND owner = ?").run(owner);
+}
+
+function claimQueuedUploadJob(db: Database.Database, owner: string): UploadJob | null {
+  const tx = db.transaction(() => {
+    const job = db.prepare(`
+      SELECT *
+      FROM upload_jobs
+      WHERE status = 'queued' AND cancel_requested = 0 AND attempt_count < max_attempts
+      ORDER BY id ASC
+      LIMIT 1
+    `).get() as UploadJob | undefined;
+
+    if (!job) return null;
+
+    const claimed = db.prepare(`
+      UPDATE upload_jobs
+      SET status = 'processing', started_at = datetime('now'), processing_by = ?, updated_at = datetime('now')
+      WHERE id = ? AND status = 'queued'
+    `).run(owner, job.id);
+
+    if (!claimed.changes) return null;
+
+    return db.prepare('SELECT * FROM upload_jobs WHERE id = ?').get(job.id) as UploadJob;
+  });
+
+  return tx();
+}
+
+export function claimUploadJobById(db: Database.Database, id: number, owner: string): UploadJob | null {
+  const tx = db.transaction(() => {
+    const claimed = db.prepare(`
+      UPDATE upload_jobs
+      SET status = 'processing', started_at = datetime('now'), processing_by = ?, updated_at = datetime('now')
+      WHERE id = ? AND status = 'queued' AND cancel_requested = 0
+    `).run(owner, id);
+
+    if (!claimed.changes) return null;
+    return db.prepare('SELECT * FROM upload_jobs WHERE id = ?').get(id) as UploadJob;
+  });
+
+  return tx();
+}
+
+export async function processClaimedUploadJob(db: Database.Database, job: UploadJob) {
+  try {
+    const cleanStoredPath = String(job.stored_path || '').replace(/^\/+/, '');
+    const absPath = join(process.cwd(), 'public', cleanStoredPath);
+    const buffer = await readFile(absPath);
+
+    const rawText = await extractTextFromPdf(buffer);
+    const parsed = parseDriverItinerary(rawText);
+
+    if (!parsed.hasDetectedTripNumber) {
+      throw new Error('Could not detect trip number in PDF. Please verify the document format.');
+    }
+
+    if (!parsed.tripNumber || !/^T\d{4,}/i.test(parsed.tripNumber)) {
+      throw new Error('Parsed trip number is invalid. Please upload a valid itinerary PDF.');
+    }
+
+    const tx = db.transaction(() => {
+      const tripNumber = mergeTripAndStops(db, job.user_id, parsed, job.stored_path);
+      db.prepare(`
+        UPDATE upload_jobs
+        SET status = 'done',
+            trip_number = ?,
+            attempt_count = attempt_count + 1,
+            error_message = NULL,
+            processing_by = NULL,
+            updated_at = datetime('now'),
+            processed_at = datetime('now')
+        WHERE id = ?
+      `).run(tripNumber, job.id);
+      return tripNumber;
+    });
+
+    const tripNumber = tx();
+    return { ok: true as const, jobId: job.id, tripNumber };
+  } catch (error: any) {
+    const message = String(error?.message || 'Upload processing failed');
+    const retryable = isRetryableUploadError(message);
+
+    const row = db.prepare('SELECT attempt_count, max_attempts FROM upload_jobs WHERE id = ?').get(job.id) as { attempt_count: number; max_attempts: number } | undefined;
+    const nextAttempt = (row?.attempt_count || 0) + 1;
+    const maxAttempts = row?.max_attempts || 3;
+    const shouldRetry = retryable && nextAttempt < maxAttempts;
+
+    db.prepare(`
+      UPDATE upload_jobs
+      SET status = ?,
+          attempt_count = ?,
+          error_message = ?,
+          last_error_at = datetime('now'),
+          processing_by = NULL,
+          updated_at = datetime('now')
+      WHERE id = ?
+    `).run(shouldRetry ? 'queued' : 'failed', nextAttempt, message, job.id);
+
+    return { ok: false as const, jobId: job.id, error: message, retryable: shouldRetry };
+  }
+}
+
+export async function processNextQueuedUploadJob(db: Database.Database, owner: string) {
+  const claimed = claimQueuedUploadJob(db, owner);
+  if (!claimed) return { ok: true as const, empty: true as const };
+  return processClaimedUploadJob(db, claimed);
 }

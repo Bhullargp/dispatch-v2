@@ -107,8 +107,14 @@ export default function TripSheet({ initialTrips }: { initialTrips: any[] }) {
       form.append('file', file);
       const res = await fetch('/api/dispatch/upload', { method: 'POST', body: form });
       const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || 'Upload failed');
-      setUploadFeedback(`✅ Imported ${data.tripNumber}`);
+      if (!res.ok && !data?.queued) throw new Error(data?.error || 'Upload failed');
+      if (data?.tripNumber) {
+        setUploadFeedback(`✅ Imported ${data.tripNumber}`);
+      } else if (data?.queued) {
+        setUploadFeedback(`🕒 Upload queued${data?.message ? `: ${data.message}` : ''}`);
+      } else {
+        setUploadFeedback('✅ Upload accepted');
+      }
       await Promise.all([refreshTrips(), fetch('/api/dispatch/upload').then(r => r.json()).then(d => setUploadJobs(d.jobs || []))]);
     } catch (error: any) {
       setUploadFeedback(`❌ ${error.message || 'Upload failed'}`);

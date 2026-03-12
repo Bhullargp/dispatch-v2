@@ -6,6 +6,8 @@ import { redirect } from 'next/navigation';
 import { ensureDispatchAuthSchemaAndSeed } from '@/lib/dispatch-auth';
 import { getServerAccess } from '@/lib/ownership';
 import { ensureUploadSchema } from '@/lib/pdf-processing';
+import UploadJobActions from './UploadJobActions';
+import RunUploadWorkerButton from './RunUploadWorkerButton';
 
 const dbPath = path.resolve(process.cwd(), 'dispatch.db');
 
@@ -36,7 +38,7 @@ export default async function AdminInspectionPage() {
   `).all() as Array<any>;
 
   const recentUploadJobs = db.prepare(`
-    SELECT id, user_id, original_filename, status, trip_number, error_message, created_at
+    SELECT id, user_id, original_filename, status, trip_number, error_message, attempt_count, max_attempts, created_at
     FROM upload_jobs
     ORDER BY id DESC
     LIMIT 25
@@ -48,9 +50,12 @@ export default async function AdminInspectionPage() {
   return (
     <div className="min-h-screen bg-[#050505] text-zinc-100 p-6 md:p-10">
       <div className="max-w-7xl mx-auto space-y-6">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-3">
           <h1 className="text-3xl font-black uppercase">Admin Inspection</h1>
-          <Link href="/dispatch" className="text-xs font-black uppercase bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 px-4 py-2 rounded-xl">← Back to Dispatch</Link>
+          <div className="flex items-center gap-2">
+            <RunUploadWorkerButton />
+            <Link href="/dispatch" className="text-xs font-black uppercase bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 px-4 py-2 rounded-xl">← Back to Dispatch</Link>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -95,7 +100,7 @@ export default async function AdminInspectionPage() {
           <table className="w-full text-left text-sm">
             <thead className="text-zinc-500 text-xs uppercase">
               <tr>
-                <th className="py-2">#</th><th>User</th><th>File</th><th>Status</th><th>Trip</th><th>Error</th>
+                <th className="py-2">#</th><th>User</th><th>File</th><th>Status</th><th>Attempts</th><th>Trip</th><th>Error</th><th>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -104,9 +109,11 @@ export default async function AdminInspectionPage() {
                   <td className="py-2 font-mono">{job.id}</td>
                   <td>{job.user_id}</td>
                   <td className="max-w-[220px] truncate">{job.original_filename}</td>
-                  <td className={job.status === 'done' ? 'text-green-400' : job.status === 'failed' ? 'text-red-400' : 'text-yellow-400'}>{job.status}</td>
+                  <td className={job.status === 'done' ? 'text-green-400' : job.status === 'failed' ? 'text-red-400' : job.status === 'cancelled' ? 'text-zinc-500' : 'text-yellow-400'}>{job.status}</td>
+                  <td className="font-mono text-xs">{job.attempt_count}/{job.max_attempts}</td>
                   <td>{job.trip_number || '—'}</td>
                   <td className="max-w-[280px] truncate text-zinc-500">{job.error_message || '—'}</td>
+                  <td><UploadJobActions id={job.id} status={job.status} /></td>
                 </tr>
               ))}
             </tbody>

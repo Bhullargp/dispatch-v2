@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import { ensureDispatchAuthSchemaAndSeed } from '@/lib/dispatch-auth';
 import { requireAccess } from '@/lib/ownership';
-import { ensureUploadSchema, extractTextFromPdf, mergeTripAndStops, parseDriverItinerary } from '@/lib/pdf-processing';
+import { claimUploadJobById, ensureUploadSchema, processClaimedUploadJob } from '@/lib/pdf-processing';
 
 const dbPath = path.resolve(process.cwd(), 'dispatch.db');
 
@@ -20,7 +20,7 @@ export async function GET(req: Request) {
     ensureUploadSchema(db);
 
     const jobs = db.prepare(`
-      SELECT id, original_filename, status, trip_number, error_message, created_at, updated_at, processed_at
+      SELECT id, original_filename, status, trip_number, error_message, attempt_count, max_attempts, created_at, updated_at, processed_at
       FROM upload_jobs
       WHERE user_id = ?
       ORDER BY id DESC
@@ -36,6 +36,7 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   let db: Database.Database | null = null;
   let jobId: number | null = null;
+
   try {
     ensureDispatchAuthSchemaAndSeed();
     const { access, response } = requireAccess(req);
@@ -58,12 +59,12 @@ export async function POST(req: Request) {
 
     const contentHash = crypto.createHash('sha256').update(buffer).digest('hex');
     const duplicateJob = db.prepare(`
-      SELECT id, trip_number, created_at
+      SELECT id, trip_number
       FROM upload_jobs
       WHERE user_id = ? AND content_hash = ? AND status IN ('processing', 'done')
       ORDER BY id DESC
       LIMIT 1
-    `).get(access.session.userId, contentHash) as { id: number; trip_number?: string; created_at: string } | undefined;
+    `).get(access.session.userId, contentHash) as { id: number; trip_number?: string } | undefined;
 
     if (duplicateJob) {
       return NextResponse.json(
@@ -85,49 +86,46 @@ export async function POST(req: Request) {
     const relativePath = `/itineraries/${filename}`;
 
     const inserted = db.prepare(`
-      INSERT INTO upload_jobs (user_id, original_filename, stored_path, mime_type, size_bytes, content_hash, status)
-      VALUES (?, ?, ?, ?, ?, ?, 'queued')
+      INSERT INTO upload_jobs (user_id, original_filename, stored_path, mime_type, size_bytes, content_hash, status, max_attempts)
+      VALUES (?, ?, ?, ?, ?, ?, 'queued', 3)
     `).run(access.session.userId, file.name, relativePath, file.type || 'application/pdf', file.size || buffer.length, contentHash);
     jobId = Number(inserted.lastInsertRowid);
 
-    db.prepare("UPDATE upload_jobs SET status = 'processing', updated_at = datetime('now') WHERE id = ? AND user_id = ?")
-      .run(jobId, access.session.userId);
-
-    const rawText = await extractTextFromPdf(buffer);
-    const parsed = parseDriverItinerary(rawText);
-
-    if (!parsed.hasDetectedTripNumber) {
-      throw new Error('Could not detect trip number in PDF. Please verify the document format.');
+    const claimed = claimUploadJobById(db, jobId, `inline-${process.pid}`);
+    if (!claimed) {
+      return NextResponse.json({ success: true, queued: true, jobId, message: 'Upload queued for background processing.' }, { status: 202 });
     }
 
-    if (!parsed.tripNumber || !/^T\d{4,}/i.test(parsed.tripNumber)) {
-      throw new Error('Parsed trip number is invalid. Please upload a valid itinerary PDF.');
+    const result = await processClaimedUploadJob(db, claimed);
+
+    if (!result.ok) {
+      const status = result.retryable ? 202 : 400;
+      return NextResponse.json(
+        {
+          success: false,
+          queued: result.retryable,
+          jobId,
+          error: result.error,
+          message: result.retryable ? 'Queued for retry in background.' : result.error,
+        },
+        { status }
+      );
     }
 
-    const tx = db.transaction(() => {
-      const tripNumber = mergeTripAndStops(db!, access.session.userId, parsed, relativePath);
-      db!.prepare(`
-        UPDATE upload_jobs
-        SET status = 'done', trip_number = ?, updated_at = datetime('now'), processed_at = datetime('now')
-        WHERE id = ? AND user_id = ?
-      `).run(tripNumber, jobId, access.session.userId);
-      return tripNumber;
-    });
-
-    const tripNumber = tx();
+    const row = db.prepare('SELECT trip_number FROM upload_jobs WHERE id = ?').get(jobId) as { trip_number: string } | undefined;
 
     return NextResponse.json({
       success: true,
+      queued: false,
       jobId,
-      tripNumber,
+      tripNumber: row?.trip_number,
       path: relativePath,
-      placeholders: parsed.placeholders,
     });
   } catch (error: any) {
     if (db && jobId) {
       db.prepare(`
         UPDATE upload_jobs
-        SET status = 'failed', error_message = ?, updated_at = datetime('now')
+        SET status = 'failed', error_message = ?, updated_at = datetime('now'), last_error_at = datetime('now')
         WHERE id = ?
       `).run(error.message || 'Upload processing failed', jobId);
     }
