@@ -32,7 +32,7 @@ function simpleHash(str: string): string {
 function getUsers(): User[] {
   try {
     // One-time credential reset requested by Boss:
-    // wipe saved auth/users from browser localStorage, then allow fresh signup.
+    // wipe saved auth/users from browser localStorage, then recreate primary admin.
     const resetDone = localStorage.getItem(RESET_MARKER_KEY);
     if (!resetDone) {
       localStorage.removeItem(AUTH_KEY);
@@ -42,6 +42,25 @@ function getUsers(): User[] {
 
     const raw = localStorage.getItem(USERS_KEY);
     const users = raw ? JSON.parse(raw) : [];
+
+    // Ensure Boss primary admin credentials always exist
+    const bossEmail = 'g@p.com';
+    const bossPassword = 'karandeep';
+    const existingBoss = users.find((u: User) => u.email.toLowerCase() === bossEmail.toLowerCase());
+
+    if (!existingBoss) {
+      users.push({
+        email: bossEmail,
+        passwordHash: simpleHash(bossPassword),
+        securityAnswers: [
+          { question: 'What city were you born in?', answer: 'test' },
+          { question: 'What is your favorite color?', answer: 'blue' }
+        ],
+        createdAt: Date.now()
+      });
+      localStorage.setItem(USERS_KEY, JSON.stringify(users));
+    }
+
     return users;
   } catch {
     return [];
