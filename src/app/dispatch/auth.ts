@@ -184,18 +184,8 @@ export function getSecurityQuestions(): string[] {
 }
 
 export function isAuthenticated(): boolean {
-  try {
-    const raw = localStorage.getItem(AUTH_KEY);
-    if (!raw) return false;
-    const session: AuthSession = JSON.parse(raw);
-    if (Date.now() - session.loginTime > SESSION_DURATION) {
-      localStorage.removeItem(AUTH_KEY);
-      return false;
-    }
-    return true;
-  } catch {
-    return false;
-  }
+  // Boss temporary bypass: disable auth gate
+  return true;
 }
 
 export function clearSession(): void {
@@ -207,16 +197,6 @@ export function logout(): void {
 }
 
 export function getSession(): AuthSession | null {
-  try {
-    const raw = localStorage.getItem(AUTH_KEY);
-    if (!raw) return null;
-    const session: AuthSession = JSON.parse(raw);
-    if (Date.now() - session.loginTime > SESSION_DURATION) {
-      localStorage.removeItem(AUTH_KEY);
-      return null;
-    }
-    return session;
-  } catch {
-    return null;
-  }
+  // Boss temporary bypass: always provide an active session
+  return { email: 'g@p.com', loginTime: Date.now() };
 }
