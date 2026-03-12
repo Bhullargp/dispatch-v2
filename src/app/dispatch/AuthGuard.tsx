@@ -2,23 +2,35 @@
 
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { isAuthenticated, logout, getSession } from './auth';
 
 export default function AuthGuard({ children }: { children: React.ReactNode }) {
   const [authed, setAuthed] = useState(false);
+  const [loading, setLoading] = useState(true);
   const router = useRouter();
 
   useEffect(() => {
-    if (!isAuthenticated()) {
-      router.replace('/dispatch/login');
-    } else {
-      setAuthed(true);
-    }
+    const run = async () => {
+      try {
+        const res = await fetch('/api/auth/session', { credentials: 'include', cache: 'no-store' });
+        if (res.ok) {
+          setAuthed(true);
+        } else {
+          router.replace('/dispatch/login');
+        }
+      } catch {
+        router.replace('/dispatch/login');
+      } finally {
+        setLoading(false);
+      }
+    };
+    run();
   }, [router]);
 
-  if (!authed) {
+  if (loading) {
     return <div className="min-h-screen bg-[#050505]" />;
   }
+
+  if (!authed) return null;
 
   return <>{children}</>;
 }
@@ -26,8 +38,8 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
 export function LogoutButton() {
   const router = useRouter();
 
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
     router.replace('/dispatch/login');
   };
 

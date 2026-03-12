@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { requireAuth } from '@/lib/require-auth';
 import Database from 'better-sqlite3';
 import path from 'path';
 
@@ -6,6 +7,8 @@ const dbPath = path.resolve(process.cwd(), 'dispatch.db');
 
 export async function POST(request: Request) {
   try {
+    const unauthorized = requireAuth(request);
+    if (unauthorized) return unauthorized;
     const body = await request.json();
     const { trip_number, type, amount, quantity } = body;
     const db = new Database(dbPath);
@@ -22,6 +25,8 @@ export async function POST(request: Request) {
 
 export async function DELETE(request: Request) {
   try {
+    const unauthorized = requireAuth(request);
+    if (unauthorized) return unauthorized;
     const { searchParams } = new URL(request.url);
     const id = searchParams.get('id');
     const db = new Database(dbPath);
@@ -34,6 +39,8 @@ export async function DELETE(request: Request) {
 
 export async function PUT(request: Request) {
   try {
+    const unauthorized = requireAuth(request);
+    if (unauthorized) return unauthorized;
     const body = await request.json();
     const { trip_number, extras } = body;
     const db = new Database(dbPath);

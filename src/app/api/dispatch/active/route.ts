@@ -1,11 +1,14 @@
 import { NextResponse } from 'next/server';
+import { requireAuth } from '@/lib/require-auth';
 import Database from 'better-sqlite3';
 import path from 'path';
 
 const dbPath = path.resolve(process.cwd(), 'dispatch.db');
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    const unauthorized = requireAuth(request);
+    if (unauthorized) return unauthorized;
     const db = new Database(dbPath);
     const trip = db.prepare(`
       SELECT * FROM trips 

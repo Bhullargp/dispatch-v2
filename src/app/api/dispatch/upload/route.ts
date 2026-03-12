@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { requireAuth } from '@/lib/require-auth';
 import { writeFile, mkdir } from 'fs/promises';
 import { join } from 'path';
 import Database from 'better-sqlite3';
@@ -14,6 +15,8 @@ async function extractTextFromPdf(buffer: Buffer): Promise<string> {
 
 export async function POST(req: Request) {
   try {
+    const unauthorized = requireAuth(req);
+    if (unauthorized) return unauthorized;
     const formData = await req.formData();
     const file = formData.get('file') as File;
     const tripNumber = formData.get('tripNumber') as string;

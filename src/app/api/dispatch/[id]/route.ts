@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { requireAuth } from '@/lib/require-auth';
 import Database from 'better-sqlite3';
 import path from 'path';
 
@@ -9,6 +10,8 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const unauthorized = requireAuth(request);
+    if (unauthorized) return unauthorized;
     const { id } = await params;
     const body = await request.json();
     const db = new Database(dbPath);
@@ -78,6 +81,8 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const unauthorized = requireAuth(request);
+    if (unauthorized) return unauthorized;
     const { id } = await params;
     const db = new Database(dbPath);
     

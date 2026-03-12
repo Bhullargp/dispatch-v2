@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { requireAuth } from '@/lib/require-auth';
 import Database from 'better-sqlite3';
 import path from 'path';
 
@@ -6,6 +7,8 @@ const dbPath = path.resolve(process.cwd(), 'dispatch.db');
 
 export async function POST(request: Request) {
   try {
+    const unauthorized = requireAuth(request);
+    if (unauthorized) return unauthorized;
     const body = await request.json();
     const { trip_number, date, location, quantity, unit, amount_usd, odometer } = body;
     
@@ -48,6 +51,8 @@ export async function GET(request: Request) {
   const unlinkedOnly = searchParams.get('unlinked') === 'true';
   
   try {
+    const unauthorized = requireAuth(request);
+    if (unauthorized) return unauthorized;
     const db = new Database(dbPath);
     let fuel;
     if (unlinkedOnly) {
@@ -65,6 +70,8 @@ export async function GET(request: Request) {
 
 export async function PATCH(request: Request) {
   try {
+    const unauthorized = requireAuth(request);
+    if (unauthorized) return unauthorized;
     const body = await request.json();
     const { id, location, quantity, amount_usd, trip_number, date, unit, odometer } = body;
     
@@ -105,6 +112,8 @@ export async function PATCH(request: Request) {
 
 export async function DELETE(request: Request) {
   try {
+    const unauthorized = requireAuth(request);
+    if (unauthorized) return unauthorized;
     const body = await request.json();
     const { id } = body;
     
