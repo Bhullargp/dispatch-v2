@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter, usePathname } from 'next/navigation';
 import { useIsMobile } from '../hooks/useIsMobile';
@@ -21,7 +21,7 @@ const PAYABLE_TYPES = [
   { name: 'Waiting Time', rate: 30, unit: 'hour', increments: 0.25, max: 6, freeLimit: 3 },
   { name: 'City Work', rate: 39, unit: 'hour', increments: 0.25, max: 14 },
   { name: 'Trailer Drop', rate: 30, unit: 'qty' },
-  { name: 'Layover', rate: 100, unit: 'qty' }
+  { name: 'Layover', rate: 100, unit: 'hour', increments: 0.5 }
 ];
 
 // Canadian provinces for trip detection
@@ -67,6 +67,10 @@ export default function TripSheet({ initialTrips }: { initialTrips: any[] }) {
   const pathname = usePathname();
   const { isLoggedIn, logout, user } = useAuth();
   const [isQuickAddOpen, setIsQuickAddOpen] = useState(false);
+  const [uploadingPdf, setUploadingPdf] = useState(false);
+  const [uploadJobs, setUploadJobs] = useState<any[]>([]);
+  const [uploadFeedback, setUploadFeedback] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Desktop navigation tabs
   const desktopNavItems = [
@@ -79,6 +83,41 @@ export default function TripSheet({ initialTrips }: { initialTrips: any[] }) {
     setMounted(true);
   }, []);
 
+  useEffect(() => {
+    if (!mounted || isLoggedIn !== true) return;
+    fetch('/api/dispatch/upload')
+      .then((res) => res.json())
+      .then((data) => setUploadJobs(data.jobs || []))
+      .catch(() => setUploadJobs([]));
+  }, [mounted, isLoggedIn]);
+
+  const refreshTrips = async () => {
+    const res = await fetch('/api/dispatch/trips');
+    if (!res.ok) return;
+    const data = await res.json();
+    setTrips(data || []);
+  };
+
+  const onSelectPdf = async (file?: File) => {
+    if (!file) return;
+    setUploadingPdf(true);
+    setUploadFeedback(null);
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const res = await fetch('/api/dispatch/upload', { method: 'POST', body: form });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Upload failed');
+      setUploadFeedback(`✅ Imported ${data.tripNumber}`);
+      await Promise.all([refreshTrips(), fetch('/api/dispatch/upload').then(r => r.json()).then(d => setUploadJobs(d.jobs || []))]);
+    } catch (error: any) {
+      setUploadFeedback(`❌ ${error.message || 'Upload failed'}`);
+    } finally {
+      setUploadingPdf(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
   // Auth check - redirect to login if not authenticated
   useEffect(() => {
     if (mounted && isLoggedIn === false) {
@@ -89,16 +128,35 @@ export default function TripSheet({ initialTrips }: { initialTrips: any[] }) {
   const calculateTripPay = (trip: any) => {
     const totalMiles = trip.total_miles || 0;
     
-    // Detect Canada vs US based on stops
-    const tripInfo = detectTripCountry(trip.first_stop, trip.last_stop);
-    
-    // Determine rate based on country and mileage
+    // Bhullar Protocol Pay Rates (sync with TripDetailsClient):
+    // - US trips: $1.06/mile
+    // - Canada trips under 1000 miles: $1.26/mile
+    // - Canada trips over 1000 miles: $1.16/mile
+    // Use route field first - MUST check US explicitly before Canada
+    const route = (trip.route || '').toUpperCase();
     let mileRate = 1.06;
-    if (tripInfo.isCanada) {
+    
+    // If route says US, use US rate immediately
+    if (route === 'US') {
+      mileRate = 1.06;
+    } 
+    // Check for Canada provinces in route
+    else if (route.includes('CANADA') || route.includes('QC') || route.includes('ON') || route.includes('BC') || route.includes('AB') || route.includes('MB') || route.includes('SK')) {
+      // Canada rate based on route field
       if (totalMiles < 1000) {
         mileRate = 1.26;
       } else {
         mileRate = 1.16;
+      }
+    } else {
+      // Fall back to stop detection only if route is empty/unknown
+      const tripInfo = detectTripCountry(trip.first_stop, trip.last_stop);
+      if (tripInfo.isCanada) {
+        if (totalMiles < 1000) {
+          mileRate = 1.26;
+        } else {
+          mileRate = 1.16;
+        }
       }
     }
     
@@ -178,18 +236,61 @@ export default function TripSheet({ initialTrips }: { initialTrips: any[] }) {
           ))}
         </nav>
         
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2 md:gap-4">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/pdf"
+            className="hidden"
+            onChange={(e) => onSelectPdf(e.target.files?.[0] || undefined)}
+          />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploadingPdf}
+            className="text-[10px] font-black uppercase tracking-widest bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60 px-4 md:px-6 py-3 rounded-xl border border-emerald-600 transition-all shadow-[0_0_20px_rgba(16,185,129,0.2)]"
+          >
+            {uploadingPdf ? 'Uploading…' : '📄 Upload PDF'}
+          </button>
           <Link href="/dispatch/active" className="hidden md:inline-flex text-[10px] font-black uppercase tracking-widest bg-blue-600 hover:bg-blue-500 px-6 py-3 rounded-xl border border-blue-700 transition-all shadow-[0_0_20px_rgba(37,99,235,0.2)]">
             ⚡ Active Trip
           </Link>
-          <Link href="/" className="text-[10px] font-black uppercase tracking-widest bg-zinc-900 hover:bg-zinc-800 px-6 py-3 rounded-xl border border-zinc-800 transition-all shadow-xl">
+          <Link href="/" className="hidden md:inline-flex text-[10px] font-black uppercase tracking-widest bg-zinc-900 hover:bg-zinc-800 px-6 py-3 rounded-xl border border-zinc-800 transition-all shadow-xl">
             ← Dashboard
           </Link>
           <LogoutButton />
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto">
+      <main className="max-w-7xl mx-auto space-y-4">
+        <div className="md:hidden bg-zinc-900/40 border border-zinc-800 rounded-2xl p-4 flex items-center justify-between gap-3">
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Driver Itinerary PDF</p>
+            <p className="text-[11px] text-zinc-500">Upload and auto-create/merge trip</p>
+          </div>
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploadingPdf}
+            className="bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60 text-[10px] font-black uppercase px-4 py-2.5 rounded-xl border border-emerald-600"
+          >
+            {uploadingPdf ? 'Uploading…' : 'Upload PDF'}
+          </button>
+        </div>
+
+        {(uploadFeedback || uploadJobs.length > 0) && (
+          <div className="bg-zinc-900/30 border border-zinc-800 rounded-2xl p-4">
+            {uploadFeedback && <p className="text-xs font-bold mb-2 text-zinc-200">{uploadFeedback}</p>}
+            {uploadJobs.slice(0, 3).map((job) => (
+              <div key={job.id} className="text-[11px] text-zinc-400 flex flex-wrap items-center gap-2 py-1">
+                <span className="font-mono text-zinc-500">#{job.id}</span>
+                <span className={`uppercase font-black ${job.status === 'done' ? 'text-green-500' : job.status === 'failed' ? 'text-red-500' : 'text-yellow-500'}`}>{job.status}</span>
+                <span className="truncate max-w-[220px]">{job.original_filename}</span>
+                {job.trip_number && <Link href={`/dispatch/${job.trip_number}`} className="text-blue-500 hover:underline">{job.trip_number}</Link>}
+                {job.error_message && <span className="text-red-400">{job.error_message}</span>}
+              </div>
+            ))}
+          </div>
+        )}
+
         <div className="bg-zinc-900/20 border border-zinc-900 rounded-[2.5rem] overflow-hidden backdrop-blur-sm shadow-2xl">
           <table className="w-full text-left border-separate border-spacing-0">
             <thead>
@@ -256,10 +357,11 @@ export default function TripSheet({ initialTrips }: { initialTrips: any[] }) {
                     <td className="px-8 py-8 text-center relative z-20">
                       <div className="flex justify-center gap-3">
                         <a 
-                          href={`/pdfs/${trip.trip_number}.pdf`}
+                          href={trip.pdf_path || '#'}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="bg-zinc-800 hover:bg-blue-600 text-[10px] font-black uppercase px-4 py-2 rounded-xl border border-zinc-700 transition-all"
+                          className="bg-zinc-800 hover:bg-blue-600 text-[10px] font-black uppercase px-4 py-2 rounded-xl border border-zinc-700 transition-all disabled:opacity-40"
+                          onClick={(e) => { if (!trip.pdf_path) e.preventDefault(); }}
                         >PDF</a>
                         <button 
                           onClick={(e) => { e.preventDefault(); deleteTrip(trip.trip_number); }}

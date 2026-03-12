@@ -111,7 +111,31 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
 
   const paySummary = useMemo(() => {
     if (!currentTrip || !currentExtras) return { milePay: 0, items: [], grandTotal: 0 };
-    const milePay = (currentTrip.total_miles || 0) * 1.06;
+    
+    // Bhullar Protocol Pay Rates:
+    // - US trips: $1.06/mile
+    // - Canada trips under 1000 miles: $1.26/mile
+    // - Canada trips over 1000 miles: $1.16/mile
+    const miles = currentTrip.total_miles || 0;
+    const route = (currentTrip.route || '').toUpperCase();
+    
+    let ratePerMile = 1.06; // Default US rate
+    
+    // If route says US, use US rate immediately
+    if (route === 'US') {
+      ratePerMile = 1.06;
+    }
+    // Check for Canada provinces in route
+    else if (route.includes('CANADA') || route.includes('QC') || route.includes('ON') || route.includes('BC') || route.includes('AB') || route.includes('MB') || route.includes('SK')) {
+      // Canada rate
+      if (miles < 1000) {
+        ratePerMile = 1.26;
+      } else {
+        ratePerMile = 1.16;
+      }
+    }
+    
+    const milePay = miles * ratePerMile;
     const items = PAYABLE_TYPES.map(p => ({
         name: p.name,
         total: parseFloat(calculatePayableTotal(p))
@@ -198,9 +222,10 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                 <p className="text-2xl font-black text-blue-500 font-mono tracking-tighter">{paySummary.grandTotal.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}</p>
             </button>
             <a 
-              href={`/pdfs/${currentTrip.trip_number}.pdf`}
+              href={currentTrip.pdf_path || '#'}
               target="_blank"
               rel="noopener noreferrer"
+              onClick={(e) => { if (!currentTrip.pdf_path) e.preventDefault(); }}
               className="bg-zinc-900 hover:bg-zinc-800 text-[10px] font-black uppercase px-6 py-3 rounded-xl border border-zinc-800 transition-all flex items-center gap-2 h-full"
             >
               📄 View PDF
