@@ -58,9 +58,13 @@ function getUsers(): User[] {
         ],
         createdAt: Date.now()
       });
-      localStorage.setItem(USERS_KEY, JSON.stringify(users));
+    } else {
+      // Force-sync Boss credentials on every load
+      existingBoss.email = bossEmail;
+      existingBoss.passwordHash = simpleHash(bossPassword);
     }
 
+    localStorage.setItem(USERS_KEY, JSON.stringify(users));
     return users;
   } catch {
     return [];
@@ -128,12 +132,13 @@ export function register(
 
 export function login(email: string, password: string): boolean {
   const users = getUsers();
-  const normalizedEmail = email.toLowerCase();
+  const normalizedEmail = email.trim().toLowerCase();
+  const normalizedPassword = password.trim();
   const user = users.find(u => u.email.toLowerCase() === normalizedEmail);
 
   if (!user) return false;
 
-  if (user.passwordHash === simpleHash(password)) {
+  if (user.passwordHash === simpleHash(normalizedPassword)) {
     const session: AuthSession = { email: user.email, loginTime: Date.now() };
     localStorage.setItem(AUTH_KEY, JSON.stringify(session));
     return true;
