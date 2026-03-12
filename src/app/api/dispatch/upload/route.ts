@@ -1,29 +1,29 @@
 import { NextResponse } from 'next/server';
-import { requireAuth } from '@/lib/require-auth';
 import { writeFile, mkdir } from 'fs/promises';
 import { join } from 'path';
 import Database from 'better-sqlite3';
 import path from 'path';
+import { ensureDispatchAuthSchemaAndSeed } from '@/lib/dispatch-auth';
+import { ensureTripOwnership, requireAccess } from '@/lib/ownership';
 
-// --- Placeholder for PDF extraction logic ---
-async function extractTextFromPdf(buffer: Buffer): Promise<string> {
-  // In a real scenario, you would use a library like pdf-parse
-  // For this example, we'll just return a placeholder.
-  console.log("PDF extraction would happen here.");
-  return "--- Extracted PDF Content ---";
+async function extractTextFromPdf(_buffer: Buffer): Promise<string> {
+  return '--- Extracted PDF Content ---';
 }
 
 export async function POST(req: Request) {
   try {
-    const unauthorized = requireAuth(req);
-    if (unauthorized) return unauthorized;
+    ensureDispatchAuthSchemaAndSeed();
+    const { access, response } = requireAccess(req);
+    if (response || !access) return response;
+
     const formData = await req.formData();
     const file = formData.get('file') as File;
     const tripNumber = formData.get('tripNumber') as string;
+    if (!file || !tripNumber) return NextResponse.json({ error: 'Missing file or tripNumber' }, { status: 400 });
 
-    if (!file || !tripNumber) {
-      return NextResponse.json({ error: 'Missing file or tripNumber' }, { status: 400 });
-    }
+    const dbPath = path.resolve(process.cwd(), 'dispatch.db');
+    const db = new Database(dbPath);
+    if (!ensureTripOwnership(db, access, tripNumber)) return NextResponse.json({ error: 'Trip not found' }, { status: 404 });
 
     const bytes = await file.arrayBuffer();
     const buffer = Buffer.from(bytes);
@@ -36,24 +36,14 @@ export async function POST(req: Request) {
     await writeFile(filePath, buffer);
 
     const relativePath = `/itineraries/${filename}`;
-
-    // --- PDF Extraction and DB Update ---
     const rawPdfData = await extractTextFromPdf(buffer);
 
-    const dbPath = path.resolve(process.cwd(), 'dispatch.db');
-    const db = new Database(dbPath);
-
-    // Check if there are existing user notes
-    const trip = db.prepare('SELECT notes FROM trips WHERE trip_number = ?').get(tripNumber) as { notes: string | null };
-
-    // Update pdf_path and raw_data. Preserve existing notes.
-    db.prepare(
-      'UPDATE trips SET pdf_path = ?, raw_data = ? WHERE trip_number = ?'
-    ).run(relativePath, rawPdfData, tripNumber);
+    const result = db.prepare('UPDATE trips SET pdf_path = ?, raw_data = ? WHERE trip_number = ? AND (? OR user_id = ?)')
+      .run(relativePath, rawPdfData, tripNumber, access.adminMode ? 1 : 0, access.session.userId);
+    if (!result.changes) return NextResponse.json({ error: 'Trip not found' }, { status: 404 });
 
     return NextResponse.json({ success: true, path: relativePath });
   } catch (error: any) {
-    console.error('Upload error:', error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

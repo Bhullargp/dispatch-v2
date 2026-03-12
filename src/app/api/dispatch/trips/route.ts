@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
 import Database from 'better-sqlite3';
 import path from 'path';
-import { requireAccess, userScopedWhere } from '@/lib/ownership';
 import { ensureDispatchAuthSchemaAndSeed } from '@/lib/dispatch-auth';
+import { requireAccess, userScopedWhere } from '@/lib/ownership';
 
 const dbPath = path.resolve(process.cwd(), 'dispatch.db');
 
@@ -14,16 +14,9 @@ export async function GET(request: Request) {
 
     const db = new Database(dbPath);
     const scope = userScopedWhere(access, 'user_id');
-    const trip = db.prepare(`
-      SELECT * FROM trips
-      WHERE LOWER(status) = 'active' AND ${scope.clause}
-      ORDER BY start_date DESC, trip_number DESC
-      LIMIT 1
-    `).get(...scope.params) as any;
-
-    if (!trip) return NextResponse.json({ error: 'Active trip not found' }, { status: 404 });
-    return NextResponse.json(trip);
-  } catch {
-    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+    const trips = db.prepare(`SELECT * FROM trips WHERE ${scope.clause} ORDER BY trip_number DESC`).all(...scope.params);
+    return NextResponse.json(trips);
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

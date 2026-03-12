@@ -82,6 +82,35 @@ export function getDb() {
   return new Database(dbPath);
 }
 
+function addUserIdIfMissing(db: Database.Database, table: string) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (!columns.some((c) => c.name === 'user_id')) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN user_id INTEGER REFERENCES users(id)`);
+  }
+}
+
+function ensureUserIsolationSchema(db: Database.Database, adminId: number) {
+  const existingTables = new Set(
+    (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>).map((r) => r.name)
+  );
+
+  const targetTables = ['trips', 'stops', 'fuel', 'extra_pay', 'status_history', 'trailer_inventory'];
+  for (const table of targetTables) {
+    if (existingTables.has(table)) addUserIdIfMissing(db, table);
+  }
+
+  const ocrRelated = ['uploads', 'ocr_uploads', 'ocr_results', 'ocr_pages', 'upload_jobs'];
+  for (const table of ocrRelated) {
+    if (existingTables.has(table)) addUserIdIfMissing(db, table);
+  }
+
+  for (const table of [...targetTables, ...ocrRelated]) {
+    if (!existingTables.has(table)) continue;
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_${table}_user_id ON ${table}(user_id)`);
+    db.prepare(`UPDATE ${table} SET user_id = ? WHERE user_id IS NULL`).run(adminId);
+  }
+}
+
 export function ensureDispatchAuthSchemaAndSeed() {
   const db = getDb();
 
@@ -101,12 +130,6 @@ export function ensureDispatchAuthSchemaAndSeed() {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
   `);
-
-  const tripColumns = db.prepare(`PRAGMA table_info(trips)`).all() as Array<{ name: string }>;
-  const hasUserId = tripColumns.some((c) => c.name === 'user_id');
-  if (!hasUserId) {
-    db.exec('ALTER TABLE trips ADD COLUMN user_id INTEGER REFERENCES users(id)');
-  }
 
   const adminEmail = 'admin@dispatch.local';
   const adminUsername = 'admin';
@@ -167,7 +190,7 @@ export function ensureDispatchAuthSchemaAndSeed() {
     );
   }
 
-  db.prepare('UPDATE trips SET user_id = ? WHERE user_id IS NULL').run(adminId);
+  ensureUserIsolationSchema(db, adminId);
 
   return { adminId, sessionCookie: SESSION_COOKIE, sessionTtlMs: SESSION_TTL_MS };
 }
