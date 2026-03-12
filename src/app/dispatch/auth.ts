@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react';
 
 const AUTH_KEY = 'dm_auth';
 const USERS_KEY = 'dm_users';
+const RESET_MARKER_KEY = 'dm_auth_reset_v2';
 const SESSION_DURATION = 60 * 60 * 1000; // 1 hour
 
 interface AuthSession {
@@ -30,8 +31,18 @@ function simpleHash(str: string): string {
 
 function getUsers(): User[] {
   try {
+    // One-time credential reset requested by Boss:
+    // wipe saved auth/users from browser localStorage, then allow fresh signup.
+    const resetDone = localStorage.getItem(RESET_MARKER_KEY);
+    if (!resetDone) {
+      localStorage.removeItem(AUTH_KEY);
+      localStorage.removeItem(USERS_KEY);
+      localStorage.setItem(RESET_MARKER_KEY, '1');
+    }
+
     const raw = localStorage.getItem(USERS_KEY);
-    return raw ? JSON.parse(raw) : [];
+    const users = raw ? JSON.parse(raw) : [];
+    return users;
   } catch {
     return [];
   }
@@ -98,16 +109,17 @@ export function register(
 
 export function login(email: string, password: string): boolean {
   const users = getUsers();
-  const user = users.find(u => u.email.toLowerCase() === email.toLowerCase());
-  
+  const normalizedEmail = email.toLowerCase();
+  const user = users.find(u => u.email.toLowerCase() === normalizedEmail);
+
   if (!user) return false;
-  
+
   if (user.passwordHash === simpleHash(password)) {
     const session: AuthSession = { email: user.email, loginTime: Date.now() };
     localStorage.setItem(AUTH_KEY, JSON.stringify(session));
     return true;
   }
-  
+
   return false;
 }
 
