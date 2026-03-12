@@ -16,11 +16,12 @@ type ResetStep = 'email' | 'questions' | 'done';
 
 export default function LoginPage() {
   const router = useRouter();
-  const [mode, setMode] = useState<'signin' | 'signup' | 'reset'>('signin');
+  const [mode, setMode] = useState<'signin' | 'signup' | 'reset' | 'force-change'>('signin');
   const [login, setLogin] = useState('admin');
   const [email, setEmail] = useState('admin@dispatch.local');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
   const [answers, setAnswers] = useState(['', '', '']);
@@ -35,6 +36,16 @@ export default function LoginPage() {
     () => selectedQ.map((idx, i) => ({ question: SECURITY_QUESTIONS[idx], answer: answers[i].trim() })),
     [selectedQ, answers]
   );
+
+  React.useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const sp = new URLSearchParams(window.location.search);
+    if (sp.get('forcePasswordChange') === '1') {
+      setMode('force-change');
+      setSuccess('Password change is required before continuing.');
+      setError('');
+    }
+  }, []);
 
   const validateSignup = () => {
     if (!login.trim()) throw new Error('Username is required');
@@ -62,6 +73,31 @@ export default function LoginPage() {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Login failed');
+        if (data?.user?.mustChangePassword) {
+          setMode('force-change');
+          setCurrentPassword(password);
+          setNewPassword('');
+          setConfirmNewPassword('');
+          setSuccess('Your password was reset by an admin. Set a new password to continue.');
+          return;
+        }
+        router.push('/dispatch');
+        return;
+      }
+
+      if (mode === 'force-change') {
+        if (!currentPassword) throw new Error('Current temporary password is required');
+        if (newPassword.length < 8) throw new Error('New password must be at least 8 characters');
+        if (newPassword !== confirmNewPassword) throw new Error('New passwords do not match');
+
+        const res = await fetch('/api/auth/change-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ currentPassword, newPassword })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Password change failed');
         router.push('/dispatch');
         return;
       }
@@ -132,7 +168,7 @@ export default function LoginPage() {
       <div className="w-full max-w-md bg-zinc-900/20 border border-zinc-900 rounded-[2.5rem] p-8 md:p-10">
         <h1 className="text-2xl font-black uppercase text-center text-white mb-6">Dispatch Login</h1>
 
-        {mode !== 'reset' && (
+        {mode !== 'reset' && mode !== 'force-change' && (
           <div className="flex bg-zinc-900/50 rounded-xl p-1 mb-6">
             <button type="button" onClick={() => setMode('signin')} className={`flex-1 py-2 text-xs font-black uppercase rounded-lg ${mode === 'signin' ? 'bg-blue-600 text-white' : 'text-zinc-500'}`}>Sign In</button>
             <button type="button" onClick={() => setMode('signup')} className={`flex-1 py-2 text-xs font-black uppercase rounded-lg ${mode === 'signup' ? 'bg-blue-600 text-white' : 'text-zinc-500'}`}>Sign Up</button>
@@ -140,11 +176,13 @@ export default function LoginPage() {
         )}
 
         <form onSubmit={submit} className="space-y-4">
-          {mode !== 'reset' && (
+          {mode !== 'reset' && mode !== 'force-change' && (
             <input className="w-full bg-zinc-900/50 border border-zinc-800 rounded-xl px-4 py-3 text-white" placeholder="Username or Email" value={login} onChange={(e) => setLogin(e.target.value)} required />
           )}
 
-          <input className="w-full bg-zinc-900/50 border border-zinc-800 rounded-xl px-4 py-3 text-white" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required={mode !== 'signin'} type="email" />
+          {mode !== 'force-change' && (
+            <input className="w-full bg-zinc-900/50 border border-zinc-800 rounded-xl px-4 py-3 text-white" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required={mode !== 'signin'} type="email" />
+          )}
 
           {mode === 'signin' && <input type="password" className="w-full bg-zinc-900/50 border border-zinc-800 rounded-xl px-4 py-3 text-white" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} required />}
 
@@ -197,11 +235,22 @@ export default function LoginPage() {
             </>
           )}
 
+          {mode === 'force-change' && (
+            <>
+              <div className="text-xs text-amber-300 bg-amber-900/20 border border-amber-700 rounded-xl px-4 py-3">
+                Password change required before continuing.
+              </div>
+              <input type="password" className="w-full bg-zinc-900/50 border border-zinc-800 rounded-xl px-4 py-3 text-white" placeholder="Current temporary password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} required />
+              <input type="password" className="w-full bg-zinc-900/50 border border-zinc-800 rounded-xl px-4 py-3 text-white" placeholder="New Password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required />
+              <input type="password" className="w-full bg-zinc-900/50 border border-zinc-800 rounded-xl px-4 py-3 text-white" placeholder="Confirm New Password" value={confirmNewPassword} onChange={(e) => setConfirmNewPassword(e.target.value)} required />
+            </>
+          )}
+
           {error && <div className="text-red-400 text-sm">{error}</div>}
           {success && <div className="text-green-400 text-sm">{success}</div>}
 
           <button className="w-full bg-blue-600 hover:bg-blue-500 text-white font-black uppercase tracking-widest py-3 rounded-xl disabled:opacity-70" type="submit" disabled={loading}>
-            {loading ? 'Please wait...' : mode === 'signin' ? 'Sign In' : mode === 'signup' ? 'Create Account' : resetStep === 'email' ? 'Continue' : 'Reset Password'}
+            {loading ? 'Please wait...' : mode === 'signin' ? 'Sign In' : mode === 'signup' ? 'Create Account' : mode === 'force-change' ? 'Update Password' : resetStep === 'email' ? 'Continue' : 'Reset Password'}
           </button>
 
           {mode === 'signin' && <button type="button" className="w-full text-xs text-zinc-500" onClick={() => { setMode('reset'); setResetStep('email'); setResetQuestions([]); setAnswers(['', '', '']); setError(''); setSuccess(''); }}>Forgot Password?</button>}

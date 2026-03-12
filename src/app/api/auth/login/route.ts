@@ -23,14 +23,20 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
     }
 
+    const mustChangePassword = !!user.force_password_change;
+
     const token = createSessionToken({
       userId: user.id,
       username: user.username,
       email: user.email,
-      role: user.role
+      role: user.role,
+      mustChangePassword
     });
 
-    const res = NextResponse.json({ success: true, user: { id: user.id, username: user.username, email: user.email, role: user.role } });
+    const res = NextResponse.json({
+      success: true,
+      user: { id: user.id, username: user.username, email: user.email, role: user.role, mustChangePassword }
+    });
     res.cookies.set(authConfig.sessionCookie, token, {
       httpOnly: true,
       sameSite: 'lax',

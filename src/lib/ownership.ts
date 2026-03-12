@@ -7,6 +7,7 @@ export type AccessContext = {
   session: SessionPayload;
   isAdmin: boolean;
   adminMode: boolean;
+  mustChangePassword: boolean;
 };
 
 function parseCookieHeader(cookieHeader: string): Record<string, string> {
@@ -42,7 +43,8 @@ export function getRequestAccess(request: Request): AccessContext | null {
   return {
     session,
     isAdmin,
-    adminMode: isAdmin && adminModeRequested
+    adminMode: isAdmin && adminModeRequested,
+    mustChangePassword: !!session.mustChangePassword
   };
 }
 
@@ -58,13 +60,17 @@ export async function getServerAccess(adminModeFlag?: string | string[]): Promis
   return {
     session,
     isAdmin,
-    adminMode: isAdmin && parseAdminModeValue(rawFlag)
+    adminMode: isAdmin && parseAdminModeValue(rawFlag),
+    mustChangePassword: !!session.mustChangePassword
   };
 }
 
-export function requireAccess(request: Request): { access?: AccessContext; response?: NextResponse } {
+export function requireAccess(request: Request, options?: { allowWhenPasswordChangeRequired?: boolean }): { access?: AccessContext; response?: NextResponse } {
   const access = getRequestAccess(request);
   if (!access) return { response: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) };
+  if (access.mustChangePassword && !options?.allowWhenPasswordChangeRequired) {
+    return { response: NextResponse.json({ error: 'Password change required' }, { status: 403 }) };
+  }
   return { access };
 }
 

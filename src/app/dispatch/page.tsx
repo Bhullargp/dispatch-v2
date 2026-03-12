@@ -13,6 +13,7 @@ export default async function TripSheetPage({ searchParams }: { searchParams?: P
   const sp = searchParams ? await searchParams : undefined;
   const access = await getServerAccess(sp?.adminMode);
   if (!access) redirect('/dispatch/login');
+  if (access.mustChangePassword) redirect('/dispatch/login?forcePasswordChange=1');
 
   const db = new Database(dbPath);
   const scope = userScopedWhere(access, 't.user_id');
@@ -28,5 +29,5 @@ export default async function TripSheetPage({ searchParams }: { searchParams?: P
     LIMIT 50
   `).all(...scope.params);
 
-  return <TripSheetClient initialTrips={trips} />;
+  return <TripSheetClient initialTrips={trips} isAdmin={access.isAdmin} />;
 }

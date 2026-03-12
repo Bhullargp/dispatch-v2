@@ -17,7 +17,8 @@ export async function GET() {
       id: payload.userId,
       username: payload.username,
       email: payload.email,
-      role: payload.role
+      role: payload.role,
+      mustChangePassword: !!payload.mustChangePassword
     }
   });
 }

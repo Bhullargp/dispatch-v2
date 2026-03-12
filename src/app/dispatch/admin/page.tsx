@@ -8,6 +8,7 @@ import { getServerAccess } from '@/lib/ownership';
 import { ensureUploadSchema } from '@/lib/pdf-processing';
 import UploadJobActions from './UploadJobActions';
 import RunUploadWorkerButton from './RunUploadWorkerButton';
+import AdminUserPasswordReset from './AdminUserPasswordReset';
 
 const dbPath = path.resolve(process.cwd(), 'dispatch.db');
 
@@ -15,6 +16,7 @@ export default async function AdminInspectionPage() {
   ensureDispatchAuthSchemaAndSeed();
   const access = await getServerAccess();
   if (!access) redirect('/dispatch/login');
+  if (access.mustChangePassword) redirect('/dispatch/login?forcePasswordChange=1');
   if (!access.isAdmin) redirect('/dispatch');
 
   const db = new Database(dbPath);
@@ -78,7 +80,7 @@ export default async function AdminInspectionPage() {
           <table className="w-full text-left text-sm">
             <thead className="text-zinc-500 text-xs uppercase">
               <tr>
-                <th className="py-2">User</th><th>Email</th><th>Role</th><th className="text-right">Trips</th><th className="text-right">Uploads</th>
+                <th className="py-2">User</th><th>Email</th><th>Role</th><th className="text-right">Trips</th><th className="text-right">Uploads</th><th>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -89,6 +91,9 @@ export default async function AdminInspectionPage() {
                   <td><span className={`px-2 py-1 rounded text-xs ${u.role === 'admin' ? 'bg-blue-900/40 text-blue-300' : 'bg-zinc-800 text-zinc-300'}`}>{u.role}</span></td>
                   <td className="text-right">{u.trip_count}</td>
                   <td className="text-right">{u.upload_count}</td>
+                  <td>
+                    <AdminUserPasswordReset userId={u.id} username={u.username} isSelf={u.id === access.session.userId} />
+                  </td>
                 </tr>
               ))}
             </tbody>

@@ -13,6 +13,7 @@ export default async function TripDetailPage({ params, searchParams }: { params:
   const sp = searchParams ? await searchParams : undefined;
   const access = await getServerAccess(sp?.adminMode);
   if (!access) redirect('/dispatch/login');
+  if (access.mustChangePassword) redirect('/dispatch/login?forcePasswordChange=1');
 
   const { trip_number } = await params;
   const db = new Database(dbPath);

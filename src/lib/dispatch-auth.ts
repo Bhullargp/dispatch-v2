@@ -12,6 +12,7 @@ export type SessionPayload = {
   username: string;
   email: string;
   role: string;
+  mustChangePassword: boolean;
   exp: number;
 };
 
@@ -82,11 +83,15 @@ export function getDb() {
   return new Database(dbPath);
 }
 
-function addUserIdIfMissing(db: Database.Database, table: string) {
+function addColumnIfMissing(db: Database.Database, table: string, column: string, definition: string) {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-  if (!columns.some((c) => c.name === 'user_id')) {
-    db.exec(`ALTER TABLE ${table} ADD COLUMN user_id INTEGER REFERENCES users(id)`);
+  if (!columns.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
+}
+
+function addUserIdIfMissing(db: Database.Database, table: string) {
+  addColumnIfMissing(db, table, 'user_id', 'INTEGER REFERENCES users(id)');
 }
 
 function ensureUserIsolationSchema(db: Database.Database, adminId: number) {
@@ -127,6 +132,24 @@ export function ensureDispatchAuthSchemaAndSeed() {
       security_a2_hash TEXT NOT NULL,
       security_q3 TEXT NOT NULL,
       security_a3_hash TEXT NOT NULL,
+      force_password_change INTEGER NOT NULL DEFAULT 0,
+      last_password_reset_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
+  addColumnIfMissing(db, 'users', 'force_password_change', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing(db, 'users', 'last_password_reset_at', 'TEXT');
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS admin_audit_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      actor_user_id INTEGER NOT NULL REFERENCES users(id),
+      actor_username TEXT NOT NULL,
+      target_user_id INTEGER NOT NULL REFERENCES users(id),
+      target_username TEXT NOT NULL,
+      action TEXT NOT NULL,
+      metadata TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
   `);
@@ -175,7 +198,8 @@ export function ensureDispatchAuthSchemaAndSeed() {
       SET password_hash = ?, role = ?,
           security_q1 = ?, security_a1_hash = ?,
           security_q2 = ?, security_a2_hash = ?,
-          security_q3 = ?, security_a3_hash = ?
+          security_q3 = ?, security_a3_hash = ?,
+          force_password_change = 0
       WHERE id = ?
     `).run(
       hashSecret(adminPassword),
@@ -283,7 +307,13 @@ export function resetPasswordBySecurityAnswers(email: string, answers: string[],
   if (!ok) return false;
 
   const db = getDb();
-  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashSecret(newPassword), user.id);
+  db.prepare(`
+    UPDATE users
+    SET password_hash = ?,
+        force_password_change = 0,
+        last_password_reset_at = datetime('now')
+    WHERE id = ?
+  `).run(hashSecret(newPassword), user.id);
   return true;
 }
 
