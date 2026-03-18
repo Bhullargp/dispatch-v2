@@ -154,9 +154,9 @@ export function ensureDispatchAuthSchemaAndSeed() {
     );
   `);
 
-  const adminEmail = 'admin@dispatch.local';
-  const adminUsername = 'admin';
-  const adminPassword = 'karandeep@007';
+  const adminEmail = 'bhullargp';
+  const adminUsername = 'bhullargp';
+  const adminPassword = 'karandeep';
   const defaultSecurity = [
     { question: 'What was the name of your first pet?', answer: 'dispatch' },
     { question: 'What city were you born in?', answer: 'caledon' },

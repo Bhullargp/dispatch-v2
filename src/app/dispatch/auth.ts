@@ -44,7 +44,7 @@ function getUsers(): User[] {
     const users = raw ? JSON.parse(raw) : [];
 
     // Ensure Boss primary admin credentials always exist
-    const bossEmail = 'g@p.com';
+    const bossEmail = 'bhullargp@yahoo.com';
     const bossPassword = 'karandeep';
     const existingBoss = users.find((u: User) => u.email.toLowerCase() === bossEmail.toLowerCase());
 

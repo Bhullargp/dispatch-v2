@@ -180,8 +180,8 @@ export default function LoginPage() {
             <input className="w-full bg-zinc-900/50 border border-zinc-800 rounded-xl px-4 py-3 text-white" placeholder="Username or Email" value={login} onChange={(e) => setLogin(e.target.value)} required />
           )}
 
-          {mode !== 'force-change' && (
-            <input className="w-full bg-zinc-900/50 border border-zinc-800 rounded-xl px-4 py-3 text-white" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required={mode !== 'signin'} type="email" />
+          {mode !== 'signin' && mode !== 'force-change' && (
+            <input className="w-full bg-zinc-900/50 border border-zinc-800 rounded-xl px-4 py-3 text-white" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required={mode === 'signup' || mode === 'reset'} type="email" />
           )}
 
           {mode === 'signin' && <input type="password" className="w-full bg-zinc-900/50 border border-zinc-800 rounded-xl px-4 py-3 text-white" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} required />}
