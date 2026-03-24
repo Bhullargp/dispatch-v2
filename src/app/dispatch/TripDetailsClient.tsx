@@ -133,27 +133,40 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
   const paySummary = useMemo(() => {
     if (!currentTrip || !currentExtras) return { milePay: 0, items: [], grandTotal: 0 };
     
-    // Bhullar Protocol Pay Rates:
-    // - US trips: $1.06/mile
-    // - Canada trips under 1000 miles: $1.26/mile
-    // - Canada trips over 1000 miles: $1.16/mile
+    // Bhullar Protocol Pay Rates (ACTUALLY CORRECT):
+    // - USA miles: $1.06/mile
+    // - Canada under 1000 miles: $1.26/mile  
+    // - Canada over 1000 miles: $1.16/mile
+    
     const miles = currentTrip.total_miles || 0;
-    const route = (currentTrip.route || '').toUpperCase();
+    const stops = currentStops || [];
     
-    let ratePerMile = 1.06; // Default US rate
+    // USA state codes
+    const usaStates = ['AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC'];
     
-    // If route says US, use US rate immediately
-    if (route === 'US') {
-      ratePerMile = 1.06;
-    }
-    // Check for Canada provinces in route
-    else if (route.includes('CANADA') || route.includes('QC') || route.includes('ON') || route.includes('BC') || route.includes('AB') || route.includes('MB') || route.includes('SK')) {
-      // Canada rate
-      if (miles < 1000) {
-        ratePerMile = 1.26;
-      } else {
-        ratePerMile = 1.16;
-      }
+    // Canada province codes
+    const canadaProvinces = ['ON','QC','BC','AB','MB','SK','NS','NB','PE','NL','NT','YT','NU'];
+    
+    // Check if ANY stop is in USA
+    const hasUSA = stops.some(stop => {
+      const loc = (stop.location || '').toUpperCase();
+      return usaStates.some(state => loc.includes(state));
+    });
+    
+    // Check if ALL stops are Canada
+    const allCanada = !hasUSA && stops.some(stop => {
+      const loc = (stop.location || '').toUpperCase();
+      return canadaProvinces.some(prov => loc.includes(prov));
+    });
+    
+    // If any USA miles → use USA rate ($1.06)
+    // If all Canada miles → use Canada rate based on distance
+    let ratePerMile = 1.06; // Default USA rate
+    let rateLabel = 'USA';
+    
+    if (allCanada) {
+      rateLabel = miles < 1000 ? 'CAD (<1000mi)' : 'CAD (>1000mi)';
+      ratePerMile = miles < 1000 ? 1.26 : 1.16;
     }
     
     const milePay = miles * ratePerMile;
@@ -168,9 +181,13 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
     return {
         milePay,
         items,
-        grandTotal
+        grandTotal,
+        hasUSA,
+        allCanada,
+        ratePerMile,
+        rateLabel
     };
-  }, [currentTrip?.total_miles, currentExtras, extraMinutes]);
+  }, [currentTrip?.total_miles, currentExtras, extraMinutes, currentStops]);
 
   const openInventory = (field: string) => {
     setActiveEquipmentField(field);
@@ -568,7 +585,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                 <div className="bg-zinc-900/50 p-6 rounded-[2rem] border border-zinc-900 flex justify-between items-center group">
                   <div>
                     <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-1">Base Mileage Pay</p>
-                    <p className="text-xl font-mono font-black">{currentTrip.total_miles || 0} mi × $1.06</p>
+                    <p className="text-xl font-mono font-black">{currentTrip.total_miles || 0} mi × ${paySummary.ratePerMile?.toFixed(2) || '1.06'} ({paySummary.rateLabel || 'USA'})</p>
                   </div>
                   <p className="text-2xl font-black text-white font-mono">{paySummary.milePay.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}</p>
                 </div>
