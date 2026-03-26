@@ -28,6 +28,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
   const [showPayBreakdown, setShowPayBreakdown] = useState(false);
   const [activeEquipmentField, setActiveEquipmentField] = useState<string | null>(null);
   const [extraMinutes, setExtraMinutes] = useState<{[key: string]: number}>({});
+  const [rateInput, setRateInput] = useState<string>((trip.manual_rate || 1.06).toString());
   const [showAddHUD, setShowAddHUD] = useState(false);
   const [showAllPayables, setShowAllPayables] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -37,6 +38,11 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
   const [addingFuel, setAddingFuel] = useState(false);
 
   useEffect(() => { setMounted(true); }, []);
+  useEffect(() => {
+    if (currentTrip?.manual_rate !== undefined) {
+      setRateInput((currentTrip.manual_rate || 1.06).toString());
+    }
+  }, [currentTrip?.manual_rate]);
 
   const formatDateDisplay = (dateStr: string | null) => {
     if (!dateStr) return '---';
@@ -92,7 +98,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
   const updatePayableQty = async (typeName: string, delta: number) => {
     const existing = currentExtras.filter(e => e.type === typeName);
     const payable = PAYABLE_TYPES.find(p => p.name === typeName);
-    
+
     let nextExtras = [...currentExtras];
     if (delta > 0) {
       const newItem = { type: typeName, amount: payable?.rate || 0, quantity: 1 };
@@ -132,49 +138,72 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
 
   const paySummary = useMemo(() => {
     if (!currentTrip || !currentExtras) return { milePay: 0, items: [], grandTotal: 0 };
-    
+
     // Bhullar Protocol Pay Rates (ACTUALLY CORRECT):
     // - USA miles: $1.06/mile
-    // - Canada under 1000 miles: $1.26/mile  
+    // - Canada under 1000 miles: $1.26/mile
     // - Canada over 1000 miles: $1.16/mile
-    
+
     const miles = currentTrip.total_miles || 0;
     const stops = currentStops || [];
-    
+
     // USA state codes
     const usaStates = ['AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC'];
-    
+
     // Canada province codes
     const canadaProvinces = ['ON','QC','BC','AB','MB','SK','NS','NB','PE','NL','NT','YT','NU'];
-    
-    // Check if ANY stop is in USA
-    const hasUSA = stops.some(stop => {
+
+    // Count Canadian and USA stops
+    let canadaCount = 0;
+    let usaCount = 0;
+
+    stops.forEach((stop) => {
       const loc = (stop.location || '').toUpperCase();
-      return usaStates.some(state => loc.includes(state));
+      if (!loc) return;
+      // Check for province code in location (e.g., "Caledon, ON" or "Toronto ON")
+      const provinceMatch = loc.match(/\b([A-Z]{2})\b/);
+      if (provinceMatch) {
+        const province = provinceMatch[1];
+        if (canadaProvinces.includes(province)) {
+          canadaCount++;
+        } else {
+          usaCount++;
+        }
+        return;
+      }
+      // Also check if location contains Canadian city names
+      const canadaKeywords = ['Ontario', 'Quebec', 'British Columbia', 'Alberta', 'Manitoba', 'Saskatchewan', 'Nova Scotia', 'New Brunswick', 'Newfoundland', 'Prince Edward'];
+      if (canadaKeywords.some(keyword => loc.includes(keyword))) {
+        canadaCount++;
+      } else {
+        usaCount++;
+      }
     });
-    
-    // Check if ALL stops are Canada
-    const allCanada = !hasUSA && stops.some(stop => {
-      const loc = (stop.location || '').toUpperCase();
-      return canadaProvinces.some(prov => loc.includes(prov));
-    });
-    
-    // If any USA miles → use USA rate ($1.06)
-    // If all Canada miles → use Canada rate based on distance
-    let ratePerMile = 1.06; // Default USA rate
-    let rateLabel = 'USA';
-    
-    if (allCanada) {
-      rateLabel = miles < 1000 ? 'CAD (<1000mi)' : 'CAD (>1000mi)';
-      ratePerMile = miles < 1000 ? 1.26 : 1.16;
+
+    // Check for manual rate override first
+    let ratePerMile = currentTrip.manual_rate || 1.06; // Use manual rate if set, else default
+    let rateLabel = currentTrip.manual_rate ? 'MANUAL' : 'USA';
+    let allCanada = false;
+
+    // If no manual rate, auto-calculate based on stops
+    if (!currentTrip.manual_rate) {
+      if (canadaCount >= usaCount) {
+        allCanada = true;
+        rateLabel = miles < 1000 ? 'CAD (<1000mi)' : 'CAD (>1000mi)';
+        ratePerMile = miles < 1000 ? 1.26 : 1.16;
+      }
+    } else {
+      // Manual rate set - verify it's reasonable
+      rateLabel = `MANUAL ($${currentTrip.manual_rate}/mi)`;
     }
-    
+
+    const hasUSA = usaCount > 0;
     const milePay = miles * ratePerMile;
     const items = PAYABLE_TYPES.map(p => ({
         name: p.name,
         total: parseFloat(calculatePayableTotal(p))
     })).filter(i => i.total > 0);
-    
+
     const extrasTotal = items.reduce((acc, curr) => acc + curr.total, 0);
     const grandTotal = milePay + extrasTotal;
 
@@ -185,9 +214,10 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
         hasUSA,
         allCanada,
         ratePerMile,
-        rateLabel
+        rateLabel,
+        miles
     };
-  }, [currentTrip?.total_miles, currentExtras, extraMinutes, currentStops]);
+  }, [currentTrip?.total_miles, currentTrip?.manual_rate, currentExtras, extraMinutes, currentStops]);
 
   const openInventory = (field: string) => {
     setActiveEquipmentField(field);
@@ -228,16 +258,16 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
             <div className="flex items-center gap-4 mt-2">
               <div className="flex items-center gap-2">
                 <span className={`w-2 h-2 rounded-full ${
-                  currentTrip.status === 'Active' ? 'bg-blue-500 animate-pulse' : 
-                  currentTrip.status === 'Completed' ? 'bg-green-500' : 
-                  currentTrip.status === 'Not Started' ? 'bg-yellow-500' : 
-                  currentTrip.status === 'Incomplete' ? 'bg-red-500' : 
-                  currentTrip.status === 'Cancelled' ? 'bg-orange-500' : 
+                  currentTrip.status === 'Active' ? 'bg-blue-500 animate-pulse' :
+                  currentTrip.status === 'Completed' ? 'bg-green-500' :
+                  currentTrip.status === 'Not Started' ? 'bg-yellow-500' :
+                  currentTrip.status === 'Incomplete' ? 'bg-red-500' :
+                  currentTrip.status === 'Cancelled' ? 'bg-orange-500' :
                   'bg-zinc-500'}`} />
                 <span className="text-[10px] font-bold uppercase text-zinc-500 tracking-widest">{currentTrip.status}</span>
               </div>
-              <select 
-                value={currentTrip.status || 'Active'} 
+              <select
+                value={currentTrip.status || 'Active'}
                 onChange={(e) => updateField('status', e.target.value)}
                 className="bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1 text-[10px] font-black uppercase text-zinc-400 outline-none focus:border-blue-500 transition-all cursor-pointer"
               >
@@ -252,14 +282,52 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
           </div>
         </div>
         <div className="flex items-center gap-4">
-            <button 
+            <button
                 onClick={() => setShowPayBreakdown(true)}
                 className="bg-zinc-900/50 border border-blue-600/30 px-6 py-3 rounded-2xl text-right hover:border-blue-500 transition-all group"
             >
                 <p className="text-[9px] font-black text-zinc-500 uppercase tracking-widest leading-none mb-1 group-hover:text-blue-400">Estimated Total Pay ⓘ</p>
                 <p className="text-2xl font-black text-blue-500 font-mono tracking-tighter">{paySummary.grandTotal.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}</p>
+                <p className="text-[8px] text-zinc-600 mt-1">{paySummary.rateLabel} • {currentTrip.total_miles || 0} mi</p>
             </button>
-            <a 
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center gap-2">
+                <label className="text-[9px] font-black text-zinc-500 uppercase tracking-widest">Rate/mi:</label>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-zinc-400">$</span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={rateInput}
+                    onChange={(e) => setRateInput(e.target.value)}
+                    onBlur={() => {
+                      const rate = parseFloat(rateInput);
+                      if (rate > 0) {
+                        updateField('manual_rate', rate);
+                        updateField('rate_type', 'manual');
+                      }
+                    }}
+                    className="w-20 bg-black/40 border border-zinc-800 rounded px-2 py-1 text-sm font-mono font-black text-green-400 focus:border-green-500 outline-none"
+                  />
+                  <span className="text-[10px] text-zinc-400">/mi</span>
+                </div>
+                {currentTrip.manual_rate && (
+                  <button
+                    onClick={() => {
+                      updateField('manual_rate', null);
+                      updateField('rate_type', 'auto');
+                    }}
+                    className="text-[9px] text-orange-400 hover:text-orange-300"
+                  >
+                    Reset
+                  </button>
+                )}
+              </div>
+              <p className="text-[8px] text-zinc-600">
+                {currentTrip.manual_rate ? '✓ Manual override active' : 'Auto: ' + paySummary.rateLabel}
+              </p>
+            </div>
+            <a
               href={currentTrip.pdf_path || '#'}
               target="_blank"
               rel="noopener noreferrer"
@@ -274,12 +342,12 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
       <main className="max-w-6xl mx-auto space-y-8 pb-20">
         {(isSaving || actionError || actionSuccess) && (
           <div className="text-xs font-bold rounded-xl border px-4 py-3 bg-zinc-900/50 border-zinc-800">
-            {isSaving && <p className="text-blue-400">Saving changes…</p>}
+            {isSaving && <p className="text-blue-400">Saving changes...</p>}
             {!isSaving && actionError && <p className="text-red-400">{actionError}</p>}
             {!isSaving && !actionError && actionSuccess && <p className="text-green-400">{actionSuccess}</p>}
           </div>
         )}
-        
+
         {/* OVERVIEW - Mobile View */}
         <section className="md:hidden bg-zinc-900/30 border border-zinc-800 rounded-[2.5rem] p-8 md:p-10 shadow-2xl relative overflow-hidden">
           <div className="absolute top-0 left-0 w-1 h-full bg-blue-600 shadow-[2px_0_10px_rgba(37,99,235,0.4)]"></div>
@@ -332,9 +400,9 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
           <div className="absolute top-0 right-0 w-px h-full bg-gradient-to-b from-transparent via-green-500/30 to-transparent"></div>
           <div className="absolute top-4 right-4 w-20 h-20 bg-blue-500/5 rounded-full blur-2xl"></div>
           <div className="absolute bottom-4 left-4 w-32 h-32 bg-green-500/5 rounded-full blur-3xl"></div>
-          
+
           <h2 className="text-[10px] font-black uppercase text-zinc-500 tracking-[0.3em] mb-8">Trip Overview</h2>
-          
+
           <div className="grid grid-cols-12 gap-6">
             {/* Left: Start Date & End Date */}
             <div className="col-span-3 flex flex-col gap-4">
@@ -349,7 +417,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                 </div>
                 <input type="date" className="absolute inset-0 opacity-0 cursor-pointer" onChange={(e) => updateField('start_date', e.target.value)} />
               </div>
-              
+
               <div className="group relative bg-black/40 p-5 rounded-2xl border border-zinc-800/60 hover:border-blue-500/40 transition-all duration-300">
                 <div className="flex items-center gap-2 mb-3">
                   <div className="w-1.5 h-1.5 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.8)]"></div>
@@ -362,7 +430,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                 <input type="date" className="absolute inset-0 opacity-0 cursor-pointer" onChange={(e) => updateField('end_date', e.target.value)} />
               </div>
             </div>
-            
+
             {/* Middle: PDF Miles - Prominently Displayed */}
             <div className="col-span-5">
               <div className="bg-gradient-to-br from-blue-950/30 to-transparent p-6 rounded-2xl border border-blue-500/20 h-full flex flex-col justify-center">
@@ -372,8 +440,8 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                 </div>
                 <div className="flex items-end justify-between">
                   <p className="text-5xl font-black font-mono text-blue-500 tracking-tighter drop-shadow-[0_0_20px_rgba(59,130,246,0.5)]">{currentTrip.total_miles || 0}</p>
-                  <button 
-                    onClick={() => { const m = prompt('Miles:', currentTrip.total_miles); if (m) updateField('total_miles', parseFloat(m)); }} 
+                  <button
+                    onClick={() => { const m = prompt('Miles:', currentTrip.total_miles); if (m) updateField('total_miles', parseFloat(m)); }}
                     className="bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 text-xs font-black uppercase px-4 py-2 rounded-xl border border-blue-500/30 transition-all mb-2"
                   >
                     Edit
@@ -386,7 +454,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                 )}
               </div>
             </div>
-            
+
             {/* Right: Odometers & Total Distance */}
             <div className="col-span-4 flex flex-col gap-3">
               <div className="bg-black/40 p-4 rounded-2xl border border-zinc-800/60">
@@ -394,29 +462,29 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                   <div className="w-1 h-1 rounded-full bg-green-500 shadow-[0_0_6px_rgba(34,197,94,0.8)]"></div>
                   <label className="text-[8px] font-black text-zinc-500 uppercase tracking-widest">Start Odometer</label>
                 </div>
-                <input 
-                  type="number" 
-                  defaultValue={currentTrip.start_odometer} 
-                  onBlur={(e) => updateField('start_odometer', parseFloat(e.target.value))} 
-                  className="w-full bg-transparent border-b border-zinc-700 pb-2 text-2xl font-mono font-black text-green-400 focus:border-green-500 outline-none transition-all placeholder-zinc-700" 
+                <input
+                  type="number"
+                  defaultValue={currentTrip.start_odometer}
+                  onBlur={(e) => updateField('start_odometer', parseFloat(e.target.value))}
+                  className="w-full bg-transparent border-b border-zinc-700 pb-2 text-2xl font-mono font-black text-green-400 focus:border-green-500 outline-none transition-all placeholder-zinc-700"
                   placeholder="---"
                 />
               </div>
-              
+
               <div className="bg-black/40 p-4 rounded-2xl border border-zinc-800/60">
                 <div className="flex items-center gap-2 mb-2">
                   <div className="w-1 h-1 rounded-full bg-green-500 shadow-[0_0_6px_rgba(34,197,94,0.8)]"></div>
                   <label className="text-[8px] font-black text-zinc-500 uppercase tracking-widest">End Odometer</label>
                 </div>
-                <input 
-                  type="number" 
-                  defaultValue={currentTrip.end_odometer} 
-                  onBlur={(e) => updateField('end_odometer', parseFloat(e.target.value))} 
-                  className="w-full bg-transparent border-b border-zinc-700 pb-2 text-2xl font-mono font-black text-green-400 focus:border-green-500 outline-none transition-all placeholder-zinc-700" 
+                <input
+                  type="number"
+                  defaultValue={currentTrip.end_odometer}
+                  onBlur={(e) => updateField('end_odometer', parseFloat(e.target.value))}
+                  className="w-full bg-transparent border-b border-zinc-700 pb-2 text-2xl font-mono font-black text-green-400 focus:border-green-500 outline-none transition-all placeholder-zinc-700"
                   placeholder="---"
                 />
               </div>
-              
+
               {totalKilos !== null && (
                 <div className="bg-gradient-to-r from-green-950/40 to-transparent p-4 rounded-2xl border border-green-500/30 mt-1">
                   <div className="flex items-center justify-between">
@@ -448,7 +516,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                   <div key={item.id} className="bg-black/20 border border-zinc-800/50 p-5 rounded-2xl relative group/item min-w-[150px]">
                     <label className="text-[9px] font-bold text-zinc-600 uppercase tracking-widest block mb-2">{item.label}</label>
                     <div className="flex items-center justify-between">
-                        <p className="text-lg font-black font-mono">{item.val}</p> 
+                        <p className="text-lg font-black font-mono">{item.val}</p>
                         <button onClick={() => openInventory(item.id)} className="bg-zinc-900 p-1.5 rounded-lg text-blue-500 text-[10px] hover:bg-blue-600 hover:text-white transition-all">✎ Edit</button>
                     </div>
                     <button onClick={() => updateField(item.id, null)} className="absolute -top-2 -right-2 bg-red-900 hover:bg-red-600 text-white w-7 h-7 rounded-full text-[12px] font-bold opacity-0 group-item:opacity-100 transition-all flex items-center justify-center shadow-xl">×</button>
@@ -460,8 +528,8 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
             <section className="bg-zinc-900/30 border border-zinc-800 rounded-[2rem] p-8 group">
               <div className="flex justify-between items-center mb-8">
                 <h2 className="text-[10px] font-black uppercase text-zinc-500 tracking-[0.3em]">Payables & Extras</h2>
-                <button 
-                  onClick={() => setShowAllPayables(!showAllPayables)} 
+                <button
+                  onClick={() => setShowAllPayables(!showAllPayables)}
                   className="bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 text-[9px] font-black uppercase px-4 py-2 rounded-lg border border-blue-500/30 transition-all"
                 >
                   {showAllPayables ? 'Show Active Only' : '+ Add Extras'}
@@ -495,9 +563,9 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                             </select>
                          )}
                          {payable.unit === 'dollar' && (
-                            <input 
-                              type="number" 
-                              placeholder="$" 
+                            <input
+                              type="number"
+                              placeholder="$"
                               defaultValue={currentExtras.find(e => e.type === payable.name)?.amount || ''}
                               onBlur={async (e) => {
                                 const val = parseFloat(e.target.value) || 0;
@@ -515,7 +583,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                                   });
                                 } catch (err) { console.error(err); }
                               }}
-                              className="w-24 bg-zinc-900 border border-zinc-800 rounded-xl p-2 text-sm font-mono text-green-500 text-right outline-none focus:border-blue-500 shadow-inner" 
+                              className="w-24 bg-zinc-900 border border-zinc-800 rounded-xl p-2 text-sm font-mono text-green-500 text-right outline-none focus:border-blue-500 shadow-inner"
                             />
                          )}
                       </div>
@@ -552,7 +620,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                           disabled={deletingStopId === stop.id}
                           className="bg-zinc-900/50 hover:bg-red-900 disabled:opacity-60 p-1.5 rounded-lg text-red-500 hover:text-white text-[9px] font-black transition-all border border-zinc-800 shadow-md uppercase tracking-tighter"
                         >
-                          {deletingStopId === stop.id ? 'Deleting…' : 'Delete'}
+                          {deletingStopId === stop.id ? 'Deleting...' : 'Delete'}
                         </button>
                       </div>
                       <p className="text-md font-black text-zinc-100 leading-tight mb-2 tracking-tight">{stop.location}</p>
@@ -580,7 +648,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
               <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-blue-500 to-transparent opacity-50"></div>
               <h3 className="text-4xl font-black uppercase tracking-tighter mb-2 text-blue-500">Pay Breakdown</h3>
               <p className="text-[10px] font-black text-zinc-600 uppercase tracking-[0.5em] mb-12">Earnings Transparency Report</p>
-              
+
               <div className="space-y-6 mb-12 max-h-[450px] overflow-y-auto pr-4 custom-scrollbar">
                 <div className="bg-zinc-900/50 p-6 rounded-[2rem] border border-zinc-900 flex justify-between items-center group">
                   <div>
@@ -638,7 +706,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
               <h2 className="text-2xl font-black uppercase tracking-tighter text-blue-500">⚡ Quick Add</h2>
               <button onClick={() => setShowAddHUD(false)} className="bg-zinc-900 hover:bg-zinc-800 p-4 rounded-2xl border border-zinc-800 text-zinc-400 font-black uppercase text-xs tracking-widest">Close</button>
             </div>
-            
+
             {/* Quick Add - Stops */}
             <div className="bg-zinc-900/30 border border-zinc-800 rounded-[2rem] p-8 mb-6">
               <h3 className="text-xs font-black uppercase text-zinc-500 tracking-[0.3em] mb-6">Add Stop</h3>
@@ -673,7 +741,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                   setActionSuccess('Stop added');
                 } catch (err: any) { setActionError(err?.message || 'Unable to add stop'); }
                 finally { setAddingStop(false); }
-              }} disabled={addingStop} className="mt-4 w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-60 p-4 rounded-xl font-black uppercase text-xs tracking-widest border border-blue-500 transition-all">{addingStop ? 'Adding Stop…' : '+ Add Stop'}</button>
+              }} disabled={addingStop} className="mt-4 w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-60 p-4 rounded-xl font-black uppercase text-xs tracking-widest border border-blue-500 transition-all">{addingStop ? 'Adding Stop...' : '+ Add Stop'}</button>
             </div>
 
             {/* Quick Add - Payables */}
@@ -750,7 +818,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                   setActionSuccess('Fuel entry added');
                 } catch (err: any) { setActionError(err?.message || 'Failed to add fuel'); }
                 finally { setAddingFuel(false); }
-              }} disabled={addingFuel} className="w-full bg-green-600 hover:bg-green-500 disabled:opacity-60 p-4 rounded-xl font-black uppercase text-xs tracking-widest border border-green-500 transition-all">{addingFuel ? 'Adding Fuel…' : '+ Add Fuel'}</button>
+              }} disabled={addingFuel} className="w-full bg-green-600 hover:bg-green-500 disabled:opacity-60 p-4 rounded-xl font-black uppercase text-xs tracking-widest border border-green-500 transition-all">{addingFuel ? 'Adding Fuel...' : '+ Add Fuel'}</button>
             </div>
           </div>
         </div>

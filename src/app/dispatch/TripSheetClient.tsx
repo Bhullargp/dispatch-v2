@@ -27,9 +27,9 @@ const PAYABLE_TYPES = [
 // Canadian provinces for trip detection
 const CANADIAN_PROVINCES = ['ON', 'QC', 'BC', 'AB', 'MB', 'SK', 'NS', 'NB', 'NL', 'PE'];
 
-// Detect if trip is Canada or US based on stops (first_stop and last_stop)
-// ALL stops must be Canadian provinces for Canada rate
-// If ANY stop is US → US rate ($1.06)
+// Detect if trip is Canada or US based on ALL stops
+// Count ALL stops: if MAJORITY are Canadian provinces → Canada rate
+// If MAJORITY are USA states → US rate ($1.06)
 const detectTripCountry = (firstStop: string | null, lastStop: string | null): { isCanada: boolean; rate: number } => {
   const stops = [firstStop, lastStop].filter(Boolean);
   
@@ -37,25 +37,38 @@ const detectTripCountry = (firstStop: string | null, lastStop: string | null): {
     return { isCanada: false, rate: 1.06 };
   }
 
-  const allCanada = stops.every((location) => {
-    if (!location) return true;
+  let canadaCount = 0;
+  let usaCount = 0;
+
+  stops.forEach((location) => {
+    if (!location) return;
     // Check for province code in location (e.g., "Caledon, ON" or "Toronto ON")
     const provinceMatch = location.match(/\b([A-Z]{2})\b/);
     if (provinceMatch) {
       const province = provinceMatch[1];
-      return CANADIAN_PROVINCES.includes(province);
+      if (CANADIAN_PROVINCES.includes(province)) {
+        canadaCount++;
+      } else {
+        usaCount++;
+      }
+      return;
     }
     // Also check if location contains Canadian city names
     const canadaKeywords = ['Ontario', 'Quebec', 'British Columbia', 'Alberta', 'Manitoba', 'Saskatchewan', 'Nova Scotia', 'New Brunswick', 'Newfoundland', 'Prince Edward'];
-    return canadaKeywords.some(keyword => location.toLowerCase().includes(keyword.toLowerCase()));
+    if (canadaKeywords.some(keyword => location.toLowerCase().includes(keyword.toLowerCase()))) {
+      canadaCount++;
+    } else {
+      usaCount++;
+    }
   });
 
-  // ALL stops are Canadian provinces → Canada rate (rate determined by mileage)
+  // Majority Canadian stops → Canada rate
+  const allCanada = canadaCount >= usaCount;
   if (allCanada) {
     return { isCanada: true, rate: 0 }; // Rate depends on mileage
   }
 
-  // Any US stop → US rate
+  // More USA stops than Canada → US rate
   return { isCanada: false, rate: 1.06 };
 };
 
@@ -131,33 +144,57 @@ export default function TripSheet({ initialTrips, isAdmin = false }: { initialTr
     }
   }, [mounted, isLoggedIn, router]);
 
+  // Refresh trips when window gets focus (sync with TripDetails edits)
+  useEffect(() => {
+    const onFocus = () => refreshTrips();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, []);
+
   const calculateTripPay = (trip: any) => {
     const totalMiles = trip.total_miles || 0;
-    
+
+    // Check for manual rate override first
+    if (trip.manual_rate) {
+      let extrasTotal = 0;
+      try {
+        const extras = JSON.parse(trip.extra_pay_json || '[]');
+        extrasTotal = extras.reduce((acc: number, curr: any) => {
+          const payable = PAYABLE_TYPES.find(p => p.name === curr.type);
+          return payable ? acc + (payable.rate * (curr.quantity || 1)) : acc;
+        }, 0);
+      } catch (e) { }
+      return (totalMiles * trip.manual_rate) + extrasTotal;
+    }
+
     // Bhullar Protocol Pay Rates (sync with TripDetailsClient):
     // - US trips: $1.06/mile
     // - Canada trips under 1000 miles: $1.26/mile
     // - Canada trips over 1000 miles: $1.16/mile
-    // Use route field first - MUST check US explicitly before Canada
+    // Count ALL stops to determine majority country
     const route = (trip.route || '').toUpperCase();
     let mileRate = 1.06;
+    let isCanada = false;
     
     // If route says US, use US rate immediately
     if (route === 'US') {
       mileRate = 1.06;
-    } 
-    // Check for Canada provinces in route
+      isCanada = false;
+    }
+    // Check for Canada in route field
     else if (route.includes('CANADA') || route.includes('QC') || route.includes('ON') || route.includes('BC') || route.includes('AB') || route.includes('MB') || route.includes('SK')) {
       // Canada rate based on route field
+      isCanada = true;
       if (totalMiles < 1000) {
         mileRate = 1.26;
       } else {
         mileRate = 1.16;
       }
     } else {
-      // Fall back to stop detection only if route is empty/unknown
+      // Route field empty or unknown - detect from ALL stops (first and last)
       const tripInfo = detectTripCountry(trip.first_stop, trip.last_stop);
-      if (tripInfo.isCanada) {
+      isCanada = tripInfo.isCanada;
+      if (isCanada) {
         if (totalMiles < 1000) {
           mileRate = 1.26;
         } else {
