@@ -174,6 +174,15 @@ export async function GET(request: Request) {
       }
     } catch {}
 
+    // Fetch all fuel entries (for client-side period filtering)
+    let fuelEntries: any[] = [];
+    try {
+      fuelEntries = await db().query(
+        `SELECT f.id, f.trip_number, f.date, f.location, f.quantity, f.unit, f.amount_usd, f.odometer FROM fuel f WHERE ${scope.clause} ORDER BY f.date DESC`,
+        scope.params
+      ) as any[];
+    } catch {}
+
     return NextResponse.json({
       periods,
       currentPeriod,
@@ -186,6 +195,7 @@ export async function GET(request: Request) {
       allTrips,
       ambiguousTrips: ambiguousTrips.map(t => t.trip_number),
       deductions,
+      fuelEntries,
     });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });

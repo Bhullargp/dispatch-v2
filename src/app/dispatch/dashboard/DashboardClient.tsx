@@ -63,6 +63,17 @@ interface Expense {
   created_at: string;
 }
 
+interface FuelEntry {
+  id: number;
+  trip_number: string | null;
+  date: string | null;
+  location: string | null;
+  quantity: number | null;
+  unit: string | null;
+  amount_usd: number | null;
+  odometer: number | null;
+}
+
 interface SafetyBonus {
   rate_per_mile: number;
   enabled: boolean;
@@ -79,6 +90,28 @@ function getPeriodColor(payDate: string) {
   const day = parseInt(payDate.split('-')[2]);
   return day === 15 ? PERIOD_COLORS[0] : PERIOD_COLORS[1];
 }
+
+// ── Reimbursement / Deduction constants ────────────────────────────────────
+const REIMBURSEMENT_OPTIONS = [
+  { value: 'Tolls', emoji: '🛣️' },
+  { value: 'Fax', emoji: '📠' },
+  { value: 'Mischarges', emoji: '💰' },
+  { value: 'Other', emoji: '📌' },
+];
+
+const REIMBURSEMENT_CATEGORY_MAP: Record<string, string> = {
+  'Tolls': 'toll',
+  'Fax': 'misc',
+  'Mischarges': 'misc',
+  'Other': 'other',
+};
+
+const DEDUCTION_OPTIONS = [
+  { value: 'Insurance', emoji: '🛡️' },
+  { value: 'Plates', emoji: '🔢' },
+  { value: 'Disability', emoji: '🏥' },
+  { value: 'Misc', emoji: '📦' },
+];
 
 // Pay calculation is now shared via @/lib/trip-pay
 
@@ -136,31 +169,32 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
   const [deductions, setDeductions] = useState<Deduction[]>([]);
   const [expandedTrip, setExpandedTrip] = useState<string | null>(null);
   const [tripStops, setTripStops] = useState<Record<string, Stop[]>>({});
+  const [tripFuel, setTripFuel] = useState<Record<string, any[]>>({});
+  const [fuelLoading, setFuelLoading] = useState<string | null>(null);
 
   // Deduction form state
   const [showDeductionForm, setShowDeductionForm] = useState(false);
-  const [dedForm, setDedForm] = useState({ name: '', amount: '', is_recurring: false });
+  const DED_FORM_RESET: { name: string; customName: string; amount: string; date: string; is_recurring: boolean; recurring_frequency: 'weekly' | 'biweekly' | 'monthly' } = { name: '', customName: '', amount: '', date: new Date().toISOString().split('T')[0], is_recurring: false, recurring_frequency: 'monthly' };
+  const [dedForm, setDedForm] = useState(DED_FORM_RESET);
 
   // Expense state
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [showExpenseForm, setShowExpenseForm] = useState(false);
-  const [expForm, setExpForm] = useState<{
-    expense_type: 'trip' | 'recurring';
-    trip_number: string;
-    name: string;
-    amount: string;
-    category: string;
-    pay_period: string;
-    notes: string;
-  }>({
-    expense_type: 'trip',
+  const EXP_FORM_RESET = {
+    expense_type: 'trip' as const,
     trip_number: '',
     name: '',
+    customName: '',
     amount: '',
     category: 'misc',
+    date: new Date().toISOString().split('T')[0],
     pay_period: '',
     notes: '',
-  });
+  };
+  const [expForm, setExpForm] = useState<typeof EXP_FORM_RESET>(EXP_FORM_RESET);
+
+  // Fuel entries state
+  const [fuelEntries, setFuelEntries] = useState<FuelEntry[]>([]);
 
   // Safety bonus state
   const [safetyBonus, setSafetyBonus] = useState<SafetyBonus>({ rate_per_mile: 0.02, enabled: false });
@@ -184,6 +218,7 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
       if (dash.ambiguousTrips) setAmbiguous(dash.ambiguousTrips);
       if (dash.periodStatuses) setPeriodStatuses(dash.periodStatuses);
       if (dash.deductions) setDeductions(dash.deductions);
+      if (dash.fuelEntries) setFuelEntries(dash.fuelEntries);
 
       // Load expenses
       try {
@@ -262,6 +297,7 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
       if (dash.allTrips) setAllTrips(dash.allTrips);
       if (dash.periodStatuses) setPeriodStatuses(dash.periodStatuses);
       if (dash.deductions) setDeductions(dash.deductions);
+      if (dash.fuelEntries) setFuelEntries(dash.fuelEntries);
     } catch {}
   }, []);
 
@@ -299,13 +335,15 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
 
   // Add expense
   const addExpense = async () => {
-    if (!expForm.name || !expForm.amount) return;
+    const resolvedName = expForm.name === 'custom' ? expForm.customName.trim() : expForm.name;
+    if (!resolvedName || !expForm.amount) return;
     try {
       const payload: any = {
-        name: expForm.name,
+        name: resolvedName,
         amount: parseFloat(expForm.amount),
         expense_type: expForm.expense_type,
         category: expForm.category,
+        date: expForm.date,
         notes: expForm.notes || null,
       };
       if (expForm.expense_type === 'trip') {
@@ -323,7 +361,7 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
         const expRes = await fetch('/api/dispatch/expenses');
         const expData = await expRes.json();
         if (expData.expenses) setExpenses(expData.expenses);
-        setExpForm({ expense_type: 'trip', trip_number: '', name: '', amount: '', category: 'misc', pay_period: '', notes: '' });
+        setExpForm({ ...EXP_FORM_RESET, date: new Date().toISOString().split('T')[0] });
         setShowExpenseForm(false);
       }
     } catch {}
@@ -337,16 +375,18 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
   };
 
   const addDeduction = async () => {
-    if (!dedForm.name || !dedForm.amount || !selectedPeriod) return;
+    const resolvedName = dedForm.name === 'custom' ? dedForm.customName.trim() : dedForm.name;
+    if (!resolvedName || !dedForm.amount || !selectedPeriod) return;
     try {
       const res = await fetch('/api/dispatch/deductions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: dedForm.name,
+          name: resolvedName,
           amount: parseFloat(dedForm.amount),
           pay_period: selectedPeriod,
           is_recurring: dedForm.is_recurring,
+          recurring_frequency: dedForm.is_recurring ? dedForm.recurring_frequency : null,
         }),
       });
       if (res.ok) {
@@ -355,12 +395,12 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
           id: data.id,
           user_id: 0,
           pay_period: selectedPeriod,
-          name: dedForm.name,
+          name: resolvedName,
           amount: parseFloat(dedForm.amount),
           is_recurring: dedForm.is_recurring ? 1 : 0,
           created_at: new Date().toISOString(),
         }]);
-        setDedForm({ name: '', amount: '', is_recurring: false });
+        setDedForm({ ...DED_FORM_RESET, date: new Date().toISOString().split('T')[0] });
         setShowDeductionForm(false);
       }
     } catch {}
@@ -558,7 +598,7 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
               );
             })}
           </div>
-          {/* Mark as Paid + Quick Add */}
+          {/* Action buttons */}
           <div className="flex gap-2 mt-3 flex-wrap">
             {selectedPeriod && periodStatuses[selectedPeriod]?.status !== 'upcoming' && (
               <button
@@ -569,14 +609,20 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
                     : 'bg-green-600/20 text-green-400 hover:bg-green-600/30 border border-green-700/50'
                 }`}
               >
-                {periodStatuses[selectedPeriod]?.paidStatus === 'paid' ? '✓ Marked Paid — Click to Undo' : '💰 Mark as Paid'}
+                {periodStatuses[selectedPeriod]?.paidStatus === 'paid' ? '✓ Marked Paid' : '💰 Mark as Paid'}
               </button>
             )}
             <button
-              onClick={() => setShowExpenseForm(!showExpenseForm)}
-              className="text-[10px] font-black uppercase tracking-wider px-4 py-2 rounded-xl bg-orange-600/20 text-orange-400 hover:bg-orange-600/30 border border-orange-700/50 transition-all"
+              onClick={() => { setExpForm({ ...EXP_FORM_RESET, date: new Date().toISOString().split('T')[0] }); setShowExpenseForm(true); }}
+              className="text-[10px] font-black uppercase tracking-wider px-4 py-2 rounded-xl bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/30 border border-emerald-700/50 transition-all"
             >
-              🧾 Add Expense
+              + Reimbursement
+            </button>
+            <button
+              onClick={() => { setDedForm({ ...DED_FORM_RESET, date: new Date().toISOString().split('T')[0] }); setShowDeductionForm(true); }}
+              className="text-[10px] font-black uppercase tracking-wider px-4 py-2 rounded-xl bg-red-600/20 text-red-400 hover:bg-red-600/30 border border-red-700/50 transition-all"
+            >
+              − Deduction
             </button>
             <button
               onClick={quickAddTrip}
@@ -586,102 +632,6 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
             </button>
           </div>
 
-          {/* Expense form */}
-          {showExpenseForm && (
-            <div className="mt-3 bg-zinc-950 border border-orange-800/30 rounded-2xl p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <p className="text-[10px] font-black uppercase tracking-widest text-orange-400">New Expense</p>
-                <button onClick={() => setShowExpenseForm(false)} className="text-zinc-600 hover:text-white text-xs">✕</button>
-              </div>
-
-              {/* Type toggle */}
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setExpForm(f => ({ ...f, expense_type: 'trip' }))}
-                  className={`flex-1 text-[10px] font-black uppercase tracking-wider px-3 py-2 rounded-xl transition-all ${
-                    expForm.expense_type === 'trip' ? 'bg-orange-600/30 text-orange-300 border border-orange-600' : 'bg-zinc-900 text-zinc-500 border border-zinc-800'
-                  }`}
-                >
-                  🚛 Trip Expense
-                </button>
-                <button
-                  onClick={() => setExpForm(f => ({ ...f, expense_type: 'recurring' }))}
-                  className={`flex-1 text-[10px] font-black uppercase tracking-wider px-3 py-2 rounded-xl transition-all ${
-                    expForm.expense_type === 'recurring' ? 'bg-orange-600/30 text-orange-300 border border-orange-600' : 'bg-zinc-900 text-zinc-500 border border-zinc-800'
-                  }`}
-                >
-                  🔄 Recurring
-                </button>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <input
-                  type="text"
-                  placeholder="Expense name"
-                  value={expForm.name}
-                  onChange={e => setExpForm(f => ({ ...f, name: e.target.value }))}
-                  className="bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2.5 text-xs text-white placeholder-zinc-600 outline-none focus:border-zinc-600"
-                />
-                <input
-                  type="number"
-                  placeholder="Amount ($)"
-                  value={expForm.amount}
-                  onChange={e => setExpForm(f => ({ ...f, amount: e.target.value }))}
-                  className="bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2.5 text-xs text-white placeholder-zinc-600 outline-none focus:border-zinc-600"
-                />
-              </div>
-
-              {expForm.expense_type === 'trip' && (
-                <>
-                  <select
-                    value={expForm.trip_number}
-                    onChange={e => setExpForm(f => ({ ...f, trip_number: e.target.value }))}
-                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2.5 text-xs text-white outline-none focus:border-zinc-600"
-                  >
-                    <option value="">— Select Trip —</option>
-                    {allTrips.map(t => (
-                      <option key={t.trip_number} value={t.trip_number}>#{t.trip_number} {t.first_stop ? `(${t.first_stop})` : ''}</option>
-                    ))}
-                  </select>
-                  <select
-                    value={expForm.category}
-                    onChange={e => setExpForm(f => ({ ...f, category: e.target.value }))}
-                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2.5 text-xs text-white outline-none focus:border-zinc-600"
-                  >
-                    <option value="toll">🛣 Toll</option>
-                    <option value="fuel">⛽ Fuel</option>
-                    <option value="misc">📦 Misc</option>
-                    <option value="violation">⚠️ Violation</option>
-                    <option value="equipment">🔧 Equipment</option>
-                    <option value="other">📌 Other</option>
-                  </select>
-                </>
-              )}
-
-              <input
-                type="text"
-                placeholder="Notes (optional)"
-                value={expForm.notes}
-                onChange={e => setExpForm(f => ({ ...f, notes: e.target.value }))}
-                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2.5 text-xs text-white placeholder-zinc-600 outline-none focus:border-zinc-600"
-              />
-
-              <div className="flex gap-2">
-                <button
-                  onClick={addExpense}
-                  className="text-[10px] font-black uppercase tracking-wider px-4 py-2 rounded-xl bg-orange-600 text-white hover:bg-orange-500 transition-all"
-                >
-                  Add Expense
-                </button>
-                <button
-                  onClick={() => { setShowExpenseForm(false); setExpForm({ expense_type: 'trip', trip_number: '', name: '', amount: '', category: 'misc', pay_period: '', notes: '' }); }}
-                  className="text-[10px] font-black uppercase tracking-wider px-4 py-2 rounded-xl bg-zinc-800 text-zinc-400 hover:text-white transition-all"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
 
           {/* PDF Upload */}
           <div className="mt-3">
@@ -947,60 +897,13 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
                 </button>
               )}
               <button
-                onClick={() => setShowDeductionForm(!showDeductionForm)}
+                onClick={() => { setDedForm({ ...DED_FORM_RESET, date: new Date().toISOString().split('T')[0] }); setShowDeductionForm(true); }}
                 className="text-[10px] font-black uppercase tracking-wider px-3 py-2 rounded-xl bg-red-600/10 text-red-400 hover:bg-red-600/20 border border-red-800/30 transition-all"
               >
                 + Add Deduction
               </button>
             </div>
           </div>
-
-          {/* Add deduction form */}
-          {showDeductionForm && (
-            <div className="mb-4 p-4 bg-zinc-900/80 rounded-2xl border border-zinc-800 space-y-3">
-              <div className="grid grid-cols-2 gap-3">
-                <input
-                  type="text"
-                  placeholder="Deduction name"
-                  value={dedForm.name}
-                  onChange={e => setDedForm(f => ({ ...f, name: e.target.value }))}
-                  className="bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2.5 text-xs text-white placeholder-zinc-600 outline-none focus:border-zinc-600"
-                />
-                <input
-                  type="number"
-                  placeholder="Amount ($)"
-                  value={dedForm.amount}
-                  onChange={e => setDedForm(f => ({ ...f, amount: e.target.value }))}
-                  className="bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2.5 text-xs text-white placeholder-zinc-600 outline-none focus:border-zinc-600"
-                />
-              </div>
-              <div className="flex items-center gap-4">
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={dedForm.is_recurring}
-                    onChange={e => setDedForm(f => ({ ...f, is_recurring: e.target.checked }))}
-                    className="w-4 h-4 rounded bg-zinc-900 border-zinc-700 accent-red-500"
-                  />
-                  <span className="text-[11px] text-zinc-400 font-bold">Recurring (auto-copies to future periods)</span>
-                </label>
-              </div>
-              <div className="flex gap-2">
-                <button
-                  onClick={addDeduction}
-                  className="text-[10px] font-black uppercase tracking-wider px-4 py-2 rounded-xl bg-red-600 text-white hover:bg-red-500 transition-all"
-                >
-                  Add
-                </button>
-                <button
-                  onClick={() => { setShowDeductionForm(false); setDedForm({ name: '', amount: '', is_recurring: false }); }}
-                  className="text-[10px] font-black uppercase tracking-wider px-4 py-2 rounded-xl bg-zinc-800 text-zinc-400 hover:text-white transition-all"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
 
           {/* Non-safety deductions list */}
           {periodDeductions.filter(d => d.name !== '🛡️ Safety Bonus Deduction').length > 0 ? (
@@ -1042,7 +945,7 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
               )}
             </div>
             <button
-              onClick={() => setShowExpenseForm(!showExpenseForm)}
+              onClick={() => { setExpForm({ ...EXP_FORM_RESET, date: new Date().toISOString().split('T')[0] }); setShowExpenseForm(true); }}
               className="text-[10px] font-black uppercase tracking-wider px-3 py-2 rounded-xl bg-orange-600/10 text-orange-400 hover:bg-orange-600/20 border border-orange-800/30 transition-all"
             >
               + Add Expense
@@ -1137,8 +1040,21 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
                     }`}
                   >
                     <div
-                      className="p-4 flex flex-col md:flex-row md:items-center gap-3 cursor-pointer"
-                      onClick={() => setExpandedTrip(isExpanded ? null : trip.trip_number)}
+                      className="p-4 flex flex-col md:flex-row md:items-center gap-3 cursor-pointer select-none"
+                      onClick={() => {
+                        const next = isExpanded ? null : trip.trip_number;
+                        setExpandedTrip(next);
+                        if (next && !tripFuel[trip.trip_number]) {
+                          setFuelLoading(trip.trip_number);
+                          fetch(`/api/dispatch/fuel?trip_number=${trip.trip_number}`)
+                            .then(r => r.json())
+                            .then(data => {
+                              setTripFuel(prev => ({ ...prev, [trip.trip_number]: Array.isArray(data) ? data : [] }));
+                            })
+                            .catch(() => setTripFuel(prev => ({ ...prev, [trip.trip_number]: [] })))
+                            .finally(() => setFuelLoading(null));
+                        }
+                      }}
                     >
                       {/* Trip info */}
                       <div className="flex-1 min-w-0">
@@ -1222,50 +1138,128 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
                       </div>
                     </div>
 
-                    {/* Expanded trip stops */}
-                    {isExpanded && stops.length > 0 && (
-                      <div className="px-4 pb-4 border-t border-zinc-800/40 pt-3">
-                        <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-3">
-                          Route · {stops.length} stops · {counters.totalStops > 0 ? `${counters.pickups} pickups, ${counters.deliveries} deliveries` : 'No stop data'}
-                        </p>
-                        <div className="space-y-0">
-                          {stops.map((stop, i) => {
-                            const isLast = i === stops.length - 1;
-                            const isFirst = i === 0;
-                            const stype = (stop.stop_type || 'Stop').toUpperCase();
-                            let dotColor = 'bg-zinc-600';
-                            if (stype === 'PICKUP') dotColor = 'bg-green-500';
-                            else if (stype === 'DELIVER' || stype === 'DELIVERY') dotColor = 'bg-blue-500';
-                            else if (stype === 'HOOK') dotColor = 'bg-yellow-500';
-                            else if (stype === 'DROP') dotColor = 'bg-orange-500';
-                            else if (stype.includes('BORDER')) dotColor = 'bg-purple-500';
-                            else if (isFirst) dotColor = 'bg-emerald-500';
-                            else if (isLast) dotColor = 'bg-red-500';
+                    {/* Expanded trip details */}
+                    {isExpanded && (
+                      <div className="overflow-hidden transition-all duration-300 ease-in-out border-t border-zinc-800/40">
+                        {/* Route Stops */}
+                        {stops.length > 0 && (
+                          <div className="px-4 pt-3 pb-2">
+                            <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-3">
+                              🛣 Route · {stops.length} stops · {counters.pickups} PU · {counters.deliveries} DL
+                            </p>
+                            <div className="space-y-0">
+                              {stops.map((stop, i) => {
+                                const isLast = i === stops.length - 1;
+                                const isFirst = i === 0;
+                                const stype = (stop.stop_type || 'Stop').toUpperCase();
+                                let dotColor = 'bg-zinc-600';
+                                if (stype === 'PICKUP') dotColor = 'bg-green-500';
+                                else if (stype === 'DELIVER' || stype === 'DELIVERY') dotColor = 'bg-blue-500';
+                                else if (stype === 'HOOK') dotColor = 'bg-yellow-500';
+                                else if (stype === 'DROP') dotColor = 'bg-orange-500';
+                                else if (stype.includes('BORDER')) dotColor = 'bg-purple-500';
+                                else if (isFirst) dotColor = 'bg-emerald-500';
+                                else if (isLast) dotColor = 'bg-red-500';
 
-                            return (
-                              <div key={i} className="flex gap-3 relative">
-                                <div className="flex flex-col items-center w-3">
-                                  <div className={`w-2 h-2 rounded-full ${dotColor} z-10 flex-shrink-0 mt-1.5`} />
-                                  {!isLast && <div className="w-px flex-1 bg-zinc-800" />}
-                                </div>
-                                <div className={`pb-3 ${isLast ? 'pb-0' : ''}`}>
-                                  <p className="text-[9px] font-black text-zinc-500 uppercase">{stop.stop_type || 'Stop'}</p>
-                                  <p className="text-xs font-bold text-zinc-200">{stop.location || 'Unknown'}</p>
-                                  <div className="flex gap-2 text-[9px] text-zinc-600">
-                                    {stop.date && <span>{formatDateDisplay(stop.date)}</span>}
-                                    {stop.miles_from_last > 0 && <span>{stop.miles_from_last} mi</span>}
+                                return (
+                                  <div key={i} className="flex gap-3 relative">
+                                    <div className="flex flex-col items-center w-3">
+                                      <div className={`w-2 h-2 rounded-full ${dotColor} z-10 flex-shrink-0 mt-1.5`} />
+                                      {!isLast && <div className="w-px flex-1 bg-zinc-800" />}
+                                    </div>
+                                    <div className={`pb-3 ${isLast ? 'pb-0' : ''}`}>
+                                      <p className="text-[9px] font-black text-zinc-500 uppercase">{stop.stop_type || 'Stop'}</p>
+                                      <p className="text-xs font-bold text-zinc-200">{stop.location || 'Unknown'}</p>
+                                      <div className="flex gap-2 text-[9px] text-zinc-600">
+                                        {stop.date && <span>{formatDateDisplay(stop.date)}</span>}
+                                        {stop.miles_from_last > 0 && <span>{stop.miles_from_last} mi</span>}
+                                      </div>
+                                    </div>
                                   </div>
-                                </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Extra Pay Items */}
+                        {(() => {
+                          let extras: { type: string; quantity: number; rate: number; total: number }[] = [];
+                          try { extras = JSON.parse(trip.extra_pay_json || '[]'); } catch {}
+                          if (extras.length === 0) return null;
+                          return (
+                            <div className="px-4 py-2">
+                              <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-2">💰 Extra Pay</p>
+                              <div className="space-y-1.5">
+                                {extras.map((ex, i) => (
+                                  <div key={i} className="flex items-center justify-between py-1.5 px-3 bg-zinc-900/60 rounded-xl">
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded-full bg-amber-900/20 text-amber-400 border border-amber-800/30">
+                                        {ex.type}
+                                      </span>
+                                      <span className="text-[10px] text-zinc-500">×{ex.quantity || 1}</span>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-[10px] text-zinc-500">@ {fmt(ex.rate || 0)}</span>
+                                      <span className="text-xs font-bold text-emerald-400">{fmt(ex.total || (ex.quantity || 1) * (ex.rate || 0))}</span>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        })()}
+
+                        {/* Fuel Ups */}
+                        {(() => {
+                          const fuel = tripFuel[trip.trip_number];
+                          if (fuelLoading === trip.trip_number) {
+                            return (
+                              <div className="px-4 py-3">
+                                <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-2">⛽ Fuel</p>
+                                <p className="text-[10px] text-zinc-600 animate-pulse">Loading fuel data...</p>
                               </div>
                             );
-                          })}
+                          }
+                          if (!fuel || fuel.length === 0) return null;
+                          const fuelTotal = fuel.reduce((s: number, f: any) => s + (f.amount_usd || 0), 0);
+                          const fuelGal = fuel.reduce((s: number, f: any) => s + (f.quantity || 0), 0);
+                          return (
+                            <div className="px-4 py-2 pb-4">
+                              <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-2">
+                                ⛽ Fuel · {fuel.length} stop{fuel.length !== 1 ? 's' : ''} · {fuelGal.toFixed(1)} gal · {fmt(fuelTotal)}
+                              </p>
+                              <div className="space-y-1.5">
+                                {fuel.map((f: any) => (
+                                  <div key={f.id || f.date} className="flex items-center justify-between py-1.5 px-3 bg-zinc-900/60 rounded-xl">
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-[10px] text-zinc-400 font-bold">
+                                        {f.location || 'Unknown'}
+                                      </span>
+                                      <span className="text-[9px] text-zinc-600">{formatDateDisplay(f.date)}</span>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-[10px] text-zinc-500">{f.quantity?.toFixed(1) || '?'} gal</span>
+                                      {f.quantity > 0 && f.amount_usd > 0 && (
+                                        <span className="text-[9px] text-zinc-600">@ ${(f.amount_usd / f.quantity).toFixed(3)}/gal</span>
+                                      )}
+                                      <span className="text-xs font-bold text-orange-400">{fmt(f.amount_usd || 0)}</span>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        })()}
+
+                        <div className="px-4 pb-3">
+                          <Link
+                            href={`/dispatch/${trip.trip_number}?from=dashboard`}
+                            className="inline-block text-[10px] font-black uppercase tracking-wider text-blue-400 hover:text-blue-300 transition-colors"
+                          >
+                            View Full Trip →
+                          </Link>
                         </div>
-                        <Link
-                          href={`/dispatch/${trip.trip_number}?from=dashboard`}
-                          className="inline-block mt-3 text-[10px] font-black uppercase tracking-wider text-blue-400 hover:text-blue-300 transition-colors"
-                        >
-                          View Full Trip →
-                        </Link>
                       </div>
                     )}
                   </div>
@@ -1274,6 +1268,65 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
             </div>
           )}
         </section>
+
+        {/* ── Fuel Ups ── */}
+        {(() => {
+          const periodObj = periods.find(p => p.payDate === selectedPeriod);
+          if (!periodObj) return null;
+          const periodFuel = fuelEntries.filter(f => {
+            if (!f.date) return false;
+            return f.date >= periodObj.startDate && f.date <= periodObj.endDate;
+          });
+
+          const totalGallons = periodFuel.reduce((s, f) => s + (f.quantity || 0), 0);
+          const totalCost = periodFuel.reduce((s, f) => s + (f.amount_usd || 0), 0);
+          const avgPerGal = totalGallons > 0 ? totalCost / totalGallons : 0;
+
+          if (periodFuel.length === 0) return null;
+
+          return (
+            <section className="bg-zinc-950 border border-cyan-900/30 rounded-3xl p-6">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <p className="text-[10px] font-black uppercase tracking-widest text-cyan-400/80">⛽ Fuel Ups</p>
+                  <p className="text-lg font-black text-cyan-400 mt-1">{fmt(totalCost)}</p>
+                </div>
+                <div className="text-right space-y-1">
+                  <p className="text-[10px] text-zinc-500 font-bold">
+                    <span className="text-zinc-300">{totalGallons.toFixed(1)} gal</span> · avg <span className="text-cyan-400">${avgPerGal.toFixed(3)}/gal</span>
+                  </p>
+                  <p className="text-[10px] text-zinc-600 font-bold">{periodFuel.length} fuel up{periodFuel.length !== 1 ? 's' : ''}</p>
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                {periodFuel.map(f => {
+                  const gal = f.quantity || 0;
+                  const cost = f.amount_usd || 0;
+                  const ppg = gal > 0 ? cost / gal : 0;
+                  return (
+                    <div key={f.id} className="flex items-center justify-between py-2 px-3 bg-zinc-900/50 rounded-xl">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <span className="text-[10px] text-zinc-500 font-bold flex-shrink-0">
+                          {f.date ? formatDateDisplay(f.date) : '—'}
+                        </span>
+                        <span className="text-xs text-zinc-300 font-bold truncate">{f.location || 'Unknown'}</span>
+                      </div>
+                      <div className="flex items-center gap-4 flex-shrink-0">
+                        <span className="text-[10px] text-zinc-500 font-bold">{gal.toFixed(1)} gal</span>
+                        <span className="text-[10px] text-cyan-400/70 font-bold">${ppg.toFixed(3)}</span>
+                        <span className="text-xs font-black text-cyan-400">{fmt(cost)}</span>
+                        {f.trip_number && (
+                          <span className="text-[9px] text-zinc-600 font-black">#{f.trip_number}</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          );
+        })()}
 
         {/* ── Rates reference ── */}
         <section className="bg-zinc-950 border border-zinc-800/40 rounded-3xl p-5">
@@ -1291,6 +1344,226 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
             <Link href="/dispatch/settings#pay-rates" className="text-blue-500 font-black hover:text-blue-400 transition-colors">Edit Rates →</Link>
           </div>
         </section>
+
+        {/* ── Reimbursement Modal ── */}
+        {showExpenseForm && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={() => setShowExpenseForm(false)}>
+            <div className="bg-zinc-950 border border-emerald-800/40 rounded-3xl p-6 w-full max-w-md space-y-4 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-black uppercase tracking-widest text-emerald-400">+ Add Reimbursement</p>
+                <button onClick={() => setShowExpenseForm(false)} className="text-zinc-600 hover:text-white text-lg">✕</button>
+              </div>
+
+              {/* Expense name dropdown */}
+              <select
+                value={expForm.name}
+                onChange={e => {
+                  const val = e.target.value;
+                  const cat = REIMBURSEMENT_CATEGORY_MAP[val] || expForm.category;
+                  setExpForm(f => ({ ...f, name: val, category: cat }));
+                }}
+                className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2.5 text-xs text-white outline-none focus:border-emerald-600"
+              >
+                <option value="">— Select Expense Type —</option>
+                {REIMBURSEMENT_OPTIONS.map(o => (
+                  <option key={o.value} value={o.value}>{o.emoji} {o.value}</option>
+                ))}
+                <option value="custom">✏️ Custom...</option>
+              </select>
+
+              {/* Custom name input */}
+              {expForm.name === 'custom' && (
+                <input
+                  type="text"
+                  placeholder="Custom expense name"
+                  value={expForm.customName}
+                  onChange={e => setExpForm(f => ({ ...f, customName: e.target.value }))}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2.5 text-xs text-white placeholder-zinc-600 outline-none focus:border-emerald-600"
+                />
+              )}
+
+              {/* Amount */}
+              <input
+                type="number"
+                placeholder="Amount ($)"
+                value={expForm.amount}
+                onChange={e => setExpForm(f => ({ ...f, amount: e.target.value }))}
+                className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2.5 text-xs text-white placeholder-zinc-600 outline-none focus:border-emerald-600"
+              />
+
+              {/* Category (auto-filled, editable) */}
+              <div>
+                <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1 block">Category</label>
+                <select
+                  value={expForm.category}
+                  onChange={e => setExpForm(f => ({ ...f, category: e.target.value }))}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2.5 text-xs text-white outline-none focus:border-emerald-600"
+                >
+                  <option value="toll">🛣 Toll</option>
+                  <option value="fuel">⛽ Fuel</option>
+                  <option value="misc">📦 Misc</option>
+                  <option value="violation">⚠️ Violation</option>
+                  <option value="equipment">🔧 Equipment</option>
+                  <option value="other">📌 Other</option>
+                </select>
+              </div>
+
+              {/* Date */}
+              <div>
+                <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1 block">Date</label>
+                <input
+                  type="date"
+                  value={expForm.date}
+                  onChange={e => setExpForm(f => ({ ...f, date: e.target.value }))}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2.5 text-xs text-white outline-none focus:border-emerald-600"
+                />
+              </div>
+
+              {/* Trip number (optional) */}
+              <div>
+                <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1 block">Link to Trip (optional)</label>
+                <select
+                  value={expForm.trip_number}
+                  onChange={e => setExpForm(f => ({ ...f, trip_number: e.target.value }))}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2.5 text-xs text-white outline-none focus:border-emerald-600"
+                >
+                  <option value="">— No linked trip —</option>
+                  {allTrips.map(t => (
+                    <option key={t.trip_number} value={t.trip_number}>#{t.trip_number} {t.first_stop ? `(${t.first_stop})` : ''}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Notes */}
+              <input
+                type="text"
+                placeholder="Notes (optional)"
+                value={expForm.notes}
+                onChange={e => setExpForm(f => ({ ...f, notes: e.target.value }))}
+                className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2.5 text-xs text-white placeholder-zinc-600 outline-none focus:border-emerald-600"
+              />
+
+              {/* Actions */}
+              <div className="flex gap-2 pt-2">
+                <button
+                  onClick={addExpense}
+                  className="flex-1 text-[10px] font-black uppercase tracking-wider px-4 py-3 rounded-xl bg-emerald-600 text-white hover:bg-emerald-500 transition-all"
+                >
+                  Save Reimbursement
+                </button>
+                <button
+                  onClick={() => setShowExpenseForm(false)}
+                  className="text-[10px] font-black uppercase tracking-wider px-4 py-3 rounded-xl bg-zinc-800 text-zinc-400 hover:text-white transition-all"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Deduction Modal ── */}
+        {showDeductionForm && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={() => setShowDeductionForm(false)}>
+            <div className="bg-zinc-950 border border-red-800/40 rounded-3xl p-6 w-full max-w-md space-y-4 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-black uppercase tracking-widest text-red-400">− Add Deduction</p>
+                <button onClick={() => setShowDeductionForm(false)} className="text-zinc-600 hover:text-white text-lg">✕</button>
+              </div>
+
+              {/* Deduction name dropdown */}
+              <select
+                value={dedForm.name}
+                onChange={e => setDedForm(f => ({ ...f, name: e.target.value }))}
+                className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2.5 text-xs text-white outline-none focus:border-red-600"
+              >
+                <option value="">— Select Deduction Type —</option>
+                {DEDUCTION_OPTIONS.map(o => (
+                  <option key={o.value} value={o.value}>{o.emoji} {o.value}</option>
+                ))}
+                <option value="custom">✏️ Custom...</option>
+              </select>
+
+              {/* Custom name input */}
+              {dedForm.name === 'custom' && (
+                <input
+                  type="text"
+                  placeholder="Custom deduction name"
+                  value={dedForm.customName}
+                  onChange={e => setDedForm(f => ({ ...f, customName: e.target.value }))}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2.5 text-xs text-white placeholder-zinc-600 outline-none focus:border-red-600"
+                />
+              )}
+
+              {/* Amount */}
+              <input
+                type="number"
+                placeholder="Amount ($)"
+                value={dedForm.amount}
+                onChange={e => setDedForm(f => ({ ...f, amount: e.target.value }))}
+                className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2.5 text-xs text-white placeholder-zinc-600 outline-none focus:border-red-600"
+              />
+
+              {/* Date */}
+              <div>
+                <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1 block">Date</label>
+                <input
+                  type="date"
+                  value={dedForm.date}
+                  onChange={e => setDedForm(f => ({ ...f, date: e.target.value }))}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2.5 text-xs text-white outline-none focus:border-red-600"
+                />
+              </div>
+
+              {/* Recurring toggle */}
+              <div className="space-y-3">
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <div
+                    onClick={() => setDedForm(f => ({ ...f, is_recurring: !f.is_recurring }))}
+                    className={`relative w-11 h-6 rounded-full transition-colors ${dedForm.is_recurring ? 'bg-red-600' : 'bg-zinc-700'}`}
+                  >
+                    <div className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${dedForm.is_recurring ? 'translate-x-5' : ''}`} />
+                  </div>
+                  <span className="text-xs text-zinc-300 font-bold">Recurring deduction</span>
+                </label>
+
+                {dedForm.is_recurring && (
+                  <div className="flex gap-2">
+                    {(['weekly', 'biweekly', 'monthly'] as const).map(freq => (
+                      <button
+                        key={freq}
+                        onClick={() => setDedForm(f => ({ ...f, recurring_frequency: freq }))}
+                        className={`flex-1 text-[10px] font-black uppercase tracking-wider px-3 py-2 rounded-xl transition-all ${
+                          dedForm.recurring_frequency === freq
+                            ? 'bg-red-600/30 text-red-300 border border-red-600'
+                            : 'bg-zinc-900 text-zinc-500 border border-zinc-800'
+                        }`}
+                      >
+                        {freq === 'weekly' ? 'Weekly' : freq === 'biweekly' ? 'Biweekly' : 'Monthly'}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Actions */}
+              <div className="flex gap-2 pt-2">
+                <button
+                  onClick={addDeduction}
+                  className="flex-1 text-[10px] font-black uppercase tracking-wider px-4 py-3 rounded-xl bg-red-600 text-white hover:bg-red-500 transition-all"
+                >
+                  Save Deduction
+                </button>
+                <button
+                  onClick={() => setShowDeductionForm(false)}
+                  className="text-[10px] font-black uppercase tracking-wider px-4 py-3 rounded-xl bg-zinc-800 text-zinc-400 hover:text-white transition-all"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
       </main>
     </AuthGuard>
