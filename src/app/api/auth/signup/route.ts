@@ -29,6 +29,9 @@ export async function POST(request: Request) {
     if (normalizedQuestions.some((q: any) => !q.question || !q.answer)) {
       return NextResponse.json({ error: 'Security questions and answers cannot be empty' }, { status: 400 });
     }
+    if (normalizedQuestions.some((q: any) => q.answer.length < 3)) {
+      return NextResponse.json({ error: 'Security answers must be at least 3 characters' }, { status: 400 });
+    }
 
     if (new Set(normalizedQuestions.map((q: any) => q.question.toLowerCase())).size !== 3) {
       return NextResponse.json({ error: 'Security questions must be unique' }, { status: 400 });

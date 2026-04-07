@@ -8,6 +8,7 @@ const SESSION_DURATION = 60 * 60 * 1000; // 1 hour
 
 interface AuthSession {
   email: string;
+  username?: string;
   loginTime: number;
 }
 
@@ -139,7 +140,7 @@ export function login(email: string, password: string): boolean {
   if (!user) return false;
 
   if (user.passwordHash === simpleHash(normalizedPassword)) {
-    const session: AuthSession = { email: user.email, loginTime: Date.now() };
+    const session: AuthSession = { email: user.email, username: user.email.split('@')[0], loginTime: Date.now() };
     localStorage.setItem(AUTH_KEY, JSON.stringify(session));
     return true;
   }

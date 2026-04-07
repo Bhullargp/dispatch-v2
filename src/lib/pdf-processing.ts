@@ -3,9 +3,13 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import Database from 'better-sqlite3';
+import pool, { db } from '@/lib/db';
 
 const execFileAsync = promisify(execFile);
+
+const ZAI_API_KEY = process.env.ZAI_API_KEY || '';
+const ZAI_API_URL = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
+const ZAI_MODEL = 'glm-4.5-air';
 
 export type ParsedStop = {
   stop_type: string;
@@ -26,64 +30,40 @@ export type ParsedTrip = {
   stops: ParsedStop[];
   placeholders: string[];
   hasDetectedTripNumber: boolean;
+  driverName?: string | null;
+  leadDriver?: string | null;
+  coDriver?: string | null;
+  truckNumber?: string | null;
+  trailerNumber?: string | null;
+  customsBroker?: string | null;
+  dispatcherName?: string | null;
 };
 
-export function ensureUploadSchema(db: Database.Database) {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS upload_jobs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      original_filename TEXT NOT NULL,
-      stored_path TEXT NOT NULL,
-      mime_type TEXT,
-      size_bytes INTEGER,
-      content_hash TEXT,
-      status TEXT NOT NULL DEFAULT 'queued',
-      trip_number TEXT,
-      error_message TEXT,
-      attempt_count INTEGER NOT NULL DEFAULT 0,
-      max_attempts INTEGER NOT NULL DEFAULT 3,
-      cancel_requested INTEGER NOT NULL DEFAULT 0,
-      started_at TEXT,
-      last_error_at TEXT,
-      processing_by TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      processed_at TEXT,
-      FOREIGN KEY(user_id) REFERENCES users(id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_upload_jobs_user_status ON upload_jobs(user_id, status, created_at DESC);
-  `);
+export type LlmStop = {
+  type: string;
+  location: string;
+  company?: string;
+  appointment_time?: string;
+  miles?: number;
+  cargo?: string;
+  bol?: string;
+};
 
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS upload_worker_lock (
-      lock_name TEXT PRIMARY KEY,
-      owner TEXT NOT NULL,
-      expires_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-  `);
+export type LlmExtractResult = {
+  trip_number: string;
+  start_date: string | null;
+  driver_name: string | null;
+  lead_driver: string | null;
+  co_driver: string | null;
+  truck_number: string | null;
+  trailer_number: string | null;
+  total_miles: number;
+  stops: LlmStop[];
+  customs_broker: string | null;
+  dispatcher_name: string | null;
+};
 
-  const cols = db.prepare('PRAGMA table_info(upload_jobs)').all() as Array<{ name: string }>;
-  const requiredColumns: Array<[string, string]> = [
-    ['content_hash', 'TEXT'],
-    ['attempt_count', 'INTEGER NOT NULL DEFAULT 0'],
-    ['max_attempts', 'INTEGER NOT NULL DEFAULT 3'],
-    ['cancel_requested', 'INTEGER NOT NULL DEFAULT 0'],
-    ['started_at', 'TEXT'],
-    ['last_error_at', 'TEXT'],
-    ['processing_by', 'TEXT'],
-  ];
-
-  for (const [name, definition] of requiredColumns) {
-    if (!cols.some((c) => c.name === name)) {
-      db.exec(`ALTER TABLE upload_jobs ADD COLUMN ${name} ${definition}`);
-    }
-  }
-
-  db.exec('CREATE INDEX IF NOT EXISTS idx_upload_jobs_user_hash ON upload_jobs(user_id, content_hash, created_at DESC)');
-  db.exec('CREATE INDEX IF NOT EXISTS idx_upload_jobs_status_id ON upload_jobs(status, id)');
-}
+// Schema is already in PG - no need to ensure it
 
 function monthToNumber(month: string): number {
   const m = month.slice(0, 3).toLowerCase();
@@ -169,7 +149,7 @@ export function parseDriverItinerary(text: string): ParsedTrip {
     const miles = Number((block.match(/([\d,]+(?:\.\d+)?)\s+miles\s+from\s+last\s+stop/i)?.[1] || '0').replace(/,/g, ''));
 
     const stopType =
-      type === 'DELIVER' ? 'DELIVER' :
+      type === 'DELIVERY' ? 'DELIVER' :
       type === 'PICKUP' ? 'PICKUP' :
       type === 'HOOK' ? 'HOOK' :
       type === 'DROP' ? 'DROP' :
@@ -199,7 +179,6 @@ export function parseDriverItinerary(text: string): ParsedTrip {
 
   const placeholders: string[] = [];
 
-  // Protocol heuristic: self pickup when pickup follows acquire(caledon)
   for (let i = 1; i < stops.length; i++) {
     const prev = stops[i - 1];
     const cur = stops[i];
@@ -222,29 +201,178 @@ export function parseDriverItinerary(text: string): ParsedTrip {
   };
 }
 
-export function mergeTripAndStops(db: Database.Database, userId: number, parsed: ParsedTrip, pdfPath: string) {
-  const sameTripAnyUser = db.prepare('SELECT trip_number, user_id FROM trips WHERE trip_number = ?').get(parsed.tripNumber) as { trip_number: string; user_id: number } | undefined;
+// ── LLM-based extraction using Z.AI ──────────────────────────────────────────
+
+const LLM_SYSTEM_PROMPT = `You are a dispatch itinerary parser. Extract structured trip data from the driver itinerary text provided.
+
+CRITICAL DISTINCTIONS:
+- "Name:" field with email like @dmtransport.ca = DISPATCHER (the person who issued the itinerary)
+- "Lead Driver:" = the actual driver
+- "Team Driver:" = co-driver (ONLY if a name appears after this field; if empty/null, set co_driver to null)
+- "Dispatched By:" = dispatcher
+- DO NOT confuse the dispatcher with the co-driver
+
+Return ONLY valid JSON matching this schema (no markdown, no explanation):
+{
+  "trip_number": "string (e.g. T12345, extract from document)",
+  "start_date": "YYYY-MM-DD or null",
+  "driver_name": "string or null (the actual driver from Lead Driver field)",
+  "lead_driver": "string or null (same as driver_name)",
+  "co_driver": "string or null (ONLY from Team Driver field, NOT the dispatcher)",
+  "truck_number": "string or null",
+  "trailer_number": "string or null",
+  "total_miles": number or 0,
+  "stops": [
+    {
+      "type": "PICKUP|DELIVER|HOOK|DROP|ACQUIRE|RELEASE|BORDER CROSSING",
+      "location": "string",
+      "company": "string or null",
+      "appointment_time": "string or null",
+      "miles": number or 0,
+      "cargo": "string or null",
+      "bol": "string or null"
+    }
+  ],
+  "customs_broker": "string or null",
+  "dispatcher_name": "string or null (the Name field or Dispatched By field, NOT the driver)"
+}`;
+
+export async function extractWithLlm(text: string): Promise<LlmExtractResult> {
+  if (!ZAI_API_KEY) {
+    throw new Error('ZAI_API_KEY not configured. Add it to .env.local');
+  }
+
+  const truncated = text.length > 8000 ? text.slice(0, 8000) : text;
+
+  const response = await fetch(ZAI_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${ZAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: ZAI_MODEL,
+      messages: [
+        { role: 'system', content: LLM_SYSTEM_PROMPT },
+        { role: 'user', content: `Parse this driver itinerary:\n\n${truncated}` },
+      ],
+      temperature: 0.05,
+      max_tokens: 4096,
+    }),
+  });
+
+  if (!response.ok) {
+    const errBody = await response.text().catch(() => '');
+    throw new Error(`Z.AI API error ${response.status}: ${errBody.slice(0, 200)}`);
+  }
+
+  const data = await response.json();
+  const content = data?.choices?.[0]?.message?.content;
+  if (!content) {
+    throw new Error('Empty response from LLM');
+  }
+
+  const cleaned = content.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
+
+  let parsed: LlmExtractResult;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch {
+    throw new Error(`LLM returned invalid JSON: ${cleaned.slice(0, 200)}`);
+  }
+
+  if (!parsed.trip_number || !/^T\d{4,}$/i.test(parsed.trip_number.trim())) {
+    throw new Error(`LLM extracted invalid trip number: ${parsed.trip_number}`);
+  }
+
+  parsed.trip_number = parsed.trip_number.toUpperCase().trim();
+  return parsed;
+}
+
+export function llmResultToParsedTrip(llm: LlmExtractResult, rawText: string): ParsedTrip {
+  const stops: ParsedStop[] = (llm.stops || []).map((s, i) => ({
+    stop_type: s.type?.toUpperCase() || 'PICKUP',
+    location: s.location || '',
+    miles_from_last: Number(s.miles) || 0,
+    date: llm.start_date,
+    event_index: i,
+  }));
+
+  const firstLoc = stops[0]?.location || '';
+  const lastLoc = stops.length > 0 ? stops[stops.length - 1].location : '';
+  const route = firstLoc && lastLoc ? `${firstLoc} → ${lastLoc}` : 'Unknown';
+
+  return {
+    tripNumber: llm.trip_number,
+    startDate: llm.start_date,
+    endDate: null,
+    totalMiles: Number(llm.total_miles) || 0,
+    route,
+    rawText,
+    notes: '',
+    stops,
+    placeholders: [],
+    hasDetectedTripNumber: true,
+    driverName: llm.driver_name,
+    leadDriver: llm.lead_driver,
+    coDriver: llm.co_driver,
+    truckNumber: llm.truck_number,
+    trailerNumber: llm.trailer_number,
+    customsBroker: llm.customs_broker,
+    dispatcherName: llm.dispatcher_name,
+  };
+}
+
+export async function mergeTripAndStops(userId: number, parsed: ParsedTrip, pdfPath: string) {
+  const d = db();
+
+  const sameTripAnyUser = await d.get(
+    'SELECT trip_number, user_id FROM trips WHERE trip_number = $1',
+    [parsed.tripNumber]
+  ) as { trip_number: string; user_id: number } | undefined;
+
   const effectiveTripNumber = sameTripAnyUser && sameTripAnyUser.user_id !== userId ? `${parsed.tripNumber}-U${userId}` : parsed.tripNumber;
 
-  const existing = db.prepare('SELECT trip_number FROM trips WHERE trip_number = ? AND user_id = ?').get(effectiveTripNumber, userId) as { trip_number: string } | undefined;
+  const existing = await d.get(
+    'SELECT trip_number FROM trips WHERE trip_number = $1 AND user_id = $2',
+    [effectiveTripNumber, userId]
+  ) as { trip_number: string } | undefined;
 
   if (!existing) {
-    db.prepare(`
-      INSERT INTO trips (trip_number, start_date, end_date, total_miles, route, status, notes, pdf_path, raw_data, user_id)
-      VALUES (?, ?, ?, ?, ?, 'Active', ?, ?, ?, ?)
-    `).run(effectiveTripNumber, parsed.startDate, parsed.endDate, parsed.totalMiles, parsed.route, '', pdfPath, parsed.rawText, userId);
+    await d.run(
+      `INSERT INTO trips (trip_number, start_date, end_date, total_miles, route, status, notes, pdf_path, raw_data, user_id, driver_name, lead_driver, truck_number, trailer_number, truck, trailer)
+      VALUES ($1, $2, $3, $4, $5, 'Active', $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+      [
+        effectiveTripNumber, parsed.startDate, parsed.endDate, parsed.totalMiles, parsed.route, '', pdfPath, parsed.rawText, userId,
+        parsed.driverName || null, parsed.leadDriver || null, parsed.truckNumber || null, parsed.trailerNumber || null,
+        parsed.truckNumber || null, parsed.trailerNumber || null
+      ]
+    );
   } else {
-    db.prepare(`
-      UPDATE trips
-      SET start_date = COALESCE(?, start_date),
-          end_date = COALESCE(?, end_date),
-          total_miles = CASE WHEN ? > 0 THEN ? ELSE total_miles END,
-          route = CASE WHEN ? != 'Unknown' THEN ? ELSE route END,
-          pdf_path = ?,
-          raw_data = ?,
-          user_id = ?
-      WHERE trip_number = ? AND user_id = ?
-    `).run(parsed.startDate, parsed.endDate, parsed.totalMiles, parsed.totalMiles, parsed.route, parsed.route, pdfPath, parsed.rawText, userId, effectiveTripNumber, userId);
+    await d.run(
+      `UPDATE trips
+      SET start_date = COALESCE($1, start_date),
+          end_date = COALESCE($2, end_date),
+          total_miles = CASE WHEN $3 > 0 THEN $3 ELSE total_miles END,
+          route = CASE WHEN $4 != 'Unknown' THEN $4 ELSE route END,
+          pdf_path = $5,
+          raw_data = $6,
+          user_id = $7,
+          driver_name = COALESCE($8, driver_name),
+          lead_driver = COALESCE($9, lead_driver),
+          truck_number = COALESCE($10, truck_number),
+          trailer_number = COALESCE($11, trailer_number),
+          truck = COALESCE($12, truck),
+          trailer = COALESCE($13, trailer)
+      WHERE trip_number = $14 AND user_id = $15`,
+      [
+        parsed.startDate, parsed.endDate, parsed.totalMiles, parsed.totalMiles, parsed.route, parsed.route,
+        pdfPath, parsed.rawText, userId,
+        parsed.driverName || null, parsed.leadDriver || null, parsed.truckNumber || null, parsed.trailerNumber || null,
+        parsed.truckNumber || null, parsed.trailerNumber || null,
+        effectiveTripNumber, userId
+      ]
+    );
   }
 
   const normalizeType = (t: string) => {
@@ -259,25 +387,35 @@ export function mergeTripAndStops(db: Database.Database, userId: number, parsed:
     return v;
   };
 
-  const existingStops = db.prepare('SELECT id, location, stop_type FROM stops WHERE trip_number = ? AND user_id = ?').all(effectiveTripNumber, userId) as Array<{ id: number; location: string; stop_type: string }>;
-  const dedupe = new Set(existingStops.map((s) => `${normalizeType(s.stop_type)}|${s.location.toLowerCase().trim()}`));
+  const existingStops = await d.query(
+    'SELECT id, location, stop_type FROM stops WHERE trip_number = $1 AND user_id = $2',
+    [effectiveTripNumber, userId]
+  ) as Array<{ id: number; location: string; stop_type: string }>;
 
-  const insertStop = db.prepare('INSERT INTO stops (trip_number, stop_type, location, date, miles_from_last, user_id) VALUES (?, ?, ?, ?, ?, ?)');
+  const dedupe = new Set(existingStops.map((s) => `${normalizeType(s.stop_type)}|${s.location.toLowerCase().trim()}`));
 
   for (const stop of parsed.stops) {
     const normalizedType = normalizeType(stop.stop_type);
     const key = `${normalizedType}|${stop.location.toLowerCase().trim()}`;
     if (dedupe.has(key)) continue;
-    insertStop.run(effectiveTripNumber, normalizedType, stop.location, stop.date, stop.miles_from_last, userId);
+    await d.run(
+      'INSERT INTO stops (trip_number, stop_type, location, date, miles_from_last, user_id) VALUES ($1, $2, $3, $4, $5, $6)',
+      [effectiveTripNumber, normalizedType, stop.location, stop.date, stop.miles_from_last, userId]
+    );
     dedupe.add(key);
   }
 
   // add placeholder pay rows when heuristics detect events
   if (parsed.placeholders.some((p) => p.includes('Self Pickup'))) {
-    const exists = db.prepare('SELECT id FROM extra_pay WHERE trip_number = ? AND user_id = ? AND type = ?').get(effectiveTripNumber, userId, 'Self Pickup') as { id: number } | undefined;
+    const exists = await d.get(
+      'SELECT id FROM extra_pay WHERE trip_number = $1 AND user_id = $2 AND type = $3',
+      [effectiveTripNumber, userId, 'Self Pickup']
+    ) as { id: number } | undefined;
     if (!exists) {
-      db.prepare('INSERT INTO extra_pay (trip_number, type, amount, quantity, date, user_id) VALUES (?, ?, ?, ?, ?, ?)')
-        .run(effectiveTripNumber, 'Self Pickup', 75, 1, parsed.startDate, userId);
+      await d.run(
+        'INSERT INTO extra_pay (trip_number, type, amount, quantity, date, user_id) VALUES ($1, $2, $3, $4, $5, $6)',
+        [effectiveTripNumber, 'Self Pickup', 75, 1, parsed.startDate, userId]
+      );
     }
   }
 
@@ -307,77 +445,118 @@ function isRetryableUploadError(message: string): boolean {
   );
 }
 
-export function acquireUploadWorkerLock(db: Database.Database, owner: string, ttlSeconds = 120): boolean {
-  ensureUploadSchema(db);
-  const tx = db.transaction(() => {
-    db.prepare("DELETE FROM upload_worker_lock WHERE lock_name = 'upload_queue' AND datetime(expires_at) <= datetime('now')").run();
-    const existing = db.prepare("SELECT owner FROM upload_worker_lock WHERE lock_name = 'upload_queue'").get() as { owner: string } | undefined;
-    if (existing) return false;
+export async function acquireUploadWorkerLock(owner: string, ttlSeconds = 120): Promise<boolean> {
+  const d = db();
 
-    db.prepare(`
-      INSERT INTO upload_worker_lock (lock_name, owner, expires_at, updated_at)
-      VALUES ('upload_queue', ?, datetime('now', ?), datetime('now'))
-    `).run(owner, `+${Math.max(10, ttlSeconds)} seconds`);
-    return true;
-  });
+  // Delete expired locks
+  await d.run("DELETE FROM upload_worker_lock WHERE lock_name = 'upload_queue' AND datetime(expires_at) <= datetime('now')", []);
 
-  return tx();
+  const existing = await d.get("SELECT owner FROM upload_worker_lock WHERE lock_name = 'upload_queue'", []);
+  if (existing) return false;
+
+  await d.run(
+    `INSERT INTO upload_worker_lock (lock_name, owner, expires_at, updated_at)
+    VALUES ('upload_queue', $1, datetime('now', $2), datetime('now'))`,
+    [owner, `+${Math.max(10, ttlSeconds)} seconds`]
+  );
+  return true;
 }
 
-export function releaseUploadWorkerLock(db: Database.Database, owner: string) {
-  ensureUploadSchema(db);
-  db.prepare("DELETE FROM upload_worker_lock WHERE lock_name = 'upload_queue' AND owner = ?").run(owner);
+export async function releaseUploadWorkerLock(owner: string) {
+  await db().run("DELETE FROM upload_worker_lock WHERE lock_name = 'upload_queue' AND owner = $1", [owner]);
 }
 
-function claimQueuedUploadJob(db: Database.Database, owner: string): UploadJob | null {
-  const tx = db.transaction(() => {
-    const job = db.prepare(`
+async function claimQueuedUploadJob(owner: string): Promise<UploadJob | null> {
+  const d = db();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const jobResult = await client.query(`
       SELECT *
       FROM upload_jobs
       WHERE status = 'queued' AND cancel_requested = 0 AND attempt_count < max_attempts
       ORDER BY id ASC
       LIMIT 1
-    `).get() as UploadJob | undefined;
+      FOR UPDATE SKIP LOCKED
+    `);
 
-    if (!job) return null;
+    const job = jobResult.rows[0] as UploadJob | undefined;
+    if (!job) {
+      await client.query('COMMIT');
+      return null;
+    }
 
-    const claimed = db.prepare(`
+    const claimed = await client.query(`
       UPDATE upload_jobs
-      SET status = 'processing', started_at = datetime('now'), processing_by = ?, updated_at = datetime('now')
-      WHERE id = ? AND status = 'queued'
-    `).run(owner, job.id);
+      SET status = 'processing', started_at = datetime('now'), processing_by = $1, updated_at = datetime('now')
+      WHERE id = $2 AND status = 'queued'
+    `, [owner, job.id]);
 
-    if (!claimed.changes) return null;
+    if (claimed.rowCount === 0) {
+      await client.query('COMMIT');
+      return null;
+    }
 
-    return db.prepare('SELECT * FROM upload_jobs WHERE id = ?').get(job.id) as UploadJob;
-  });
-
-  return tx();
+    await client.query('COMMIT');
+    return job;
+  } catch {
+    await client.query('ROLLBACK');
+    return null;
+  } finally {
+    client.release();
+  }
 }
 
-export function claimUploadJobById(db: Database.Database, id: number, owner: string): UploadJob | null {
-  const tx = db.transaction(() => {
-    const claimed = db.prepare(`
+export async function claimUploadJobById(id: number, owner: string): Promise<UploadJob | null> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const claimed = await client.query(`
       UPDATE upload_jobs
-      SET status = 'processing', started_at = datetime('now'), processing_by = ?, updated_at = datetime('now')
-      WHERE id = ? AND status = 'queued' AND cancel_requested = 0
-    `).run(owner, id);
+      SET status = 'processing', started_at = datetime('now'), processing_by = $1, updated_at = datetime('now')
+      WHERE id = $2 AND status = 'queued' AND cancel_requested = 0
+    `, [owner, id]);
 
-    if (!claimed.changes) return null;
-    return db.prepare('SELECT * FROM upload_jobs WHERE id = ?').get(id) as UploadJob;
-  });
+    if (claimed.rowCount === 0) {
+      await client.query('COMMIT');
+      return null;
+    }
 
-  return tx();
+    const jobResult = await client.query('SELECT * FROM upload_jobs WHERE id = $1', [id]);
+    await client.query('COMMIT');
+    return jobResult.rows[0] as UploadJob;
+  } catch {
+    await client.query('ROLLBACK');
+    return null;
+  } finally {
+    client.release();
+  }
 }
 
-export async function processClaimedUploadJob(db: Database.Database, job: UploadJob) {
+export async function processClaimedUploadJob(job: UploadJob) {
+  const d = db();
   try {
     const cleanStoredPath = String(job.stored_path || '').replace(/^\/+/, '');
     const absPath = join(process.cwd(), 'public', cleanStoredPath);
     const buffer = await readFile(absPath);
 
     const rawText = await extractTextFromPdf(buffer);
-    const parsed = parseDriverItinerary(rawText);
+
+    let parsed: ParsedTrip;
+
+    if (ZAI_API_KEY) {
+      try {
+        const llmResult = await extractWithLlm(rawText);
+        parsed = llmResultToParsedTrip(llmResult, rawText);
+      } catch (llmError: any) {
+        console.warn(`LLM extraction failed, falling back to regex: ${llmError.message}`);
+        parsed = parseDriverItinerary(rawText);
+      }
+    } else {
+      parsed = parseDriverItinerary(rawText);
+    }
 
     if (!parsed.hasDetectedTripNumber) {
       throw new Error('Could not detect trip number in PDF. Please verify the document format.');
@@ -387,50 +566,58 @@ export async function processClaimedUploadJob(db: Database.Database, job: Upload
       throw new Error('Parsed trip number is invalid. Please upload a valid itinerary PDF.');
     }
 
-    const tx = db.transaction(() => {
-      const tripNumber = mergeTripAndStops(db, job.user_id, parsed, job.stored_path);
-      db.prepare(`
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const tripNumber = await mergeTripAndStops(job.user_id, parsed, job.stored_path);
+      await client.query(`
         UPDATE upload_jobs
         SET status = 'done',
-            trip_number = ?,
+            trip_number = $1,
             attempt_count = attempt_count + 1,
             error_message = NULL,
             processing_by = NULL,
             updated_at = datetime('now'),
             processed_at = datetime('now')
-        WHERE id = ?
-      `).run(tripNumber, job.id);
-      return tripNumber;
-    });
-
-    const tripNumber = tx();
-    return { ok: true as const, jobId: job.id, tripNumber };
+        WHERE id = $2
+      `, [tripNumber, job.id]);
+      await client.query('COMMIT');
+      return { ok: true as const, jobId: job.id, tripNumber };
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
   } catch (error: any) {
     const message = String(error?.message || 'Upload processing failed');
     const retryable = isRetryableUploadError(message);
 
-    const row = db.prepare('SELECT attempt_count, max_attempts FROM upload_jobs WHERE id = ?').get(job.id) as { attempt_count: number; max_attempts: number } | undefined;
+    const row = await d.get(
+      'SELECT attempt_count, max_attempts FROM upload_jobs WHERE id = $1',
+      [job.id]
+    ) as { attempt_count: number; max_attempts: number } | undefined;
     const nextAttempt = (row?.attempt_count || 0) + 1;
     const maxAttempts = row?.max_attempts || 3;
     const shouldRetry = retryable && nextAttempt < maxAttempts;
 
-    db.prepare(`
+    await d.run(`
       UPDATE upload_jobs
-      SET status = ?,
-          attempt_count = ?,
-          error_message = ?,
+      SET status = $1,
+          attempt_count = $2,
+          error_message = $3,
           last_error_at = datetime('now'),
           processing_by = NULL,
           updated_at = datetime('now')
-      WHERE id = ?
-    `).run(shouldRetry ? 'queued' : 'failed', nextAttempt, message, job.id);
+      WHERE id = $4
+    `, [shouldRetry ? 'queued' : 'failed', nextAttempt, message, job.id]);
 
     return { ok: false as const, jobId: job.id, error: message, retryable: shouldRetry };
   }
 }
 
-export async function processNextQueuedUploadJob(db: Database.Database, owner: string) {
-  const claimed = claimQueuedUploadJob(db, owner);
+export async function processNextQueuedUploadJob(owner: string) {
+  const claimed = await claimQueuedUploadJob(owner);
   if (!claimed) return { ok: true as const, empty: true as const };
-  return processClaimedUploadJob(db, claimed);
+  return processClaimedUploadJob(claimed);
 }

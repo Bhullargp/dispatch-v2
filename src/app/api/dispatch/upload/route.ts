@@ -2,30 +2,24 @@ import { NextResponse } from 'next/server';
 import { writeFile, mkdir } from 'fs/promises';
 import { join } from 'path';
 import crypto from 'crypto';
-import Database from 'better-sqlite3';
-import path from 'path';
+import { db } from '@/lib/db';
 import { ensureDispatchAuthSchemaAndSeed } from '@/lib/dispatch-auth';
 import { requireAccess } from '@/lib/ownership';
-import { claimUploadJobById, ensureUploadSchema, processClaimedUploadJob } from '@/lib/pdf-processing';
-
-const dbPath = path.resolve(process.cwd(), 'dispatch.db');
+import { claimUploadJobById, processClaimedUploadJob } from '@/lib/pdf-processing';
 
 export async function GET(req: Request) {
   try {
-    ensureDispatchAuthSchemaAndSeed();
+    await ensureDispatchAuthSchemaAndSeed();
     const { access, response } = requireAccess(req);
     if (response || !access) return response;
 
-    const db = new Database(dbPath);
-    ensureUploadSchema(db);
-
-    const jobs = db.prepare(`
+    const jobs = await db().query(`
       SELECT id, original_filename, status, trip_number, error_message, attempt_count, max_attempts, created_at, updated_at, processed_at
       FROM upload_jobs
-      WHERE user_id = ?
+      WHERE user_id = $1
       ORDER BY id DESC
       LIMIT 8
-    `).all(access.session.userId);
+    `, [access.session.userId]);
 
     return NextResponse.json({ jobs });
   } catch (error: any) {
@@ -34,11 +28,10 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  let db: Database.Database | null = null;
   let jobId: number | null = null;
 
   try {
-    ensureDispatchAuthSchemaAndSeed();
+    await ensureDispatchAuthSchemaAndSeed();
     const { access, response } = requireAccess(req);
     if (response || !access) return response;
 
@@ -54,17 +47,14 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Invalid PDF file. Please upload a valid PDF.' }, { status: 400 });
     }
 
-    db = new Database(dbPath);
-    ensureUploadSchema(db);
-
     const contentHash = crypto.createHash('sha256').update(buffer).digest('hex');
-    const duplicateJob = db.prepare(`
+    const duplicateJob = await db().get(`
       SELECT id, trip_number
       FROM upload_jobs
-      WHERE user_id = ? AND content_hash = ? AND status IN ('processing', 'done')
+      WHERE user_id = $1 AND content_hash = $2 AND status IN ('processing', 'done')
       ORDER BY id DESC
       LIMIT 1
-    `).get(access.session.userId, contentHash) as { id: number; trip_number?: string } | undefined;
+    `, [access.session.userId, contentHash]) as { id: number; trip_number?: string } | undefined;
 
     if (duplicateJob) {
       return NextResponse.json(
@@ -85,18 +75,25 @@ export async function POST(req: Request) {
     await writeFile(filePath, buffer);
     const relativePath = `/itineraries/${filename}`;
 
-    const inserted = db.prepare(`
+    const inserted = await db().run(`
       INSERT INTO upload_jobs (user_id, original_filename, stored_path, mime_type, size_bytes, content_hash, status, max_attempts)
-      VALUES (?, ?, ?, ?, ?, ?, 'queued', 3)
-    `).run(access.session.userId, file.name, relativePath, file.type || 'application/pdf', file.size || buffer.length, contentHash);
-    jobId = Number(inserted.lastInsertRowid);
+      VALUES ($1, $2, $3, $4, $5, $6, 'queued', 3)
+    `, [access.session.userId, file.name, relativePath, file.type || 'application/pdf', file.size || buffer.length, contentHash]);
+    jobId = inserted.changes;
 
-    const claimed = claimUploadJobById(db, jobId, `inline-${process.pid}`);
+    // Try to get the actual inserted ID
+    const insertedJob = await db().get(
+      'SELECT id FROM upload_jobs WHERE user_id = $1 AND content_hash = $2 ORDER BY id DESC LIMIT 1',
+      [access.session.userId, contentHash]
+    ) as { id: number } | undefined;
+    if (insertedJob) jobId = insertedJob.id;
+
+    const claimed = await claimUploadJobById(jobId!, `inline-${process.pid}`);
     if (!claimed) {
       return NextResponse.json({ success: true, queued: true, jobId, message: 'Upload queued for background processing.' }, { status: 202 });
     }
 
-    const result = await processClaimedUploadJob(db, claimed);
+    const result = await processClaimedUploadJob(claimed);
 
     if (!result.ok) {
       const status = result.retryable ? 202 : 400;
@@ -112,7 +109,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const row = db.prepare('SELECT trip_number FROM upload_jobs WHERE id = ?').get(jobId) as { trip_number: string } | undefined;
+    const row = await db().get('SELECT trip_number FROM upload_jobs WHERE id = $1', [jobId]) as { trip_number: string } | undefined;
 
     return NextResponse.json({
       success: true,
@@ -122,12 +119,14 @@ export async function POST(req: Request) {
       path: relativePath,
     });
   } catch (error: any) {
-    if (db && jobId) {
-      db.prepare(`
-        UPDATE upload_jobs
-        SET status = 'failed', error_message = ?, updated_at = datetime('now'), last_error_at = datetime('now')
-        WHERE id = ?
-      `).run(error.message || 'Upload processing failed', jobId);
+    if (jobId) {
+      try {
+        await db().run(`
+          UPDATE upload_jobs
+          SET status = 'failed', error_message = $1, updated_at = datetime('now'), last_error_at = datetime('now')
+          WHERE id = $2
+        `, [error.message || 'Upload processing failed', jobId]);
+      } catch {}
     }
 
     const message = String(error?.message || 'Upload processing failed');

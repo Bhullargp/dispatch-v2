@@ -1,20 +1,20 @@
 import { NextResponse } from 'next/server';
-import { ensureDispatchAuthSchemaAndSeed, getDb, hashSecret } from '@/lib/dispatch-auth';
+import { ensureDispatchAuthSchemaAndSeed, hashSecret } from '@/lib/dispatch-auth';
+import { db } from '@/lib/db';
 import { requireAccess } from '@/lib/ownership';
 
 export async function GET(request: Request) {
   try {
-    ensureDispatchAuthSchemaAndSeed();
+    await ensureDispatchAuthSchemaAndSeed();
     const { access, response } = requireAccess(request);
     if (response || !access) return response;
     if (!access.isAdmin) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
 
-    const db = getDb();
-    const users = db.prepare(`
+    const users = await db().query(`
       SELECT id, username, email, role, force_password_change, last_password_reset_at, created_at
       FROM users
       ORDER BY role DESC, username ASC
-    `).all();
+    `, []);
 
     return NextResponse.json({ users });
   } catch (error: any) {
@@ -24,7 +24,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    ensureDispatchAuthSchemaAndSeed();
+    await ensureDispatchAuthSchemaAndSeed();
     const { access, response } = requireAccess(request);
     if (response || !access) return response;
     if (!access.isAdmin) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
@@ -39,38 +39,29 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Temporary password must be at least 8 characters' }, { status: 400 });
     }
 
-    const db = getDb();
-    const targetUser = db.prepare('SELECT id, username, email, role FROM users WHERE id = ?').get(userId) as any;
+    const targetUser = await db().get('SELECT id, username, email, role FROM users WHERE id = $1', [userId]) as any;
     if (!targetUser) return NextResponse.json({ error: 'User not found' }, { status: 404 });
 
-    db.prepare(`
-      UPDATE users
-      SET password_hash = ?,
-          force_password_change = ?,
-          last_password_reset_at = datetime('now')
-      WHERE id = ?
-    `).run(hashSecret(temporaryPassword), forcePasswordChange ? 1 : 0, userId);
+    await db().run(
+      `UPDATE users SET password_hash = $1, force_password_change = $2, last_password_reset_at = datetime('now') WHERE id = $3`,
+      [hashSecret(temporaryPassword), forcePasswordChange ? 1 : 0, userId]
+    );
 
-    db.prepare(`
-      INSERT INTO admin_audit_log (
-        actor_user_id,
-        actor_username,
-        target_user_id,
-        target_username,
-        action,
-        metadata
-      ) VALUES (?, ?, ?, ?, ?, ?)
-    `).run(
-      access.session.userId,
-      access.session.username,
-      targetUser.id,
-      targetUser.username,
-      'admin_password_reset',
-      JSON.stringify({
-        targetEmail: targetUser.email,
-        forcePasswordChange,
-        resetAt: new Date().toISOString()
-      })
+    await db().run(
+      `INSERT INTO admin_audit_log (actor_user_id, actor_username, target_user_id, target_username, action, metadata, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, datetime('now'))`,
+      [
+        access.session.userId,
+        access.session.username,
+        targetUser.id,
+        targetUser.username,
+        'admin_password_reset',
+        JSON.stringify({
+          targetEmail: targetUser.email,
+          forcePasswordChange,
+          resetAt: new Date().toISOString()
+        })
+      ]
     );
 
     return NextResponse.json({

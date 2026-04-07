@@ -1,21 +1,22 @@
 import { NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/require-auth';
-import Database from 'better-sqlite3';
-import path from 'path';
-
-const dbPath = path.resolve(process.cwd(), 'dispatch.db');
+import { db } from '@/lib/db';
 
 export async function GET(request: Request) {
   try {
     const unauthorized = requireAuth(request);
     if (unauthorized) return unauthorized;
-    const db = new Database(dbPath);
-    
-    // Get custom rates if they exist, otherwise return defaults
-    let rates = db.prepare('SELECT * FROM pay_rates').all();
+
+    // Get base mileage rates (single source of truth)
+    let mileage = await db().get('SELECT * FROM mileage_rates WHERE id = 1', []) as any;
+    if (!mileage) {
+      await db().run('INSERT INTO mileage_rates (id, us_per_mile, canada_under_1000, canada_over_1000) VALUES (1, 1.06, 1.26, 1.16)', []);
+      mileage = { us_per_mile: 1.06, canada_under_1000: 1.26, canada_over_1000: 1.16 };
+    }
+
+    let rates = await db().query('SELECT * FROM pay_rates', []);
     
     if (rates.length === 0) {
-      // Insert default rates
       const defaultRates = [
         { name: 'Trailer Switch', rate: 30, unit: 'qty' },
         { name: 'Extra Delivery', rate: 75, unit: 'qty' },
@@ -31,13 +32,13 @@ export async function GET(request: Request) {
         { name: 'Layover', rate: 100, unit: 'qty' }
       ];
       
-      const insert = db.prepare('INSERT INTO pay_rates (name, rate, unit) VALUES (?, ?, ?)');
-      defaultRates.forEach(r => insert.run(r.name, r.rate, r.unit));
-      rates = db.prepare('SELECT * FROM pay_rates').all();
+      for (const r of defaultRates) {
+        await db().run('INSERT INTO pay_rates (name, rate, unit) VALUES ($1, $2, $3)', [r.name, r.rate, r.unit]);
+      }
+      rates = await db().query('SELECT * FROM pay_rates', []);
     }
     
-    db.close();
-    return NextResponse.json(rates);
+    return NextResponse.json({ mileage, rates });
   } catch (error) {
     console.error('Error fetching rates:', error);
     return NextResponse.json({ error: 'Failed to fetch rates' }, { status: 500 });
@@ -48,19 +49,14 @@ export async function POST(request: Request) {
   try {
     const unauthorized = requireAuth(request);
     if (unauthorized) return unauthorized;
-    const db = new Database(dbPath);
     const body = await request.json();
     
     if (body.rates && Array.isArray(body.rates)) {
-      // Update multiple rates
-      const update = db.prepare('UPDATE pay_rates SET rate = ?, unit = ? WHERE name = ?');
-      
-      body.rates.forEach((r: any) => {
-        update.run(r.rate, r.unit, r.name);
-      });
+      for (const r of body.rates as any[]) {
+        await db().run('UPDATE pay_rates SET rate = $1, unit = $2 WHERE name = $3', [r.rate, r.unit, r.name]);
+      }
     }
     
-    db.close();
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Error saving rates:', error);

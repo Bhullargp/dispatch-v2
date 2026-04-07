@@ -13,6 +13,15 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
       try {
         const res = await fetch('/api/auth/session', { credentials: 'include', cache: 'no-store' });
         if (res.ok) {
+          const data = await res.json();
+          // Redirect to setup wizard if not complete (but not if already on setup/settings page)
+          if (!data?.user?.setupComplete) {
+            const currentPath = window.location.pathname;
+            if (currentPath !== '/dispatch/setup' && currentPath !== '/dispatch/settings' && currentPath !== '/dispatch/login') {
+              router.replace('/dispatch/setup');
+              return;
+            }
+          }
           setAuthed(true);
         } else {
           router.replace('/dispatch/login');
@@ -27,7 +36,7 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
   }, [router]);
 
   if (loading) {
-    return <div className="min-h-screen bg-[#050505]" />;
+    return <div className="min-h-screen bg-zinc-950" />;
   }
 
   if (!authed) return null;

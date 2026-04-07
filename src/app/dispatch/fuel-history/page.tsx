@@ -1,25 +1,25 @@
+export const dynamic = 'force-dynamic';
+
 import React from 'react';
-import Database from 'better-sqlite3';
-import path from 'path';
+import { db } from '@/lib/db';
 import { redirect } from 'next/navigation';
 import FuelHistoryClient from './FuelHistoryClient';
 import { ensureDispatchAuthSchemaAndSeed } from '@/lib/dispatch-auth';
 import { getServerAccess, userScopedWhere } from '@/lib/ownership';
 
-const dbPath = path.resolve(process.cwd(), 'dispatch.db');
-
 export default async function FuelHistoryPage({ searchParams }: { searchParams?: Promise<{ adminMode?: string }> }) {
-  ensureDispatchAuthSchemaAndSeed();
+  await ensureDispatchAuthSchemaAndSeed();
   const sp = searchParams ? await searchParams : undefined;
   const access = await getServerAccess(sp?.adminMode);
   if (!access) redirect('/dispatch/login');
   if (access.mustChangePassword) redirect('/dispatch/login?forcePasswordChange=1');
 
-  const db = new Database(dbPath);
+  const user = await db().get('SELECT setup_complete FROM users WHERE id = $1', [access.session.userId]) as any;
+  if (!user?.setup_complete) redirect('/dispatch/setup');
   const scope = userScopedWhere(access, 'user_id');
 
-  const fuelEntries = db.prepare(`SELECT * FROM fuel WHERE ${scope.clause} ORDER BY date DESC LIMIT 200`).all(...scope.params);
-  const trips = db.prepare(`SELECT trip_number, status, start_date FROM trips WHERE status != 'Cancelled' AND ${scope.clause} ORDER BY start_date DESC LIMIT 30`).all(...scope.params);
+  const fuelEntries = await db().query(`SELECT * FROM fuel WHERE ${scope.clause} ORDER BY date DESC LIMIT 200`, scope.params);
+  const trips = await db().query(`SELECT trip_number, status, start_date FROM trips WHERE status != 'Cancelled' AND ${scope.clause} ORDER BY start_date DESC LIMIT 30`, scope.params);
 
   return <FuelHistoryClient initialFuel={fuelEntries} trips={trips} />;
 }

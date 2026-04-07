@@ -438,7 +438,7 @@ export default function MobileQuickAddPanel({ trips, isOpen, onClose }: MobileQu
               <select
                 value={selectedTrip}
                 onChange={(e) => setSelectedTrip(e.target.value)}
-                className="w-full bg-zinc-900 border border-zinc-800 rounded-xl py-3 px-4 text-base font-black text-blue-500 focus:border-blue-600 outline-none"
+                className="w-full bg-zinc-900 border border-zinc-800 rounded-xl py-3 px-4 text-base font-black text-emerald-400 focus:border-emerald-600 outline-none"
               >
                 {trips.map((trip: any) => (
                   <option key={trip.trip_number} value={trip.trip_number}>
@@ -452,7 +452,7 @@ export default function MobileQuickAddPanel({ trips, isOpen, onClose }: MobileQu
             <div className="grid grid-cols-2 gap-3">
               <button
                 onClick={() => setActiveModal('extras')}
-                className="bg-blue-600/20 hover:bg-blue-600/30 border border-blue-600/30 rounded-2xl py-4 flex flex-col items-center justify-center gap-1.5 active:scale-95 transition-all h-24"
+                className="bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-600/30 rounded-2xl py-4 flex flex-col items-center justify-center gap-1.5 active:scale-95 transition-all h-24"
               >
                 <span className="text-2xl">💰</span>
                 <span className="text-[10px] font-black uppercase">Extra Pay</span>
@@ -488,13 +488,13 @@ export default function MobileQuickAddPanel({ trips, isOpen, onClose }: MobileQu
             </div>
             
             {/* Trip indicator with Change button */}
-            <div className="bg-blue-600/20 border border-blue-600/30 rounded-xl p-3 mb-4 flex items-center justify-between">
-              <span className="text-xs font-black uppercase text-blue-400">
+            <div className="bg-emerald-600/20 border border-emerald-600/30 rounded-xl p-3 mb-4 flex items-center justify-between">
+              <span className="text-xs font-black uppercase text-emerald-300">
                 Adding to trip: {activeTripLabel}
               </span>
               <button 
                 onClick={() => setActiveModal(null)} 
-                className="text-[10px] font-bold bg-blue-600/40 hover:bg-blue-600/60 text-blue-300 px-2 py-1 rounded-lg uppercase"
+                className="text-[10px] font-bold bg-emerald-600/40 hover:bg-emerald-600/60 text-emerald-300 px-2 py-1 rounded-lg uppercase"
               >
                 Change
               </button>
@@ -528,7 +528,7 @@ export default function MobileQuickAddPanel({ trips, isOpen, onClose }: MobileQu
                                 <option key={t.value} value={t.value}>{t.label}</option>
                               ))}
                             </select>
-                            <button onClick={() => handleUpdateExtraPay(payable.type, increment)} className="w-8 h-8 bg-zinc-800 hover:bg-blue-600 rounded-lg flex items-center justify-center text-lg transition-all font-black border border-zinc-700">+</button>
+                            <button onClick={() => handleUpdateExtraPay(payable.type, increment)} className="w-8 h-8 bg-zinc-800 hover:bg-emerald-600 rounded-lg flex items-center justify-center text-lg transition-all font-black border border-zinc-700">+</button>
                           </div>
                         </div>
                       )
@@ -543,7 +543,7 @@ export default function MobileQuickAddPanel({ trips, isOpen, onClose }: MobileQu
                         <div className="flex items-center gap-2">
                           <button onClick={() => handleUpdateExtraPay(payable.type, -1)} className="w-8 h-8 bg-zinc-800 hover:bg-red-900 rounded-lg flex items-center justify-center text-lg transition-all font-black border border-zinc-700">-</button>
                           <span className="text-lg font-mono font-black w-9 text-center">{qty}</span>
-                          <button onClick={() => handleUpdateExtraPay(payable.type, 1)} className="w-8 h-8 bg-zinc-800 hover:bg-blue-600 rounded-lg flex items-center justify-center text-lg transition-all font-black border border-zinc-700">+</button>
+                          <button onClick={() => handleUpdateExtraPay(payable.type, 1)} className="w-8 h-8 bg-zinc-800 hover:bg-emerald-600 rounded-lg flex items-center justify-center text-lg transition-all font-black border border-zinc-700">+</button>
                         </div>
                       </div>
                     )
@@ -585,7 +585,7 @@ export default function MobileQuickAddPanel({ trips, isOpen, onClose }: MobileQu
                 <button
                   onClick={handleSaveExtras}
                   disabled={isSaving || !hasValidExtras}
-                  className="w-full bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-800 disabled:text-zinc-500 text-white font-black uppercase py-4 rounded-2xl mt-4"
+                  className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-800 disabled:text-zinc-500 text-white font-black uppercase py-4 rounded-2xl mt-4"
                 >
                   {isSaving ? 'Saving...' : 'Save Extras'}
                 </button>
@@ -640,7 +640,7 @@ export default function MobileQuickAddPanel({ trips, isOpen, onClose }: MobileQu
                 </select>
                 {/* Unit indicator (auto-set by province) */}
                 <div className="text-xs text-zinc-500 text-center mb-1">
-                  Unit: <span className={`font-bold ${fuelForm.unit === 'Litres' ? 'text-blue-400' : 'text-green-400'}`}>
+                  Unit: <span className={`font-bold ${fuelForm.unit === 'Litres' ? 'text-emerald-300' : 'text-green-400'}`}>
                     {fuelForm.unit}
                   </span> {fuelForm.province && `(auto-set from ${LOCATIONS[fuelForm.province as keyof typeof LOCATIONS]?.name || 'province'})`}
                 </div>
@@ -657,7 +657,7 @@ export default function MobileQuickAddPanel({ trips, isOpen, onClose }: MobileQu
                       }`}
                     />
                     <span className={`absolute right-2 top-1/2 -translate-y-1/2 text-xs font-black px-2 py-1 rounded ${
-                      fuelForm.unit === 'Litres' ? 'bg-blue-600/30 text-blue-400' : 'bg-green-600/30 text-green-400'
+                      fuelForm.unit === 'Litres' ? 'bg-emerald-600/30 text-emerald-300' : 'bg-green-600/30 text-green-400'
                     }`}>
                       {fuelForm.unit === 'Litres' ? 'L' : 'Gal'}
                     </span>

@@ -2,7 +2,6 @@
 
 import React, { useState } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
 import AuthGuard from './AuthGuard';
 import FloatingAddButton from './FloatingAddButton';
 import MobileQuickAddPanel from './MobileQuickAddPanel';
@@ -21,15 +20,7 @@ export default function ActiveTripDataPortal({ trip, fuelEntries, extraPay, inve
   const [isSaving, setIsSaving] = useState(false);
   const [editingFuelId, setEditingFuelId] = useState<number | null>(null);
   const [isStatusDropdownOpen, setStatusDropdownOpen] = useState(false);
-  const pathname = usePathname();
   const [isQuickAddOpen, setIsQuickAddOpen] = useState(false);
-
-  // Desktop navigation tabs
-  const desktopNavItems = [
-    { name: 'Trip Sheet', path: '/dispatch', icon: '📋' },
-    { name: 'Active Trip', path: '/dispatch/active', icon: '🚛' },
-    { name: 'Fuel History', path: '/dispatch/fuel-history', icon: '⛽' },
-  ];
 
   // Fuel Form State
   const [fuelForm, setFuelForm] = useState({
@@ -196,47 +187,8 @@ export default function ActiveTripDataPortal({ trip, fuelEntries, extraPay, inve
 
   return (
     <AuthGuard>
-    {/* Desktop Header - Show on md: and above, hidden on mobile */}
-    <header className="hidden md:block max-w-7xl mx-auto mb-8 pt-8 px-4">
-      <div className="flex justify-between items-end border-b border-zinc-900 pb-6">
-        <div className="space-y-2">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center shadow-[0_0_20px_rgba(37,99,235,0.3)]">
-              <span className="text-sm font-black">DM</span>
-            </div>
-            <h1 className="text-4xl font-black tracking-tighter uppercase leading-none">Active Trip</h1>
-          </div>
-          <p className="text-zinc-500 text-[10px] font-bold uppercase tracking-[0.4em] ml-11">Fleet Logistics Command</p>
-        </div>
-        
-        {/* Desktop Navigation Tabs */}
-        <nav className="flex items-center gap-1 bg-zinc-900/50 rounded-2xl p-1.5 border border-zinc-800/50">
-          {desktopNavItems.map((item) => (
-            <Link 
-              key={item.path} 
-              href={item.path}
-              className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-[11px] font-black uppercase tracking-wider transition-all ${
-                pathname === item.path 
-                  ? 'bg-blue-600 text-white shadow-[0_0_15px_rgba(37,99,235,0.4)]' 
-                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'
-              }`}
-            >
-              <span>{item.icon}</span>
-              <span>{item.name}</span>
-            </Link>
-          ))}
-        </nav>
-        
-        <div className="flex items-center gap-4">
-          <Link href="/" className="text-[10px] font-black uppercase tracking-widest bg-zinc-900 hover:bg-zinc-800 px-6 py-3 rounded-xl border border-zinc-800 transition-all shadow-xl">
-            ← Dashboard
-          </Link>
-        </div>
-      </div>
-    </header>
-
     {/* Mobile Summary Bar - Show only on mobile */}
-    <div className="md:hidden sticky top-0 z-50 bg-blue-600 px-4 py-3 shadow-lg flex justify-between items-center">
+    <div className="md:hidden sticky top-0 z-50 bg-emerald-600 px-4 py-3 shadow-lg flex justify-between items-center">
         <div className="flex items-center gap-3">
           <Link 
             href="/dispatch" 
@@ -278,7 +230,7 @@ export default function ActiveTripDataPortal({ trip, fuelEntries, extraPay, inve
         {/* Odometer Update */}
         <section className="bg-zinc-900/50 border border-zinc-800 rounded-3xl p-5">
           <h2 className="text-xs font-black uppercase text-zinc-500 mb-4 flex items-center gap-2">
-            <span className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></span>
+            <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span>
             Odometer Update
           </h2>
           <div className="grid grid-cols-2 gap-4">
@@ -288,7 +240,7 @@ export default function ActiveTripDataPortal({ trip, fuelEntries, extraPay, inve
                 type="number"
                 defaultValue={currentTrip.start_odometer}
                 onBlur={(e) => handleOdometerUpdate('start_odometer', e.target.value)}
-                className="w-full bg-zinc-950 border-2 border-zinc-800 rounded-2xl py-4 px-4 text-2xl font-black text-blue-500 focus:border-blue-600 outline-none transition-all"
+                className="w-full bg-zinc-950 border-2 border-zinc-800 rounded-2xl py-4 px-4 text-2xl font-black text-emerald-400 focus:border-emerald-600 outline-none transition-all"
               />
             </div>
             <div>
@@ -312,14 +264,14 @@ export default function ActiveTripDataPortal({ trip, fuelEntries, extraPay, inve
               placeholder="Trailer #"
               defaultValue={currentTrip.trailer_number}
               onBlur={(e) => handleTrailerUpdate(e.target.value)}
-              className="w-full bg-zinc-950 border-2 border-zinc-800 rounded-2xl py-4 px-4 text-xl font-bold focus:border-blue-600 outline-none"
+              className="w-full bg-zinc-950 border-2 border-zinc-800 rounded-2xl py-4 px-4 text-xl font-bold focus:border-emerald-600 outline-none"
             />
             <div className="mt-3 flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
                 {inventory.slice(0, 5).map(t => (
                     <button 
                         key={t.trailer_number}
                         onClick={() => handleTrailerUpdate(t.trailer_number)}
-                        className="bg-zinc-800 px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap active:bg-blue-600"
+                        className="bg-zinc-800 px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap active:bg-emerald-600"
                     >
                         {t.trailer_number}
                     </button>
@@ -338,7 +290,7 @@ export default function ActiveTripDataPortal({ trip, fuelEntries, extraPay, inve
                 onClick={() => toggleExtra(extra.type, extra.amount)}
                 className="bg-zinc-800/50 hover:bg-zinc-800 border border-zinc-700/50 py-4 rounded-2xl text-center transition-all active:scale-95 group"
               >
-                <div className="text-xs font-bold uppercase text-zinc-400 group-active:text-blue-400">{extra.label}</div>
+                <div className="text-xs font-bold uppercase text-zinc-400 group-active:text-emerald-400">{extra.label}</div>
                 <div className="text-lg font-black">${extra.amount}</div>
               </button>
             ))}
@@ -348,7 +300,7 @@ export default function ActiveTripDataPortal({ trip, fuelEntries, extraPay, inve
               {localExtras.map((e, idx) => (
                 <div key={idx} className="flex justify-between items-center bg-zinc-950/50 p-3 rounded-xl border border-zinc-800/50">
                   <span className="text-xs font-bold uppercase">{e.type}</span>
-                  <span className="font-black text-blue-500">${e.amount}</span>
+                  <span className="font-black text-emerald-400">${e.amount}</span>
                 </div>
               ))}
             </div>
@@ -375,7 +327,7 @@ export default function ActiveTripDataPortal({ trip, fuelEntries, extraPay, inve
                 type="date"
                 value={fuelForm.date}
                 onChange={e => setFuelForm({...fuelForm, date: e.target.value})}
-                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-sm font-bold outline-none focus:border-blue-500 [color-scheme:dark]"
+                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-sm font-bold outline-none focus:border-emerald-500 [color-scheme:dark]"
                 required
               />
             </div>
@@ -384,7 +336,7 @@ export default function ActiveTripDataPortal({ trip, fuelEntries, extraPay, inve
                 placeholder="City/Loc"
                 value={fuelForm.city}
                 onChange={e => setFuelForm({...fuelForm, city: e.target.value})}
-                className="bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-sm font-bold outline-none focus:border-blue-500"
+                className="bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-sm font-bold outline-none focus:border-emerald-500"
                 required
               />
               <input 
@@ -393,7 +345,7 @@ export default function ActiveTripDataPortal({ trip, fuelEntries, extraPay, inve
                 placeholder="Qty"
                 value={fuelForm.qty}
                 onChange={e => setFuelForm({...fuelForm, qty: e.target.value})}
-                className="bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-sm font-bold outline-none focus:border-blue-500"
+                className="bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-sm font-bold outline-none focus:border-emerald-500"
                 required
               />
             </div>
@@ -404,7 +356,7 @@ export default function ActiveTripDataPortal({ trip, fuelEntries, extraPay, inve
                 placeholder="Amount"
                 value={fuelForm.amount}
                 onChange={e => setFuelForm({...fuelForm, amount: e.target.value})}
-                className="bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-sm font-bold outline-none focus:border-blue-500"
+                className="bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-sm font-bold outline-none focus:border-emerald-500"
                 required
               />
               <input 
@@ -412,7 +364,7 @@ export default function ActiveTripDataPortal({ trip, fuelEntries, extraPay, inve
                 placeholder="ODO at Fuel"
                 value={fuelForm.odo}
                 onChange={e => setFuelForm({...fuelForm, odo: e.target.value})}
-                className="bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-sm font-bold outline-none focus:border-blue-500"
+                className="bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-sm font-bold outline-none focus:border-emerald-500"
               />
             </div>
             <div className="grid grid-cols-2 gap-3">
@@ -420,12 +372,12 @@ export default function ActiveTripDataPortal({ trip, fuelEntries, extraPay, inve
                 <button 
                   type="button" 
                   onClick={() => setFuelForm({...fuelForm, unit: 'G'})}
-                  className={`flex-1 py-3 text-[10px] font-black ${fuelForm.unit === 'G' ? 'bg-blue-600 text-white' : 'text-zinc-500'}`}
+                  className={`flex-1 py-3 text-[10px] font-black ${fuelForm.unit === 'G' ? 'bg-emerald-600 text-white' : 'text-zinc-500'}`}
                 >GAL</button>
                 <button 
                   type="button" 
                   onClick={() => setFuelForm({...fuelForm, unit: 'L'})}
-                  className={`flex-1 py-3 text-[10px] font-black ${fuelForm.unit === 'L' ? 'bg-blue-600 text-white' : 'text-zinc-500'}`}
+                  className={`flex-1 py-3 text-[10px] font-black ${fuelForm.unit === 'L' ? 'bg-emerald-600 text-white' : 'text-zinc-500'}`}
                 >LTR</button>
               </div>
               <div className="flex bg-zinc-950 border border-zinc-800 rounded-xl overflow-hidden">
@@ -444,7 +396,7 @@ export default function ActiveTripDataPortal({ trip, fuelEntries, extraPay, inve
             <button 
               type="submit"
               disabled={isSaving}
-              className={`w-full font-black uppercase py-4 rounded-2xl active:scale-95 transition-all disabled:opacity-50 ${editingFuelId ? 'bg-blue-600 text-white' : 'bg-zinc-100 text-black'}`}
+              className={`w-full font-black uppercase py-4 rounded-2xl active:scale-95 transition-all disabled:opacity-50 ${editingFuelId ? 'bg-emerald-600 text-white' : 'bg-zinc-100 text-black'}`}
             >
               {isSaving ? 'Saving...' : editingFuelId ? 'Update Fuel Entry' : 'Add Fuel Entry'}
             </button>
@@ -464,7 +416,7 @@ export default function ActiveTripDataPortal({ trip, fuelEntries, extraPay, inve
                         startEditFuel(f);
                         document.getElementById('fuel-section')?.scrollIntoView({ behavior: 'smooth' });
                       }}
-                      className="p-1 text-blue-500 hover:text-blue-400"
+                      className="p-1 text-emerald-400 hover:text-emerald-400"
                     >
                       <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
                     </button>

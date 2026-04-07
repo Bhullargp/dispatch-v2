@@ -1,8 +1,6 @@
 import crypto from 'crypto';
-import Database from 'better-sqlite3';
-import path from 'path';
+import pool, { db } from '@/lib/db';
 
-const dbPath = path.resolve(process.cwd(), 'dispatch.db');
 const SESSION_COOKIE = 'dispatch_session';
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
 const AUTH_SECRET = process.env.DISPATCH_AUTH_SECRET || 'dispatch-dev-secret-change-me';
@@ -79,83 +77,10 @@ export function verifySecret(value: string, stored: string): boolean {
   return crypto.timingSafeEqual(Buffer.from(actual), Buffer.from(expected));
 }
 
-export function getDb() {
-  return new Database(dbPath);
-}
-
-function addColumnIfMissing(db: Database.Database, table: string, column: string, definition: string) {
-  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-  if (!columns.some((c) => c.name === column)) {
-    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
-  }
-}
-
-function addUserIdIfMissing(db: Database.Database, table: string) {
-  addColumnIfMissing(db, table, 'user_id', 'INTEGER REFERENCES users(id)');
-}
-
-function ensureUserIsolationSchema(db: Database.Database, adminId: number) {
-  const existingTables = new Set(
-    (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>).map((r) => r.name)
-  );
-
-  const targetTables = ['trips', 'stops', 'fuel', 'extra_pay', 'status_history', 'trailer_inventory'];
-  for (const table of targetTables) {
-    if (existingTables.has(table)) addUserIdIfMissing(db, table);
-  }
-
-  const ocrRelated = ['uploads', 'ocr_uploads', 'ocr_results', 'ocr_pages', 'upload_jobs'];
-  for (const table of ocrRelated) {
-    if (existingTables.has(table)) addUserIdIfMissing(db, table);
-  }
-
-  for (const table of [...targetTables, ...ocrRelated]) {
-    if (!existingTables.has(table)) continue;
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_${table}_user_id ON ${table}(user_id)`);
-    db.prepare(`UPDATE ${table} SET user_id = ? WHERE user_id IS NULL`).run(adminId);
-  }
-}
-
-export function ensureDispatchAuthSchemaAndSeed() {
-  const db = getDb();
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      username TEXT NOT NULL UNIQUE,
-      email TEXT NOT NULL UNIQUE,
-      password_hash TEXT NOT NULL,
-      role TEXT NOT NULL DEFAULT 'user',
-      security_q1 TEXT NOT NULL,
-      security_a1_hash TEXT NOT NULL,
-      security_q2 TEXT NOT NULL,
-      security_a2_hash TEXT NOT NULL,
-      security_q3 TEXT NOT NULL,
-      security_a3_hash TEXT NOT NULL,
-      force_password_change INTEGER NOT NULL DEFAULT 0,
-      last_password_reset_at TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-  `);
-
-  addColumnIfMissing(db, 'users', 'force_password_change', 'INTEGER NOT NULL DEFAULT 0');
-  addColumnIfMissing(db, 'users', 'last_password_reset_at', 'TEXT');
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS admin_audit_log (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      actor_user_id INTEGER NOT NULL REFERENCES users(id),
-      actor_username TEXT NOT NULL,
-      target_user_id INTEGER NOT NULL REFERENCES users(id),
-      target_username TEXT NOT NULL,
-      action TEXT NOT NULL,
-      metadata TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-  `);
-
-  const adminEmail = 'bhullargp';
+export async function ensureDispatchAuthSchemaAndSeed() {
+  // PG schema is already created - just ensure admin user exists
   const adminUsername = 'bhullargp';
+  const adminEmail = 'bhullargp';
   const adminPassword = 'karandeep';
   const defaultSecurity = [
     { question: 'What was the name of your first pet?', answer: 'dispatch' },
@@ -163,22 +88,20 @@ export function ensureDispatchAuthSchemaAndSeed() {
     { question: 'What was the name of your first school?', answer: 'dispatch' }
   ];
 
-  const existingAdmin = db
-    .prepare('SELECT id FROM users WHERE username = ? OR email = ?')
-    .get(adminUsername, adminEmail) as { id: number } | undefined;
+  const existingAdmin = await db().get(
+    'SELECT id FROM users WHERE username = $1 OR email = $2',
+    [adminUsername, adminEmail]
+  ) as { id: number } | undefined;
 
-  let adminId: number;
   if (!existingAdmin) {
-    const result = db
-      .prepare(`
-        INSERT INTO users (
-          username, email, password_hash, role,
-          security_q1, security_a1_hash,
-          security_q2, security_a2_hash,
-          security_q3, security_a3_hash
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `)
-      .run(
+    const result = await db().run(
+      `INSERT INTO users (
+        username, email, password_hash, role,
+        security_q1, security_a1_hash,
+        security_q2, security_a2_hash,
+        security_q3, security_a3_hash
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [
         adminUsername,
         adminEmail,
         hashSecret(adminPassword),
@@ -189,39 +112,36 @@ export function ensureDispatchAuthSchemaAndSeed() {
         hashSecret(defaultSecurity[1].answer),
         defaultSecurity[2].question,
         hashSecret(defaultSecurity[2].answer)
-      );
-    adminId = Number(result.lastInsertRowid);
-  } else {
-    adminId = existingAdmin.id;
-    db.prepare(`
-      UPDATE users
-      SET password_hash = ?, role = ?,
-          security_q1 = ?, security_a1_hash = ?,
-          security_q2 = ?, security_a2_hash = ?,
-          security_q3 = ?, security_a3_hash = ?,
-          force_password_change = 0
-      WHERE id = ?
-    `).run(
-      hashSecret(adminPassword),
-      'admin',
-      defaultSecurity[0].question,
-      hashSecret(defaultSecurity[0].answer),
-      defaultSecurity[1].question,
-      hashSecret(defaultSecurity[1].answer),
-      defaultSecurity[2].question,
-      hashSecret(defaultSecurity[2].answer),
-      adminId
+      ]
     );
+    return { adminId: 1, sessionCookie: SESSION_COOKIE, sessionTtlMs: SESSION_TTL_MS };
+  } else {
+    await db().run(
+      `UPDATE users
+      SET password_hash = $1, role = $2,
+          security_q1 = $3, security_a1_hash = $4,
+          security_q2 = $5, security_a2_hash = $6,
+          security_q3 = $7, security_a3_hash = $8,
+          force_password_change = 0
+      WHERE id = $9`,
+      [
+        hashSecret(adminPassword),
+        'admin',
+        defaultSecurity[0].question,
+        hashSecret(defaultSecurity[0].answer),
+        defaultSecurity[1].question,
+        hashSecret(defaultSecurity[1].answer),
+        defaultSecurity[2].question,
+        hashSecret(defaultSecurity[2].answer),
+        existingAdmin.id
+      ]
+    );
+    return { adminId: existingAdmin.id, sessionCookie: SESSION_COOKIE, sessionTtlMs: SESSION_TTL_MS };
   }
-
-  ensureUserIsolationSchema(db, adminId);
-
-  return { adminId, sessionCookie: SESSION_COOKIE, sessionTtlMs: SESSION_TTL_MS };
 }
 
-export function createUser(payload: SignupPayload) {
-  const db = getDb();
-  ensureDispatchAuthSchemaAndSeed();
+export async function createUser(payload: SignupPayload) {
+  await ensureDispatchAuthSchemaAndSeed();
 
   if (!payload.securityQuestions || payload.securityQuestions.length !== 3) {
     throw new Error('Exactly 3 security questions are required');
@@ -235,6 +155,9 @@ export function createUser(payload: SignupPayload) {
   if (normalizedSecurity.some((q) => !q.question || !q.answer)) {
     throw new Error('Security questions and answers cannot be empty');
   }
+  if (normalizedSecurity.some((q) => q.answer.length < 3)) {
+    throw new Error('Security answers must be at least 3 characters');
+  }
 
   if (new Set(normalizedSecurity.map((q) => q.question.toLowerCase())).size !== 3) {
     throw new Error('Security questions must be unique');
@@ -243,21 +166,20 @@ export function createUser(payload: SignupPayload) {
   const username = payload.username.trim().toLowerCase();
   const email = payload.email.trim().toLowerCase();
 
-  const exists = db
-    .prepare('SELECT id FROM users WHERE username = ? OR email = ?')
-    .get(username, email);
+  const exists = await db().get(
+    'SELECT id FROM users WHERE username = $1 OR email = $2',
+    [username, email]
+  );
   if (exists) throw new Error('User already exists');
 
-  const result = db
-    .prepare(`
-      INSERT INTO users (
-        username, email, password_hash, role,
-        security_q1, security_a1_hash,
-        security_q2, security_a2_hash,
-        security_q3, security_a3_hash
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `)
-    .run(
+  const result = await db().run(
+    `INSERT INTO users (
+      username, email, password_hash, role,
+      security_q1, security_a1_hash,
+      security_q2, security_a2_hash,
+      security_q3, security_a3_hash
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+    [
       username,
       email,
       hashSecret(payload.password),
@@ -268,34 +190,37 @@ export function createUser(payload: SignupPayload) {
       hashSecret(normalizedSecurity[1].answer.toLowerCase()),
       normalizedSecurity[2].question,
       hashSecret(normalizedSecurity[2].answer.toLowerCase())
-    );
+    ]
+  );
 
-  return Number(result.lastInsertRowid);
+  return result.changes;
 }
 
-export function findUserByLogin(login: string) {
-  const db = getDb();
-  ensureDispatchAuthSchemaAndSeed();
+export async function findUserByLogin(login: string) {
+  await ensureDispatchAuthSchemaAndSeed();
   const normalized = login.trim().toLowerCase();
-  return db
-    .prepare('SELECT * FROM users WHERE username = ? OR email = ?')
-    .get(normalized, normalized) as any;
+  return await db().get(
+    'SELECT * FROM users WHERE username = $1 OR email = $2',
+    [normalized, normalized]
+  ) as any;
 }
 
-export function getUserByEmail(email: string) {
-  const db = getDb();
-  ensureDispatchAuthSchemaAndSeed();
-  return db.prepare('SELECT * FROM users WHERE email = ?').get(email.trim().toLowerCase()) as any;
+export async function getUserByEmail(email: string) {
+  await ensureDispatchAuthSchemaAndSeed();
+  return await db().get(
+    'SELECT * FROM users WHERE email = $1',
+    [email.trim().toLowerCase()]
+  ) as any;
 }
 
-export function getSecurityQuestionsByEmail(email: string): string[] | null {
-  const user = getUserByEmail(email);
+export async function getSecurityQuestionsByEmail(email: string): Promise<string[] | null> {
+  const user = await getUserByEmail(email);
   if (!user) return null;
-  return [user.security_q1, user.security_q2, user.security_q3].map((q) => String(q || ''));
+  return [user.security_q1, user.security_q2, user.security_q3].map((q: string) => String(q || ''));
 }
 
-export function resetPasswordBySecurityAnswers(email: string, answers: string[], newPassword: string) {
-  const user = getUserByEmail(email);
+export async function resetPasswordBySecurityAnswers(email: string, answers: string[], newPassword: string) {
+  const user = await getUserByEmail(email);
   if (!user) return false;
   if (!answers || answers.length !== 3) return false;
 
@@ -306,19 +231,19 @@ export function resetPasswordBySecurityAnswers(email: string, answers: string[],
 
   if (!ok) return false;
 
-  const db = getDb();
-  db.prepare(`
-    UPDATE users
-    SET password_hash = ?,
+  await db().run(
+    `UPDATE users
+    SET password_hash = $1,
         force_password_change = 0,
         last_password_reset_at = datetime('now')
-    WHERE id = ?
-  `).run(hashSecret(newPassword), user.id);
+    WHERE id = $2`,
+    [hashSecret(newPassword), user.id]
+  );
   return true;
 }
 
 export const authConfig = {
   sessionCookie: SESSION_COOKIE,
-  secureCookie: process.env.NODE_ENV === 'production',
+  secureCookie: process.env.COOKIE_SECURE === 'true',
   sessionTtlMs: SESSION_TTL_MS
 };

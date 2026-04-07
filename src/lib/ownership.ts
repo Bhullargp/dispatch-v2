@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import pool, { db } from '@/lib/db';
 import { cookies } from 'next/headers';
 import { NextResponse } from 'next/server';
 import { authConfig, SessionPayload, verifySessionToken } from './dispatch-auth';
@@ -76,11 +76,11 @@ export function requireAccess(request: Request, options?: { allowWhenPasswordCha
 
 export function userScopedWhere(access: AccessContext, userIdColumn = 'user_id') {
   if (access.adminMode) return { clause: '1=1', params: [] as any[] };
-  return { clause: `${userIdColumn} = ?`, params: [access.session.userId] as any[] };
+  return { clause: `${userIdColumn} = $1`, params: [access.session.userId] as any[] };
 }
 
-export function ensureTripOwnership(db: Database.Database, access: AccessContext, tripNumber: string): boolean {
+export async function ensureTripOwnership(access: AccessContext, tripNumber: string): Promise<boolean> {
   if (access.adminMode) return true;
-  const row = db.prepare('SELECT trip_number FROM trips WHERE trip_number = ? AND user_id = ?').get(tripNumber, access.session.userId);
+  const row = await db().get('SELECT trip_number FROM trips WHERE trip_number = $1 AND user_id = $2', [tripNumber, access.session.userId]);
   return !!row;
 }

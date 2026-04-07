@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-import MobileNav from "./dispatch/MobileNav"; // Import MobileNav
 import MobileQuickAddWrapper from "./dispatch/MobileQuickAddWrapper"; // Import MobileQuickAddWrapper
 
 const geistSans = Geist({
@@ -31,7 +30,6 @@ export default function RootLayout({
       >
         <div className="pb-24 md:pb-0">{children}</div>
         <div className="md:hidden">
-          <MobileNav />
           <MobileQuickAddWrapper />
         </div>
       </body>

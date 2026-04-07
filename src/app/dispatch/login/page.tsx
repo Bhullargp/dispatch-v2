@@ -4,12 +4,16 @@ import React, { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 const SECURITY_QUESTIONS = [
-  'What was the name of your first pet?',
+  'What is your truck number?',
   'What city were you born in?',
-  'What was the name of your first school?',
   "What is your mother's maiden name?",
-  'What was your first car?',
-  'What is your favorite color?'
+  'What was the name of your first pet?',
+  'What elementary school did you attend?',
+  'What is your favorite truck stop?',
+  'What highway do you drive most often?',
+  'What was your first trucking company?',
+  'What is your favorite food?',
+  'What year did you start driving truck?',
 ];
 
 type ResetStep = 'email' | 'questions' | 'done';
@@ -17,8 +21,8 @@ type ResetStep = 'email' | 'questions' | 'done';
 export default function LoginPage() {
   const router = useRouter();
   const [mode, setMode] = useState<'signin' | 'signup' | 'reset' | 'force-change'>('signin');
-  const [login, setLogin] = useState('admin');
-  const [email, setEmail] = useState('admin@dispatch.local');
+  const [login, setLogin] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [currentPassword, setCurrentPassword] = useState('');
@@ -48,13 +52,13 @@ export default function LoginPage() {
   }, []);
 
   const validateSignup = () => {
-    if (!login.trim()) throw new Error('Username is required');
-    if (!email.trim()) throw new Error('Email is required');
+    if (!login.trim()) throw new Error('Username or Email is required');
     if (password.length < 8) throw new Error('Password must be at least 8 characters');
     if (password !== confirmPassword) throw new Error('Passwords do not match');
     if (selectedQ.length !== 3) throw new Error('Please select exactly 3 questions');
     if (new Set(selectedQ).size !== 3) throw new Error('Please select 3 different security questions');
     if (signupQs.some((q) => !q.answer)) throw new Error('Please answer all 3 security questions');
+      if (signupQs.some((q) => q.answer.length < 3)) throw new Error('Security answers must be at least 3 characters');
   };
 
   const submit = async (e: React.FormEvent) => {
@@ -104,10 +108,14 @@ export default function LoginPage() {
 
       if (mode === 'signup') {
         validateSignup();
+        const loginVal = login.trim();
+        const isEmail = loginVal.includes('@');
+        const signupEmail = isEmail ? loginVal : `${loginVal}@dispatch.local`;
+        const signupUsername = isEmail ? loginVal.split('@')[0] : loginVal;
         const res = await fetch('/api/auth/signup', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username: login.trim(), email: email.trim(), password, securityQuestions: signupQs })
+          body: JSON.stringify({ username: signupUsername, email: signupEmail, password, securityQuestions: signupQs })
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Signup failed');
@@ -136,6 +144,7 @@ export default function LoginPage() {
       if (newPassword.length < 8) throw new Error('New password must be at least 8 characters');
       if (newPassword !== confirmNewPassword) throw new Error('New passwords do not match');
       if (answers.some((a) => !a.trim())) throw new Error('Please answer all 3 security questions');
+      if (answers.some((a) => a.trim().length < 3)) throw new Error('Security answers must be at least 3 characters');
 
       const res = await fetch('/api/auth/forgot-password', {
         method: 'POST',
@@ -164,14 +173,31 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen bg-[#050505] flex items-center justify-center p-4">
-      <div className="w-full max-w-md bg-zinc-900/20 border border-zinc-900 rounded-[2.5rem] p-8 md:p-10">
-        <h1 className="text-2xl font-black uppercase text-center text-white mb-6">Dispatch Login</h1>
+    <div className="min-h-screen relative flex items-center justify-center p-4 overflow-hidden">
+      {/* Animated background */}
+      <div className="fixed inset-0 z-0 pointer-events-none">
+        <div className="absolute inset-0 bg-zinc-950" />
+        <div className="absolute -top-40 left-1/2 -translate-x-1/2 w-[800px] h-[600px] rounded-full opacity-[0.08]" style={{ background: 'radial-gradient(ellipse, rgba(16,185,129,0.4) 0%, transparent 70%)', filter: 'blur(80px)' }} />
+        <div className="absolute bottom-0 -right-40 w-[500px] h-[400px] rounded-full opacity-[0.06]" style={{ background: 'radial-gradient(ellipse, rgba(16,185,129,0.4) 0%, transparent 70%)', filter: 'blur(80px)' }} />
+        <div className="absolute inset-0 opacity-[0.03]" style={{ backgroundImage: 'linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px)', backgroundSize: '60px 60px' }} />
+      </div>
+      
+      <div className="relative z-10 w-full max-w-md">
+        {/* Logo/Brand */}
+        <div className="text-center mb-8">
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-emerald-600/10 border border-emerald-500/20 mb-4">
+            <span className="text-3xl">🚛</span>
+          </div>
+          <h1 className="text-3xl font-black uppercase tracking-tighter text-white">Dispatch</h1>
+          <p className="text-[11px] font-bold uppercase tracking-widest text-zinc-600 mt-1">Fleet Management</p>
+        </div>
+        
+        <div className="bg-zinc-900/40 backdrop-blur-xl border border-zinc-800/60 rounded-3xl p-8 md:p-10 shadow-[0_0_80px_rgba(16,185,129,0.03)]">
 
         {mode !== 'reset' && mode !== 'force-change' && (
           <div className="flex bg-zinc-900/50 rounded-xl p-1 mb-6">
-            <button type="button" onClick={() => setMode('signin')} className={`flex-1 py-2 text-xs font-black uppercase rounded-lg ${mode === 'signin' ? 'bg-blue-600 text-white' : 'text-zinc-500'}`}>Sign In</button>
-            <button type="button" onClick={() => setMode('signup')} className={`flex-1 py-2 text-xs font-black uppercase rounded-lg ${mode === 'signup' ? 'bg-blue-600 text-white' : 'text-zinc-500'}`}>Sign Up</button>
+            <button type="button" onClick={() => setMode('signin')} className={`flex-1 py-2 text-xs font-black uppercase rounded-lg ${mode === 'signin' ? 'bg-emerald-600 text-white' : 'text-zinc-500'}`}>Sign In</button>
+            <button type="button" onClick={() => setMode('signup')} className={`flex-1 py-2 text-xs font-black uppercase rounded-lg ${mode === 'signup' ? 'bg-emerald-600 text-white' : 'text-zinc-500'}`}>Sign Up</button>
           </div>
         )}
 
@@ -180,8 +206,8 @@ export default function LoginPage() {
             <input className="w-full bg-zinc-900/50 border border-zinc-800 rounded-xl px-4 py-3 text-white" placeholder="Username or Email" value={login} onChange={(e) => setLogin(e.target.value)} required />
           )}
 
-          {mode !== 'signin' && mode !== 'force-change' && (
-            <input className="w-full bg-zinc-900/50 border border-zinc-800 rounded-xl px-4 py-3 text-white" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required={mode === 'signup' || mode === 'reset'} type="email" />
+          {mode === 'reset' && resetStep === 'email' && (
+            <input className="w-full bg-zinc-900/50 border border-zinc-800 rounded-xl px-4 py-3 text-white" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required type="email" />
           )}
 
           {mode === 'signin' && <input type="password" className="w-full bg-zinc-900/50 border border-zinc-800 rounded-xl px-4 py-3 text-white" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} required />}
@@ -246,10 +272,10 @@ export default function LoginPage() {
             </>
           )}
 
-          {error && <div className="text-red-400 text-sm">{error}</div>}
-          {success && <div className="text-green-400 text-sm">{success}</div>}
+          {error && <div className="text-red-400 text-xs font-bold bg-red-900/20 border border-red-800/30 rounded-xl p-3">{error}</div>}
+          {success && <div className="text-green-400 text-xs font-bold bg-green-900/20 border border-green-800/30 rounded-xl p-3">{success}</div>}
 
-          <button className="w-full bg-blue-600 hover:bg-blue-500 text-white font-black uppercase tracking-widest py-3 rounded-xl disabled:opacity-70" type="submit" disabled={loading}>
+          <button className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-black uppercase tracking-widest py-3.5 rounded-xl disabled:opacity-70 transition-all shadow-[0_0_20px_rgba(16,185,129,0.15)]" type="submit" disabled={loading}>
             {loading ? 'Please wait...' : mode === 'signin' ? 'Sign In' : mode === 'signup' ? 'Create Account' : mode === 'force-change' ? 'Update Password' : resetStep === 'email' ? 'Continue' : 'Reset Password'}
           </button>
 
@@ -278,6 +304,7 @@ export default function LoginPage() {
             </button>
           )}
         </form>
+        </div>
       </div>
     </div>
   );

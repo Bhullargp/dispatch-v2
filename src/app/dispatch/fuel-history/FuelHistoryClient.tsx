@@ -3,7 +3,6 @@
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useIsMobile } from '../../hooks/useIsMobile';
-import { usePathname } from 'next/navigation';
 import AuthGuard from '../AuthGuard';
 import FloatingAddButton from '../FloatingAddButton';
 import MobileQuickAddPanel from '../MobileQuickAddPanel';
@@ -13,15 +12,7 @@ export default function FuelHistoryClient({ initialFuel, trips }: { initialFuel:
   const [filter, setFilter] = useState('ALL'); // ALL, UNLINKED, LINKED
   const isMobile = useIsMobile();
   const [mounted, setMounted] = useState(false);
-  const pathname = usePathname();
   const [isQuickAddOpen, setIsQuickAddOpen] = useState(false);
-
-  // Desktop navigation tabs
-  const desktopNavItems = [
-    { name: 'Trip Sheet', path: '/dispatch', icon: '📋' },
-    { name: 'Active Trip', path: '/dispatch/active', icon: '🚛' },
-    { name: 'Fuel History', path: '/dispatch/fuel-history', icon: '⛽' },
-  ];
 
   useEffect(() => {
     setMounted(true);
@@ -62,49 +53,10 @@ export default function FuelHistoryClient({ initialFuel, trips }: { initialFuel:
     }
   };
 
-  if (!mounted) return <div className="min-h-screen bg-[#050505]" />;
+  if (!mounted) return <div className="min-h-screen bg-zinc-950" />;
 
   return (
     <AuthGuard>
-    {/* Desktop Header - Show on md: and above */}
-    <header className="hidden md:block max-w-7xl mx-auto mb-8 pt-8 px-4">
-      <div className="flex justify-between items-end border-b border-zinc-900 pb-6">
-        <div className="space-y-2">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center shadow-[0_0_20px_rgba(37,99,235,0.3)]">
-              <span className="text-sm font-black">DM</span>
-            </div>
-            <h1 className="text-4xl font-black tracking-tighter uppercase leading-none">Fuel History</h1>
-          </div>
-          <p className="text-zinc-500 text-[10px] font-bold uppercase tracking-[0.4em] ml-11">Fleet Logistics Command</p>
-        </div>
-        
-        {/* Desktop Navigation Tabs */}
-        <nav className="flex items-center gap-1 bg-zinc-900/50 rounded-2xl p-1.5 border border-zinc-800/50">
-          {desktopNavItems.map((item) => (
-            <Link 
-              key={item.path} 
-              href={item.path}
-              className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-[11px] font-black uppercase tracking-wider transition-all ${
-                pathname === item.path 
-                  ? 'bg-blue-600 text-white shadow-[0_0_15px_rgba(37,99,235,0.4)]' 
-                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'
-              }`}
-            >
-              <span>{item.icon}</span>
-              <span>{item.name}</span>
-            </Link>
-          ))}
-        </nav>
-        
-        <div className="flex items-center gap-4">
-          <Link href="/" className="text-[10px] font-black uppercase tracking-widest bg-zinc-900 hover:bg-zinc-800 px-6 py-3 rounded-xl border border-zinc-800 transition-all shadow-xl">
-            ← Dashboard
-          </Link>
-        </div>
-      </div>
-    </header>
-
     {/* Mobile Header - Show only on mobile */}
     <header className="md:hidden p-4 border-b border-zinc-900 flex justify-between items-center bg-black/50 sticky top-0 z-40 backdrop-blur-md">
       <div className="flex items-center gap-4">
@@ -118,7 +70,7 @@ export default function FuelHistoryClient({ initialFuel, trips }: { initialFuel:
           <button
             key={f}
             onClick={() => setFilter(f)}
-            className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all ${filter === f ? 'bg-blue-600 text-white' : 'text-zinc-500'}`}
+            className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all ${filter === f ? 'bg-emerald-600 text-white' : 'text-zinc-500'}`}
           >
             {f}
           </button>
@@ -152,7 +104,7 @@ export default function FuelHistoryClient({ initialFuel, trips }: { initialFuel:
                   className={`w-full md:w-48 bg-black border rounded-xl px-3 py-2 text-xs font-black outline-none transition-all ${
                     f.trip_number === 'UNLINKED' || !f.trip_number 
                       ? 'border-orange-500/50 text-orange-500 bg-orange-500/5' 
-                      : 'border-zinc-800 text-blue-500'
+                      : 'border-zinc-800 text-emerald-400'
                   }`}
                 >
                   <option value="UNLINKED">⚠️ UNLINKED</option>
@@ -185,7 +137,7 @@ export default function FuelHistoryClient({ initialFuel, trips }: { initialFuel:
         ))}
 
         {filteredFuel.length === 0 && (
-          <div className="text-center py-20 border-2 border-dashed border-zinc-900 rounded-[2rem]">
+          <div className="text-center py-20 border-2 border-dashed border-zinc-900 rounded-3xl">
             <p className="text-zinc-600 font-black uppercase tracking-widest text-xs">No entries found matching filter</p>
           </div>
         )}

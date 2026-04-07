@@ -1,32 +1,42 @@
+export const dynamic = 'force-dynamic';
+
 import React from 'react';
-import Database from 'better-sqlite3';
-import path from 'path';
+import { db } from '@/lib/db';
 import { redirect } from 'next/navigation';
 import TripDetailsClient from '../TripDetailsClient';
 import { ensureDispatchAuthSchemaAndSeed } from '@/lib/dispatch-auth';
 import { getServerAccess } from '@/lib/ownership';
 
-const dbPath = path.resolve(process.cwd(), 'dispatch.db');
-
 export default async function TripDetailPage({ params, searchParams }: { params: Promise<{ trip_number: string }>; searchParams?: Promise<{ adminMode?: string }> }) {
-  ensureDispatchAuthSchemaAndSeed();
+  await ensureDispatchAuthSchemaAndSeed();
   const sp = searchParams ? await searchParams : undefined;
   const access = await getServerAccess(sp?.adminMode);
   if (!access) redirect('/dispatch/login');
   if (access.mustChangePassword) redirect('/dispatch/login?forcePasswordChange=1');
 
   const { trip_number } = await params;
-  const db = new Database(dbPath);
 
-  const trip = db.prepare(`SELECT * FROM trips WHERE trip_number = ? AND (${access.adminMode ? '1=1' : 'user_id = ?'})`).get(trip_number, ...(access.adminMode ? [] : [access.session.userId])) as any;
-  const stops = db.prepare(`SELECT * FROM stops WHERE trip_number = ? AND (${access.adminMode ? '1=1' : 'user_id = ?'}) ORDER BY id ASC`).all(trip_number, ...(access.adminMode ? [] : [access.session.userId]));
-  const extraPay = db.prepare(`SELECT * FROM extra_pay WHERE trip_number = ? AND (${access.adminMode ? '1=1' : 'user_id = ?'})`).all(trip_number, ...(access.adminMode ? [] : [access.session.userId]));
-  const inventory = db.prepare(`SELECT * FROM trailer_inventory WHERE ${access.adminMode ? '1=1' : 'user_id = ?'} ORDER BY last_seen DESC`).all(...(access.adminMode ? [] : [access.session.userId]));
+  const trip = await db().get(
+    `SELECT * FROM trips WHERE trip_number = $1 AND (${access.adminMode ? '1=1' : 'user_id = $2'})`,
+    access.adminMode ? [trip_number] : [trip_number, access.session.userId]
+  ) as any;
+  const stops = await db().query(
+    `SELECT * FROM stops WHERE trip_number = $1 AND (${access.adminMode ? '1=1' : 'user_id = $2'}) ORDER BY id ASC`,
+    access.adminMode ? [trip_number] : [trip_number, access.session.userId]
+  );
+  const extraPay = await db().query(
+    `SELECT * FROM extra_pay WHERE trip_number = $1 AND (${access.adminMode ? '1=1' : 'user_id = $2'})`,
+    access.adminMode ? [trip_number] : [trip_number, access.session.userId]
+  );
+  const inventory = await db().query(
+    `SELECT * FROM trailer_inventory WHERE ${access.adminMode ? '1=1' : 'user_id = $1'} ORDER BY last_seen DESC`,
+    access.adminMode ? [] : [access.session.userId]
+  );
 
   if (!trip) {
     return (
       <div className="p-20 text-center text-white bg-black min-h-screen">
-        <p className="text-xl font-bold font-mono text-blue-500">Trip {trip_number} not found</p>
+        <p className="text-xl font-bold font-mono text-emerald-400">Trip {trip_number} not found</p>
       </div>
     );
   }

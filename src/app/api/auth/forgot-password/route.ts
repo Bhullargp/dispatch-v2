@@ -106,6 +106,9 @@ export async function POST(request: Request) {
     if (answers.some((answer) => !answer.trim())) {
       return NextResponse.json({ error: 'Please answer all 3 security questions' }, { status: 400 });
     }
+    if (answers.some((answer) => answer.trim().length < 3)) {
+      return NextResponse.json({ error: 'Security answers must be at least 3 characters' }, { status: 400 });
+    }
 
     if (newPassword.length < 8) {
       return NextResponse.json({ error: 'Password must be at least 8 characters' }, { status: 400 });

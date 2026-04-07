@@ -1,28 +1,23 @@
+export const dynamic = 'force-dynamic';
+
 import React from 'react';
-import Database from 'better-sqlite3';
-import path from 'path';
+import { db } from '@/lib/db';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { ensureDispatchAuthSchemaAndSeed } from '@/lib/dispatch-auth';
 import { getServerAccess } from '@/lib/ownership';
-import { ensureUploadSchema } from '@/lib/pdf-processing';
 import UploadJobActions from './UploadJobActions';
 import RunUploadWorkerButton from './RunUploadWorkerButton';
 import AdminUserPasswordReset from './AdminUserPasswordReset';
 
-const dbPath = path.resolve(process.cwd(), 'dispatch.db');
-
 export default async function AdminInspectionPage() {
-  ensureDispatchAuthSchemaAndSeed();
+  await ensureDispatchAuthSchemaAndSeed();
   const access = await getServerAccess();
   if (!access) redirect('/dispatch/login');
   if (access.mustChangePassword) redirect('/dispatch/login?forcePasswordChange=1');
   if (!access.isAdmin) redirect('/dispatch');
 
-  const db = new Database(dbPath);
-  ensureUploadSchema(db);
-
-  const users = db.prepare(`
+  const users = await db().query(`
     SELECT
       u.id,
       u.username,
@@ -37,20 +32,20 @@ export default async function AdminInspectionPage() {
     GROUP BY u.id, u.username, u.email, u.role, u.created_at
     ORDER BY u.role DESC, u.created_at DESC
     LIMIT 100
-  `).all() as Array<any>;
+  `, []) as Array<any>;
 
-  const recentUploadJobs = db.prepare(`
+  const recentUploadJobs = await db().query(`
     SELECT id, user_id, original_filename, status, trip_number, error_message, attempt_count, max_attempts, created_at
     FROM upload_jobs
     ORDER BY id DESC
     LIMIT 25
-  `).all() as Array<any>;
+  `, []) as Array<any>;
 
-  const totalTrips = db.prepare('SELECT COUNT(*) as c FROM trips').get() as { c: number };
-  const totalUsers = db.prepare('SELECT COUNT(*) as c FROM users').get() as { c: number };
+  const totalTrips = await db().get('SELECT COUNT(*) as c FROM trips', []) as { c: number };
+  const totalUsers = await db().get('SELECT COUNT(*) as c FROM users', []) as { c: number };
 
   return (
-    <div className="min-h-screen bg-[#050505] text-zinc-100 p-6 md:p-10">
+    <div className="min-h-screen bg-zinc-950 text-zinc-100 p-6 md:p-10">
       <div className="max-w-7xl mx-auto space-y-6">
         <div className="flex items-center justify-between gap-3">
           <h1 className="text-3xl font-black uppercase">Admin Inspection</h1>
@@ -63,7 +58,7 @@ export default async function AdminInspectionPage() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="bg-zinc-900/40 border border-zinc-800 rounded-2xl p-4">
             <p className="text-xs text-zinc-500 uppercase">Total Users</p>
-            <p className="text-3xl font-black text-blue-400">{totalUsers.c}</p>
+            <p className="text-3xl font-black text-emerald-400">{totalUsers.c}</p>
           </div>
           <div className="bg-zinc-900/40 border border-zinc-800 rounded-2xl p-4">
             <p className="text-xs text-zinc-500 uppercase">Total Trips</p>
@@ -88,7 +83,7 @@ export default async function AdminInspectionPage() {
                 <tr key={u.id} className="border-t border-zinc-800">
                   <td className="py-2 font-mono">{u.username}</td>
                   <td>{u.email}</td>
-                  <td><span className={`px-2 py-1 rounded text-xs ${u.role === 'admin' ? 'bg-blue-900/40 text-blue-300' : 'bg-zinc-800 text-zinc-300'}`}>{u.role}</span></td>
+                  <td><span className={`px-2 py-1 rounded text-xs ${u.role === 'admin' ? 'bg-emerald-900/40 text-emerald-300' : 'bg-zinc-800 text-zinc-300'}`}>{u.role}</span></td>
                   <td className="text-right">{u.trip_count}</td>
                   <td className="text-right">{u.upload_count}</td>
                   <td>

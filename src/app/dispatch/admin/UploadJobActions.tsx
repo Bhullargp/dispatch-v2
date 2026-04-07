@@ -31,7 +31,7 @@ export default function UploadJobActions({ id, status }: { id: number; status: s
         <button
           disabled={loading}
           onClick={() => run('retry')}
-          className="text-[10px] font-black uppercase px-2 py-1 rounded bg-blue-700 hover:bg-blue-600 border border-blue-600 disabled:opacity-60"
+          className="text-[10px] font-black uppercase px-2 py-1 rounded bg-emerald-700 hover:bg-emerald-600 border border-emerald-600 disabled:opacity-60"
         >
           Retry
         </button>
