@@ -608,6 +608,47 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
           </div>
         )}
 
+        {/* ── Crew & Equipment Card ── */}
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+          {[
+            { label: 'Lead Driver', key: 'driver_name', icon: '👤', value: currentTrip.driver_name || currentTrip.lead_driver, accent: 'emerald' },
+            { label: 'Co-Driver', key: 'co_driver', icon: '👥', value: currentTrip.co_driver, accent: 'zinc', placeholder: 'Solo' },
+            { label: 'Truck #', key: 'truck_number', icon: '🚛', value: currentTrip.truck_number || currentTrip.truck, accent: 'amber' },
+            { label: 'Trailer #', key: 'trailer_number', icon: '📦', value: currentTrip.trailer_number || currentTrip.trailer, accent: 'blue' },
+            { label: 'Dispatcher', key: 'dispatcher_name', icon: '📋', value: currentTrip.dispatcher_name, accent: 'purple' },
+            { label: 'Customs Broker', key: 'customs_broker', icon: '🛃', value: currentTrip.customs_broker, accent: 'cyan' },
+          ].map(({ label, key, icon, value, accent, placeholder }) => (
+            <button
+              key={key}
+              onClick={() => {
+                const v = prompt(`${label}:`, value || '');
+                if (v !== null) updateField(key, v || null);
+              }}
+              className={`group relative bg-zinc-900/40 hover:bg-zinc-900/70 border rounded-2xl p-3 text-left transition-all ${
+                value ? `border-${accent}-500/20 hover:border-${accent}-500/40` : 'border-zinc-800/50 hover:border-zinc-700'
+              }`}
+            >
+              <span className="text-[9px] font-black uppercase tracking-widest text-zinc-600 flex items-center gap-1.5">
+                <span className="text-xs">{icon}</span> {label}
+                <span className="ml-auto text-zinc-800 group-hover:text-zinc-500 transition-colors text-[10px]">✎</span>
+              </span>
+              <p className={`text-sm font-black font-mono mt-1 truncate ${
+                value ? 'text-zinc-200' : 'text-zinc-700 italic'
+              }`}>
+                {value || placeholder || '—'}
+              </p>
+            </button>
+          ))}
+        </div>
+
+        {/* Route */}
+        {currentTrip.route && currentTrip.route !== 'Unknown' && (
+          <div className="flex items-center gap-3 bg-zinc-900/20 border border-zinc-900 rounded-2xl px-5 py-3">
+            <span className="text-[9px] font-black uppercase tracking-widest text-zinc-600">Route</span>
+            <span className="text-sm font-bold text-zinc-300 font-mono">{currentTrip.route}</span>
+          </div>
+        )}
+
         {/* Stop Counters */}
         <div className="flex flex-wrap gap-2 mt-3 mb-2">
           {(() => {
