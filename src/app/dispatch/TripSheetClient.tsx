@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useIsMobile } from '../hooks/useIsMobile';
@@ -12,6 +12,42 @@ import AuthGuard from './AuthGuard';
 import { calcTripPay as sharedCalcTripPay, PAYABLE_DEFAULTS, type PayableItem, type MileRates } from '@/lib/trip-pay';
 
 const PAYABLE_TYPES = PAYABLE_DEFAULTS;
+
+// ── Pay period color system (matches dashboard) ──────────────────────────────
+const PERIOD_COLORS = [
+  { accent: '#10b981', bg: 'rgba(16,185,129,0.22)', border: 'rgba(16,185,129,0.7)', label: 'emerald' },  // month-end periods
+  { accent: '#f59e0b', bg: 'rgba(245,158,11,0.22)', border: 'rgba(245,158,11,0.7)', label: 'amber' },    // 15th periods
+];
+
+function getPeriodColor(payDate: string) {
+  const day = parseInt(payDate.split('-')[2]);
+  return day === 15 ? PERIOD_COLORS[1] : PERIOD_COLORS[0];
+}
+
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+function formatPeriodLabel(payDate: string) {
+  const d = new Date(payDate + 'T12:00:00');
+  return `${MONTHS[d.getMonth()]} ${d.getDate()}`;
+}
+
+function generatePayPeriods() {
+  const periods: string[] = [];
+  const now = new Date();
+  for (let offset = -1; offset <= 6; offset++) {
+    let month = now.getMonth() - offset;
+    let year = now.getFullYear();
+    while (month < 0) { month += 12; year -= 1; }
+    const mm = String(month + 1).padStart(2, '0');
+    const lastDay = new Date(year, month + 1, 0).getDate();
+    periods.push(`${year}-${mm}-${lastDay}`);
+    const nm = month === 11 ? 0 : month + 1;
+    const ny = month === 11 ? year + 1 : year;
+    periods.push(`${ny}-${String(nm + 1).padStart(2, '0')}-15`);
+  }
+  const seen = new Set<string>();
+  return periods.filter(p => { if (seen.has(p)) return false; seen.add(p); return true; });
+}
 
 export default function TripSheet({ initialTrips, isAdmin = false }: { initialTrips: any[]; isAdmin?: boolean }) {
   const [trips, setTrips] = useState(initialTrips);
@@ -52,6 +88,11 @@ export default function TripSheet({ initialTrips, isAdmin = false }: { initialTr
   const [uploadJobs, setUploadJobs] = useState<any[]>([]);
   const [uploadFeedback, setUploadFeedback] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // Generate pay periods
+  const payPeriods = useMemo(() => generatePayPeriods(), []);
+
+  // Per-trip PDF dropdown
+  const [openPdfDropdownId, setOpenPdfDropdownId] = useState<string | null>(null);
 
   useEffect(() => {
     setMounted(true);
@@ -186,7 +227,7 @@ export default function TripSheet({ initialTrips, isAdmin = false }: { initialTr
       </header>
 
       <main className="max-w-7xl mx-auto space-y-4">
-        <div className="md:hidden bg-zinc-900/40 border border-zinc-800 rounded-2xl p-4 flex items-center justify-between gap-3">
+<div className="md:hidden bg-zinc-900/40 border border-zinc-800 rounded-2xl p-4 flex items-center justify-between gap-3">
           <div>
             <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Driver Itinerary PDF</p>
             <p className="text-[11px] text-zinc-500">Upload and auto-create/merge trip</p>
@@ -239,7 +280,7 @@ export default function TripSheet({ initialTrips, isAdmin = false }: { initialTr
                 const totalPay = calculateTripPay(trip);
 
                 return (
-                  <tr key={trip.trip_number} className="group hover:bg-white/[0.02] transition-all cursor-pointer relative">
+                  <tr key={trip.trip_number} className="group hover:bg-white/[0.02] transition-all cursor-pointer relative" style={trip.pay_period ? { borderLeftWidth: '3px', borderLeftColor: getPeriodColor(trip.pay_period).accent } : undefined}>
                     <td className="px-8 py-8 font-mono font-black text-base tracking-tighter group-hover:text-emerald-400 transition-colors relative">
                       <Link href={tripUrl} className="absolute inset-0 z-10" />
                       <div className="flex items-center gap-4">
@@ -291,27 +332,75 @@ export default function TripSheet({ initialTrips, isAdmin = false }: { initialTr
                             });
                             setTrips(trips.map(t => t.trip_number === trip.trip_number ? { ...t, pay_period: val || null } : t));
                           }}
-                          className="text-[9px] font-black uppercase bg-zinc-900 border border-zinc-800 text-zinc-400 rounded-lg px-2 py-1.5 outline-none cursor-pointer hover:border-zinc-600 transition-all appearance-none"
+                          className="text-[9px] font-black uppercase rounded-lg px-2 py-1.5 outline-none cursor-pointer transition-all appearance-none"
                           title="Assign pay period"
+                          style={trip.pay_period ? {
+                            backgroundColor: getPeriodColor(trip.pay_period).bg,
+                            borderWidth: '1.5px',
+                            borderStyle: 'solid',
+                            borderColor: getPeriodColor(trip.pay_period).accent,
+                            color: getPeriodColor(trip.pay_period).accent,
+                            fontWeight: '900',
+                            textShadow: `0 0 8px ${getPeriodColor(trip.pay_period).accent}66`,
+                          } : {
+                            backgroundColor: 'rgb(24 24 27)',
+                            borderWidth: '1px',
+                            borderStyle: 'solid',
+                            borderColor: 'rgb(63 63 70)',
+                            color: 'rgb(161 161 170)',
+                          }}
                         >
                           <option value="">No Period</option>
-                          <option value="2026-04-15">Apr 15</option>
-                          <option value="2026-04-30">Apr 30</option>
-                          <option value="2026-03-15">Mar 15</option>
-                          <option value="2026-03-31">Mar 31</option>
-                          <option value="2026-02-15">Feb 15</option>
-                          <option value="2026-02-28">Feb 28</option>
-                          <option value="2026-01-15">Jan 15</option>
-                          <option value="2026-01-31">Jan 31</option>
+                          {payPeriods.map(p => (
+                            <option key={p} value={p}>{formatPeriodLabel(p)}</option>
+                          ))}
                         </select>
-                        <a 
-                          href={trip.pdf_path || '#'}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="bg-zinc-800 hover:bg-emerald-600 text-[10px] font-black uppercase px-4 py-2 rounded-xl border border-zinc-700 transition-all disabled:opacity-40"
-                          onClick={(e) => { if (!trip.pdf_path) e.preventDefault(); }}
-                        >PDF</a>
-                        <button 
+                        {(() => {
+                          let pdfs: Array<{path: string; filename: string; id: number}> = [];
+                          try { pdfs = trip.trip_pdfs_json ? JSON.parse(trip.trip_pdfs_json) : []; } catch {}
+                          if (pdfs.length === 0 && trip.pdf_path) {
+                            pdfs = [{ path: trip.pdf_path, filename: 'Itinerary PDF', id: 0 }];
+                          }
+                          if (pdfs.length === 0) {
+                            return (
+                              <button disabled className="text-[10px] font-black uppercase px-4 py-2 rounded-xl border bg-zinc-900/50 border-zinc-800/50 text-zinc-700 cursor-not-allowed">
+                                PDF
+                              </button>
+                            );
+                          }
+                          if (pdfs.length === 1) {
+                            return (
+                              <a href={pdfs[0].path} target="_blank" rel="noopener noreferrer"
+                                className="text-[10px] font-black uppercase px-4 py-2 rounded-xl border bg-zinc-800 hover:bg-emerald-600 border-zinc-700 hover:border-emerald-500 transition-all">
+                                📄 PDF
+                              </a>
+                            );
+                          }
+                          const isOpen = openPdfDropdownId === trip.trip_number;
+                          return (
+                            <div className="relative">
+                              <button
+                                onClick={(e) => { e.preventDefault(); e.stopPropagation(); setOpenPdfDropdownId(isOpen ? null : trip.trip_number); }}
+                                className="text-[10px] font-black uppercase px-4 py-2 rounded-xl border bg-zinc-800 hover:bg-emerald-600 border-zinc-700 hover:border-emerald-500 transition-all flex items-center gap-1.5"
+                              >
+                                📄 <span className="text-emerald-400">{pdfs.length}</span>
+                              </button>
+                              {isOpen && (
+                                <div className="absolute right-0 top-full mt-1 w-64 bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl z-50 py-1 overflow-hidden">
+                                  {pdfs.map((pdf, i) => (
+                                    <a key={pdf.id || i} href={pdf.path} target="_blank" rel="noopener noreferrer"
+                                      className="flex items-center gap-2 px-3 py-2.5 hover:bg-zinc-800 transition-colors group/pdf border-b border-zinc-800 last:border-0">
+                                      <span className="text-zinc-500 text-xs shrink-0">📄</span>
+                                      <span className="text-xs text-zinc-300 group-hover/pdf:text-emerald-400 truncate flex-1">{pdf.filename || `PDF ${i + 1}`}</span>
+                                      <span className="text-zinc-600 group-hover/pdf:text-emerald-500 shrink-0">↗</span>
+                                    </a>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+                        <button
                           onClick={(e) => { e.preventDefault(); deleteTrip(trip.trip_number); }}
                           className="bg-red-950/20 hover:bg-red-600 text-red-500 hover:text-white text-lg px-3 py-1.5 rounded-xl border border-red-900/30 transition-all flex items-center justify-center"
                           title="Delete Trip"
@@ -327,25 +416,12 @@ export default function TripSheet({ initialTrips, isAdmin = false }: { initialTr
       </main>
       <footer className="mt-20 py-10 text-center"><p className="text-[8px] font-black uppercase text-zinc-800 tracking-[1em]">Secure End-to-End Environment</p></footer>
       
-      {isMobile ? (
-        <>
-          <FloatingAddButton onClick={() => setIsQuickAddOpen(true)} />
-          <MobileQuickAddPanel 
-            trips={trips.filter(t => t.status === 'Active' || t.status === 'Not Started')} 
-            isOpen={isQuickAddOpen}
-            onClose={() => setIsQuickAddOpen(false)}
-          />
-        </>
-      ) : (
-        <>
-          <FloatingAddButton onClick={() => setIsQuickAddOpen(true)} />
-          <MobileQuickAddPanel 
-            trips={trips.filter(t => t.status === 'Active' || t.status === 'Not Started')} 
-            isOpen={isQuickAddOpen}
-            onClose={() => setIsQuickAddOpen(false)}
-          />
-        </>
-      )}
+      <FloatingAddButton onClick={() => setIsQuickAddOpen(true)} />
+      <MobileQuickAddPanel 
+        trips={trips.filter(t => t.status === 'Active' || t.status === 'Not Started')} 
+        isOpen={isQuickAddOpen}
+        onClose={() => setIsQuickAddOpen(false)}
+      />
     </div>
     </AuthGuard>
   );

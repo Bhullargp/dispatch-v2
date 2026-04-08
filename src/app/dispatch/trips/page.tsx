@@ -25,7 +25,8 @@ export default async function TripsPage({ searchParams }: { searchParams?: Promi
     SELECT t.*,
     (SELECT location FROM stops WHERE trip_number = t.trip_number AND location NOT LIKE '%Caledon%' AND (${access.adminMode ? '1=1' : 'user_id = t.user_id'}) ORDER BY id ASC LIMIT 1) as first_stop,
     (SELECT location FROM stops WHERE trip_number = t.trip_number AND location NOT LIKE '%Caledon%' AND (${access.adminMode ? '1=1' : 'user_id = t.user_id'}) ORDER BY id DESC LIMIT 1) as last_stop,
-    (SELECT json_agg(json_build_object('type', type, 'amount', amount, 'quantity', quantity)) FROM extra_pay WHERE trip_number = t.trip_number AND (${access.adminMode ? '1=1' : 'user_id = t.user_id'})) as extra_pay_json
+    (SELECT json_agg(json_build_object('type', type, 'amount', amount, 'quantity', quantity)) FROM extra_pay WHERE trip_number = t.trip_number AND (${access.adminMode ? '1=1' : 'user_id = t.user_id'})) as extra_pay_json,
+    (SELECT json_agg(json_build_object('path', uj.stored_path, 'filename', uj.original_filename, 'id', uj.id) ORDER BY uj.id DESC) FROM upload_jobs uj WHERE uj.trip_number = t.trip_number AND uj.status = 'done' AND uj.user_id = t.user_id) as trip_pdfs_json
     FROM trips t
     WHERE ${scope.clause}
     ORDER BY trip_number DESC

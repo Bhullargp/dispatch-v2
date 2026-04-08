@@ -3,10 +3,12 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import Anthropic from '@anthropic-ai/sdk';
 import pool, { db } from '@/lib/db';
 
 const execFileAsync = promisify(execFile);
 
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const ZAI_API_KEY = process.env.ZAI_API_KEY || '';
 const ZAI_API_URL = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
 const ZAI_MODEL = 'glm-4.5-air';
@@ -289,6 +291,97 @@ export async function extractWithLlm(text: string): Promise<LlmExtractResult> {
   return parsed;
 }
 
+export async function extractWithClaude(pdfBuffer: Buffer): Promise<LlmExtractResult> {
+  if (!ANTHROPIC_API_KEY) {
+    throw new Error('ANTHROPIC_API_KEY not configured. Add it to .env.local');
+  }
+
+  const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+  const base64Pdf = pdfBuffer.toString('base64');
+
+  const SCHEMA_PROMPT = `You are a dispatch itinerary parser for a trucking company. Extract structured trip data from this PDF.
+
+CRITICAL DISTINCTIONS:
+- "Name:" field with email like @dmtransport.ca = DISPATCHER (the person who issued the itinerary)
+- "Lead Driver:" = the actual driver
+- "Team Driver:" = co-driver (ONLY if a name appears after this field; if empty/null, set co_driver to null)
+- "Dispatched By:" = dispatcher
+- DO NOT confuse the dispatcher with the co-driver
+
+Return ONLY valid JSON matching this schema (no markdown, no explanation):
+{
+  "trip_number": "string (e.g. T12345, extract from document)",
+  "start_date": "YYYY-MM-DD or null",
+  "driver_name": "string or null (the actual driver from Lead Driver field)",
+  "lead_driver": "string or null (same as driver_name)",
+  "co_driver": "string or null (ONLY from Team Driver field, NOT the dispatcher)",
+  "truck_number": "string or null",
+  "trailer_number": "string or null",
+  "total_miles": number or 0,
+  "stops": [
+    {
+      "type": "PICKUP|DELIVER|HOOK|DROP|ACQUIRE|RELEASE|BORDER CROSSING",
+      "location": "string",
+      "company": "string or null",
+      "appointment_time": "string or null",
+      "miles": number or 0,
+      "cargo": "string or null",
+      "bol": "string or null"
+    }
+  ],
+  "customs_broker": "string or null",
+  "dispatcher_name": "string or null (the Name field or Dispatched By field, NOT the driver)"
+}`;
+
+  const response = await client.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 4096,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'document',
+            source: {
+              type: 'base64',
+              media_type: 'application/pdf',
+              data: base64Pdf,
+            },
+          } as any,
+          {
+            type: 'text',
+            text: SCHEMA_PROMPT,
+          },
+        ],
+      },
+    ],
+  });
+
+  const content = response.content[0];
+  if (content.type !== 'text') {
+    throw new Error('Unexpected response type from Claude');
+  }
+
+  const cleaned = content.text
+    .replace(/^```(?:json)?\s*\n?/i, '')
+    .replace(/\n?```\s*$/i, '')
+    .trim();
+
+  let parsed: LlmExtractResult;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch {
+    throw new Error(`Claude returned invalid JSON: ${cleaned.slice(0, 200)}`);
+  }
+
+  if (!parsed.trip_number || !/^T\d{4,}$/i.test(parsed.trip_number.trim())) {
+    throw new Error(`Claude extracted invalid trip number: ${parsed.trip_number}`);
+  }
+
+  parsed.trip_number = parsed.trip_number.toUpperCase().trim();
+  return parsed;
+}
+
 export function llmResultToParsedTrip(llm: LlmExtractResult, rawText: string): ParsedTrip {
   const stops: ParsedStop[] = (llm.stops || []).map((s, i) => ({
     stop_type: s.type?.toUpperCase() || 'PICKUP',
@@ -546,7 +639,27 @@ export async function processClaimedUploadJob(job: UploadJob) {
 
     let parsed: ParsedTrip;
 
-    if (ZAI_API_KEY) {
+    if (ANTHROPIC_API_KEY) {
+      // Preferred: send PDF bytes directly to Claude for best OCR accuracy
+      try {
+        const llmResult = await extractWithClaude(buffer);
+        parsed = llmResultToParsedTrip(llmResult, rawText);
+      } catch (claudeError: any) {
+        console.warn(`Claude extraction failed, trying fallback: ${claudeError.message}`);
+        // Fallback to Z.AI text-based extraction
+        if (ZAI_API_KEY) {
+          try {
+            const llmResult = await extractWithLlm(rawText);
+            parsed = llmResultToParsedTrip(llmResult, rawText);
+          } catch (zaiError: any) {
+            console.warn(`Z.AI extraction failed, falling back to regex: ${zaiError.message}`);
+            parsed = parseDriverItinerary(rawText);
+          }
+        } else {
+          parsed = parseDriverItinerary(rawText);
+        }
+      }
+    } else if (ZAI_API_KEY) {
       try {
         const llmResult = await extractWithLlm(rawText);
         parsed = llmResultToParsedTrip(llmResult, rawText);
