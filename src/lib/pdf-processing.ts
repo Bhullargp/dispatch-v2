@@ -597,15 +597,15 @@ export async function acquireUploadWorkerLock(owner: string, ttlSeconds = 120): 
   const d = db();
 
   // Delete expired locks
-  await d.run("DELETE FROM upload_worker_lock WHERE lock_name = 'upload_queue' AND datetime(expires_at) <= datetime('now')", []);
+  await d.run("DELETE FROM upload_worker_lock WHERE lock_name = 'upload_queue' AND expires_at <= to_char(now(), 'YYYY-MM-DD\"T\"HH24:MI:SS')", []);
 
   const existing = await d.get("SELECT owner FROM upload_worker_lock WHERE lock_name = 'upload_queue'", []);
   if (existing) return false;
 
   await d.run(
     `INSERT INTO upload_worker_lock (lock_name, owner, expires_at, updated_at)
-    VALUES ('upload_queue', $1, datetime('now', $2), datetime('now'))`,
-    [owner, `+${Math.max(10, ttlSeconds)} seconds`]
+    VALUES ('upload_queue', $1, to_char(now() + ($2 || ' seconds')::interval, 'YYYY-MM-DD"T"HH24:MI:SS'), to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS'))`,
+    [owner, Math.max(10, ttlSeconds)]
   );
   return true;
 }
@@ -637,7 +637,7 @@ async function claimQueuedUploadJob(owner: string): Promise<UploadJob | null> {
 
     const claimed = await client.query(`
       UPDATE upload_jobs
-      SET status = 'processing', started_at = datetime('now'), processing_by = $1, updated_at = datetime('now')
+      SET status = 'processing', started_at = to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS'), processing_by = $1, updated_at = to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS')
       WHERE id = $2 AND status = 'queued'
     `, [owner, job.id]);
 
@@ -663,7 +663,7 @@ export async function claimUploadJobById(id: number, owner: string): Promise<Upl
 
     const claimed = await client.query(`
       UPDATE upload_jobs
-      SET status = 'processing', started_at = datetime('now'), processing_by = $1, updated_at = datetime('now')
+      SET status = 'processing', started_at = to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS'), processing_by = $1, updated_at = to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS')
       WHERE id = $2 AND status = 'queued' AND cancel_requested = 0
     `, [owner, id]);
 
@@ -763,8 +763,8 @@ export async function processClaimedUploadJob(job: UploadJob) {
             attempt_count = attempt_count + 1,
             error_message = NULL,
             processing_by = NULL,
-            updated_at = datetime('now'),
-            processed_at = datetime('now')
+            updated_at = to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS'),
+            processed_at = to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS')
         WHERE id = $2
       `, [tripNumber, job.id]);
       await client.query('COMMIT');
@@ -792,9 +792,9 @@ export async function processClaimedUploadJob(job: UploadJob) {
       SET status = $1,
           attempt_count = $2,
           error_message = $3,
-          last_error_at = datetime('now'),
+          last_error_at = to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS'),
           processing_by = NULL,
-          updated_at = datetime('now')
+          updated_at = to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS')
       WHERE id = $4
     `, [shouldRetry ? 'queued' : 'failed', nextAttempt, message, job.id]);
 

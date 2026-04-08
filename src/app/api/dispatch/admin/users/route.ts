@@ -43,13 +43,13 @@ export async function POST(request: Request) {
     if (!targetUser) return NextResponse.json({ error: 'User not found' }, { status: 404 });
 
     await db().run(
-      `UPDATE users SET password_hash = $1, force_password_change = $2, last_password_reset_at = datetime('now') WHERE id = $3`,
+      `UPDATE users SET password_hash = $1, force_password_change = $2, last_password_reset_at = to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS') WHERE id = $3`,
       [hashSecret(temporaryPassword), forcePasswordChange ? 1 : 0, userId]
     );
 
     await db().run(
       `INSERT INTO admin_audit_log (actor_user_id, actor_username, target_user_id, target_username, action, metadata, created_at)
-      VALUES ($1, $2, $3, $4, $5, $6, datetime('now'))`,
+      VALUES ($1, $2, $3, $4, $5, $6, to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS'))`,
       [
         access.session.userId,
         access.session.username,

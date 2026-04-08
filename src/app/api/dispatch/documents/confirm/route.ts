@@ -49,7 +49,7 @@ export async function POST(req: Request) {
         file_size INTEGER NOT NULL,
         description TEXT,
         trip_number TEXT,
-        uploaded_at TEXT DEFAULT (datetime('now')),
+        uploaded_at TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS')),
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )
     `);

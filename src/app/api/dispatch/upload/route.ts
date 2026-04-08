@@ -123,7 +123,7 @@ export async function POST(req: Request) {
       try {
         await db().run(`
           UPDATE upload_jobs
-          SET status = 'failed', error_message = $1, updated_at = datetime('now'), last_error_at = datetime('now')
+          SET status = 'failed', error_message = $1, updated_at = to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS'), last_error_at = to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS')
           WHERE id = $2
         `, [error.message || 'Upload processing failed', jobId]);
       } catch {}

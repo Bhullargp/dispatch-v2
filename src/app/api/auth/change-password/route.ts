@@ -26,7 +26,7 @@ export async function POST(request: Request) {
     }
 
     await db().run(
-      `UPDATE users SET password_hash = $1, force_password_change = 0, last_password_reset_at = datetime('now') WHERE id = $2`,
+      `UPDATE users SET password_hash = $1, force_password_change = 0, last_password_reset_at = to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS') WHERE id = $2`,
       [hashSecret(newPassword), user.id]
     );
 

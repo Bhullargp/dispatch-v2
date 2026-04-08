@@ -24,7 +24,7 @@ export async function POST(req: Request) {
             cancel_requested = 0,
             attempt_count = 0,
             processing_by = NULL,
-            updated_at = datetime('now')
+            updated_at = to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS')
         WHERE id = $1 AND status = 'failed'
       `, [id]);
 
@@ -37,7 +37,7 @@ export async function POST(req: Request) {
         UPDATE upload_jobs
         SET status = 'cancelled',
             cancel_requested = 1,
-            updated_at = datetime('now')
+            updated_at = to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS')
         WHERE id = $1 AND status = 'queued'
       `, [id]);
 
