@@ -9,6 +9,9 @@ import pool, { db } from '@/lib/db';
 const execFileAsync = promisify(execFile);
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
+const MINIMAX_API_KEY = process.env.MINIMAX_API_KEY || '';
+const MINIMAX_API_URL = 'https://api.minimax.chat/v1/chat/completions';
+const MINIMAX_MODEL = process.env.MINIMAX_MODEL || 'MiniMax-Text-01';
 const ZAI_API_KEY = process.env.ZAI_API_KEY || '';
 const ZAI_API_URL = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
 const ZAI_MODEL = 'glm-4.5-air';
@@ -285,6 +288,58 @@ export async function extractWithLlm(text: string): Promise<LlmExtractResult> {
 
   if (!parsed.trip_number || !/^T\d{4,}$/i.test(parsed.trip_number.trim())) {
     throw new Error(`LLM extracted invalid trip number: ${parsed.trip_number}`);
+  }
+
+  parsed.trip_number = parsed.trip_number.toUpperCase().trim();
+  return parsed;
+}
+
+export async function extractWithMinimax(text: string): Promise<LlmExtractResult> {
+  if (!MINIMAX_API_KEY) {
+    throw new Error('MINIMAX_API_KEY not configured. Add it to .env.local');
+  }
+
+  const truncated = text.length > 10000 ? text.slice(0, 10000) : text;
+
+  const response = await fetch(MINIMAX_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${MINIMAX_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: MINIMAX_MODEL,
+      messages: [
+        { role: 'system', content: LLM_SYSTEM_PROMPT },
+        { role: 'user', content: `Parse this driver itinerary:\n\n${truncated}` },
+      ],
+      temperature: 0.05,
+      max_tokens: 4096,
+    }),
+  });
+
+  if (!response.ok) {
+    const errBody = await response.text().catch(() => '');
+    throw new Error(`Minimax API error ${response.status}: ${errBody.slice(0, 200)}`);
+  }
+
+  const data = await response.json();
+  const content = data?.choices?.[0]?.message?.content;
+  if (!content) {
+    throw new Error('Empty response from Minimax');
+  }
+
+  const cleaned = content.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
+
+  let parsed: LlmExtractResult;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch {
+    throw new Error(`Minimax returned invalid JSON: ${cleaned.slice(0, 200)}`);
+  }
+
+  if (!parsed.trip_number || !/^T\d{4,}$/i.test(parsed.trip_number.trim())) {
+    throw new Error(`Minimax extracted invalid trip number: ${parsed.trip_number}`);
   }
 
   parsed.trip_number = parsed.trip_number.toUpperCase().trim();
@@ -639,14 +694,32 @@ export async function processClaimedUploadJob(job: UploadJob) {
 
     let parsed: ParsedTrip;
 
-    if (ANTHROPIC_API_KEY) {
-      // Preferred: send PDF bytes directly to Claude for best OCR accuracy
+    if (MINIMAX_API_KEY) {
+      // Primary: Minimax (fast, cost-effective, OpenAI-compatible)
+      try {
+        const llmResult = await extractWithMinimax(rawText);
+        parsed = llmResultToParsedTrip(llmResult, rawText);
+      } catch (minimaxError: any) {
+        console.warn(`Minimax extraction failed, trying fallback: ${minimaxError.message}`);
+        if (ANTHROPIC_API_KEY) {
+          try {
+            const llmResult = await extractWithClaude(buffer);
+            parsed = llmResultToParsedTrip(llmResult, rawText);
+          } catch (claudeError: any) {
+            console.warn(`Claude extraction failed, falling back to regex: ${claudeError.message}`);
+            parsed = parseDriverItinerary(rawText);
+          }
+        } else {
+          parsed = parseDriverItinerary(rawText);
+        }
+      }
+    } else if (ANTHROPIC_API_KEY) {
+      // Fallback: Claude (sends raw PDF bytes, best OCR accuracy)
       try {
         const llmResult = await extractWithClaude(buffer);
         parsed = llmResultToParsedTrip(llmResult, rawText);
       } catch (claudeError: any) {
-        console.warn(`Claude extraction failed, trying fallback: ${claudeError.message}`);
-        // Fallback to Z.AI text-based extraction
+        console.warn(`Claude extraction failed, trying Z.AI: ${claudeError.message}`);
         if (ZAI_API_KEY) {
           try {
             const llmResult = await extractWithLlm(rawText);
@@ -664,7 +737,7 @@ export async function processClaimedUploadJob(job: UploadJob) {
         const llmResult = await extractWithLlm(rawText);
         parsed = llmResultToParsedTrip(llmResult, rawText);
       } catch (llmError: any) {
-        console.warn(`LLM extraction failed, falling back to regex: ${llmError.message}`);
+        console.warn(`Z.AI extraction failed, falling back to regex: ${llmError.message}`);
         parsed = parseDriverItinerary(rawText);
       }
     } else {
