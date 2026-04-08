@@ -77,16 +77,30 @@ function saveUsers(users: User[]): void {
 }
 
 export function useAuth() {
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [isLoggedIn, setIsLoggedIn] = useState<boolean | null>(null);
   const [user, setUser] = useState<AuthSession | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const checkAuth = () => {
-      const session = getSession();
-      setIsLoggedIn(!!session);
-      setUser(session);
-      setLoading(false);
+    const checkAuth = async () => {
+      try {
+        const res = await fetch('/api/auth/session', { credentials: 'include', cache: 'no-store' });
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.user) {
+            setUser({ email: data.user.email || '', username: data.user.username || '', loginTime: Date.now() });
+            setIsLoggedIn(true);
+          } else {
+            setIsLoggedIn(false);
+          }
+        } else {
+          setIsLoggedIn(false);
+        }
+      } catch {
+        setIsLoggedIn(false);
+      } finally {
+        setLoading(false);
+      }
     };
     checkAuth();
   }, []);
