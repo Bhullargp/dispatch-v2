@@ -100,10 +100,24 @@ export default function TripSheet({ initialTrips, isAdmin = false }: { initialTr
 
   useEffect(() => {
     if (!mounted || isLoggedIn !== true) return;
-    fetch('/api/dispatch/upload')
-      .then((res) => res.json())
-      .then((data) => setUploadJobs(data.jobs || []))
-      .catch(() => setUploadJobs([]));
+    const loadJobs = () =>
+      fetch('/api/dispatch/upload')
+        .then((res) => res.json())
+        .then((data) => setUploadJobs(data.jobs || []))
+        .catch(() => {});
+    loadJobs();
+    // Poll every 4 seconds while there are active jobs
+    const interval = setInterval(async () => {
+      const res = await fetch('/api/dispatch/upload').then(r => r.json()).catch(() => ({ jobs: [] }));
+      const jobs = res.jobs || [];
+      setUploadJobs(jobs);
+      const hasActive = jobs.some((j: any) => j.status === 'queued' || j.status === 'processing');
+      if (hasActive) {
+        // Refresh trip list when a job finishes
+        refreshTrips();
+      }
+    }, 4000);
+    return () => clearInterval(interval);
   }, [mounted, isLoggedIn]);
 
   const refreshTrips = async () => {
@@ -216,6 +230,33 @@ export default function TripSheet({ initialTrips, isAdmin = false }: { initialTr
             className="hidden"
             onChange={(e) => onSelectPdf(e.target.files?.[0] || undefined)}
           />
+          {/* Floating status pill — top-right, shows only when something is pending/processing/failed */}
+          {(() => {
+            const activeJobs = uploadJobs.filter(j => j.status === 'queued' || j.status === 'processing');
+            const failedJobs = uploadJobs.filter(j => j.status === 'failed');
+            if (uploadingPdf || activeJobs.length > 0 || failedJobs.length > 0) {
+              return (
+                <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-[10px] font-black uppercase tracking-wider transition-all"
+                  style={
+                    uploadingPdf || activeJobs.length > 0
+                      ? { background: 'rgba(234,179,8,0.12)', borderColor: 'rgba(234,179,8,0.5)', color: '#facc15' }
+                      : { background: 'rgba(239,68,68,0.12)', borderColor: 'rgba(239,68,68,0.5)', color: '#f87171' }
+                  }
+                >
+                  {(uploadingPdf || activeJobs.length > 0) && (
+                    <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse inline-block" />
+                  )}
+                  {uploadingPdf ? 'Uploading…'
+                    : activeJobs.length > 0 ? `Processing ${activeJobs.length} PDF${activeJobs.length > 1 ? 's' : ''}…`
+                    : `${failedJobs.length} failed`}
+                  {failedJobs.length > 0 && !uploadingPdf && activeJobs.length === 0 && (
+                    <span className="ml-1 text-red-400 truncate max-w-[120px]">{failedJobs[0].error_message?.slice(0, 40)}</span>
+                  )}
+                </div>
+              );
+            }
+            return null;
+          })()}
           <button
             onClick={() => fileInputRef.current?.click()}
             disabled={uploadingPdf}
@@ -227,7 +268,7 @@ export default function TripSheet({ initialTrips, isAdmin = false }: { initialTr
       </header>
 
       <main className="max-w-7xl mx-auto space-y-4">
-<div className="md:hidden bg-zinc-900/40 border border-zinc-800 rounded-2xl p-4 flex items-center justify-between gap-3">
+        <div className="md:hidden bg-zinc-900/40 border border-zinc-800 rounded-2xl p-4 flex items-center justify-between gap-3">
           <div>
             <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Driver Itinerary PDF</p>
             <p className="text-[11px] text-zinc-500">Upload and auto-create/merge trip</p>
@@ -241,16 +282,16 @@ export default function TripSheet({ initialTrips, isAdmin = false }: { initialTr
           </button>
         </div>
 
-        {(uploadFeedback || uploadJobs.length > 0) && (
+        {/* Only show failed jobs or recent feedback — completed jobs disappear automatically */}
+        {(uploadFeedback || uploadJobs.some(j => j.status === 'failed')) && (
           <div className="bg-zinc-900/30 border border-zinc-800 rounded-2xl p-4">
             {uploadFeedback && <p className="text-xs font-bold mb-2 text-zinc-200">{uploadFeedback}</p>}
-            {uploadJobs.slice(0, 3).map((job) => (
-              <div key={job.id} className="text-[11px] text-zinc-400 flex flex-wrap items-center gap-2 py-1">
+            {uploadJobs.filter(j => j.status === 'failed').map((job) => (
+              <div key={job.id} className="text-[11px] text-red-400 flex flex-wrap items-center gap-2 py-1">
                 <span className="font-mono text-zinc-500">#{job.id}</span>
-                <span className={`uppercase font-black ${job.status === 'done' ? 'text-green-500' : job.status === 'failed' ? 'text-red-500' : 'text-yellow-500'}`}>{job.status}</span>
-                <span className="truncate max-w-[220px]">{job.original_filename}</span>
-                {job.trip_number && <Link href={`/dispatch/${job.trip_number}?from=tripsheet`} className="text-emerald-400 hover:underline">{job.trip_number}</Link>}
-                {job.error_message && <span className="text-red-400">{job.error_message}</span>}
+                <span className="uppercase font-black text-red-500">FAILED</span>
+                <span className="truncate max-w-[200px]">{job.original_filename}</span>
+                {job.error_message && <span className="text-red-400/80">{job.error_message}</span>}
               </div>
             ))}
           </div>

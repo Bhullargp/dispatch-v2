@@ -53,14 +53,33 @@ export const PAYABLE_DEFAULTS: PayableItem[] = [
   { name: 'Layover', rate: 100, unit: 'qty' },
 ];
 
-const CA_PROVINCES = ['ON', 'QC', 'BC', 'AB', 'MB', 'SK', 'NS', 'NB', 'NL', 'PE', 'NT', 'YT', 'NU'];
+const CA_PROVINCES = new Set(['ON', 'QC', 'BC', 'AB', 'MB', 'SK', 'NS', 'NB', 'NL', 'PE', 'NT', 'YT', 'NU']);
+const US_STATES = new Set(['AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC']);
+const CA_PROVINCE_NAMES = ['Ontario','Quebec','British Columbia','Alberta','Manitoba','Saskatchewan','Nova Scotia','New Brunswick','Newfoundland','Prince Edward Island','Northwest Territories','Yukon','Nunavut'];
+const US_STATE_NAMES = ['Alabama','Alaska','Arizona','Arkansas','Colorado','Connecticut','Delaware','Florida','Georgia','Hawaii','Idaho','Illinois','Indiana','Iowa','Kansas','Kentucky','Louisiana','Maine','Maryland','Massachusetts','Michigan','Minnesota','Mississippi','Missouri','Montana','Nebraska','Nevada','New Hampshire','New Jersey','New Mexico','New York','North Carolina','North Dakota','Ohio','Oklahoma','Oregon','Pennsylvania','Rhode Island','South Carolina','South Dakota','Tennessee','Texas','Utah','Vermont','Virginia','Washington','West Virginia','Wisconsin','Wyoming'];
 
-function isCanadaLocation(loc: string | null): boolean {
+function locationIsCanada(loc: string | null): boolean {
   if (!loc) return false;
-  const m = loc.match(/\b([A-Z]{2})\b/);
-  if (m && CA_PROVINCES.includes(m[1])) return true;
-  const kw = ['Ontario', 'Quebec', 'British Columbia', 'Alberta', 'Manitoba', 'Saskatchewan', 'Nova Scotia', 'New Brunswick', 'Newfoundland', 'Prince Edward'];
-  return kw.some(k => loc.includes(k));
+  // Check for 2-letter province code preceded by comma/space (e.g. "Toronto, ON")
+  const codes = loc.match(/\b([A-Z]{2})\b/g) || [];
+  for (const c of codes) {
+    if (CA_PROVINCES.has(c)) return true;
+  }
+  return CA_PROVINCE_NAMES.some(k => loc.includes(k));
+}
+
+function locationIsUSA(loc: string | null): boolean {
+  if (!loc) return false;
+  const codes = loc.match(/\b([A-Z]{2})\b/g) || [];
+  for (const c of codes) {
+    if (US_STATES.has(c)) return true;
+  }
+  return US_STATE_NAMES.some(k => loc.includes(k));
+}
+
+// Keep old name as alias for backward compatibility
+function isCanadaLocation(loc: string | null): boolean {
+  return locationIsCanada(loc);
 }
 
 /**
@@ -89,21 +108,37 @@ export function calcExtras(extraPayJson: string | null | any[], extraItems: Paya
 }
 
 /**
- * Detect if a trip is Canada-based using route field, then first/last stop.
+ * Detect if a trip is Canada-based.
+ * Rule: ANY US stop → US rate. ALL Canadian stops → Canada rate.
+ * A cross-border trip with even one US stop pays at the US rate.
  */
 export function detectCanada(trip: TripPayInput): boolean {
-  const route = (trip.route || '').toUpperCase();
+  const route = (trip.route || '').toUpperCase().trim();
 
+  // Explicit manual overrides
   if (route === 'USA' || route === 'US') return false;
   if (route === 'CANADA' || route === 'CA') return true;
 
-  // Check route field for province codes
-  if (route.includes('CANADA') || CA_PROVINCES.some(p => route.includes(p))) return true;
+  // If we have all stops, check every single one
+  if (trip.stops_json) {
+    try {
+      const stops: Array<{ location?: string; stop_type?: string }> =
+        Array.isArray(trip.stops_json) ? trip.stops_json : JSON.parse(trip.stops_json as string);
+      const locations = stops.map(s => s.location || '').filter(Boolean);
+      if (locations.length > 0) {
+        // Any US stop → US rate immediately
+        if (locations.some(locationIsUSA)) return false;
+        // All Canada → Canada rate
+        if (locations.every(locationIsCanada)) return true;
+      }
+    } catch {}
+  }
 
-  // Fall back to first/last stop
-  const canadaFirst = isCanadaLocation(trip.first_stop);
-  const canadaLast = isCanadaLocation(trip.last_stop);
-  return canadaFirst && canadaLast;
+  // Fallback: first & last stop
+  // Any US stop in first/last → US rate
+  if (locationIsUSA(trip.first_stop) || locationIsUSA(trip.last_stop)) return false;
+  // Both Canada → Canada rate
+  return locationIsCanada(trip.first_stop) && locationIsCanada(trip.last_stop);
 }
 
 /**

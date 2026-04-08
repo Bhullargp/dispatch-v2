@@ -208,38 +208,62 @@ export function parseDriverItinerary(text: string): ParsedTrip {
 
 // ── LLM-based extraction using Z.AI ──────────────────────────────────────────
 
-const LLM_SYSTEM_PROMPT = `You are a dispatch itinerary parser. Extract structured trip data from the driver itinerary text provided.
+const LLM_SYSTEM_PROMPT = `You are a dispatch itinerary parser for a Canadian trucking company (DM Transport, Ontario). Extract structured trip data from driver itinerary text.
 
-CRITICAL DISTINCTIONS:
-- "Name:" field with email like @dmtransport.ca = DISPATCHER (the person who issued the itinerary)
-- "Lead Driver:" = the actual driver
-- "Team Driver:" = co-driver (ONLY if a name appears after this field; if empty/null, set co_driver to null)
-- "Dispatched By:" = dispatcher
-- DO NOT confuse the dispatcher with the co-driver
+═══ FIELD EXTRACTION RULES ═══
 
-Return ONLY valid JSON matching this schema (no markdown, no explanation):
+PEOPLE:
+- "Lead Driver:" or "Driver:" = the actual truck driver (driver_name AND lead_driver)
+- "Team Driver:" or "Co-Driver:" = co-driver ONLY if a real name appears; if blank/empty → null
+- "Name:" with @dmtransport.ca email = DISPATCHER, not a driver
+- "Dispatched By:" = dispatcher_name
+- NEVER put the dispatcher name in driver_name or co_driver
+
+EQUIPMENT (CRITICAL — read carefully):
+- "Truck #" or "Unit #" or "Tractor #" = truck_number (e.g. "598", "T598")
+- "Trailer #" or "Trailer Number:" or "TRL #" or "TRL:" = trailer_number — this is a SEPARATE number from the truck
+- Trailers are typically 5-6 digit numbers (e.g. "85234", "60012") or start with letters (e.g. "P85234")
+- truck_number ≠ trailer_number — they are different pieces of equipment
+- If you see two unit numbers, one is the tractor (truck) and one is the trailer
+
+TRIP:
+- trip_number: format like T12345 — extract EXACTLY as written (e.g. T052238)
+- start_date: the trip start or dispatch date in YYYY-MM-DD format
+- total_miles: from "TOTAL ROUTED MILES" or "Total Miles" field — the number only
+
+STOPS (extract ALL of them in order):
+- Types: ACQUIRE, RELEASE, HOOK, DROP, PICKUP, DELIVER, BORDER CROSSING
+- location: "City, Province/State" format — ALWAYS include province/state abbreviation
+- miles: miles from last stop (if shown)
+- Include every stop — ACQUIRE/RELEASE are important for pay calculations
+
+PAY RATE CONTEXT (for your reference only — do not include in output):
+- If ANY stop is in a US state → trip pays at US rate ($1.06/mile)
+- Only ALL-Canadian stops → Canada rate ($1.26 under 1000mi, $1.16 over 1000mi)
+
+Return ONLY valid JSON, no markdown, no explanation:
 {
-  "trip_number": "string (e.g. T12345, extract from document)",
+  "trip_number": "string (e.g. T052238)",
   "start_date": "YYYY-MM-DD or null",
-  "driver_name": "string or null (the actual driver from Lead Driver field)",
-  "lead_driver": "string or null (same as driver_name)",
-  "co_driver": "string or null (ONLY from Team Driver field, NOT the dispatcher)",
-  "truck_number": "string or null",
-  "trailer_number": "string or null",
-  "total_miles": number or 0,
+  "driver_name": "string or null",
+  "lead_driver": "string or null",
+  "co_driver": "string or null",
+  "truck_number": "string or null (tractor/truck unit number only)",
+  "trailer_number": "string or null (trailer unit number — different from truck)",
+  "total_miles": number,
   "stops": [
     {
       "type": "PICKUP|DELIVER|HOOK|DROP|ACQUIRE|RELEASE|BORDER CROSSING",
-      "location": "string",
+      "location": "City, Province/State",
       "company": "string or null",
-      "appointment_time": "string or null",
-      "miles": number or 0,
+      "appointment_time": "HH:MM or date-time string or null",
+      "miles": number,
       "cargo": "string or null",
       "bol": "string or null"
     }
   ],
   "customs_broker": "string or null",
-  "dispatcher_name": "string or null (the Name field or Dispatched By field, NOT the driver)"
+  "dispatcher_name": "string or null"
 }`;
 
 export async function extractWithLlm(text: string): Promise<LlmExtractResult> {
@@ -354,39 +378,7 @@ export async function extractWithClaude(pdfBuffer: Buffer): Promise<LlmExtractRe
   const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
   const base64Pdf = pdfBuffer.toString('base64');
 
-  const SCHEMA_PROMPT = `You are a dispatch itinerary parser for a trucking company. Extract structured trip data from this PDF.
-
-CRITICAL DISTINCTIONS:
-- "Name:" field with email like @dmtransport.ca = DISPATCHER (the person who issued the itinerary)
-- "Lead Driver:" = the actual driver
-- "Team Driver:" = co-driver (ONLY if a name appears after this field; if empty/null, set co_driver to null)
-- "Dispatched By:" = dispatcher
-- DO NOT confuse the dispatcher with the co-driver
-
-Return ONLY valid JSON matching this schema (no markdown, no explanation):
-{
-  "trip_number": "string (e.g. T12345, extract from document)",
-  "start_date": "YYYY-MM-DD or null",
-  "driver_name": "string or null (the actual driver from Lead Driver field)",
-  "lead_driver": "string or null (same as driver_name)",
-  "co_driver": "string or null (ONLY from Team Driver field, NOT the dispatcher)",
-  "truck_number": "string or null",
-  "trailer_number": "string or null",
-  "total_miles": number or 0,
-  "stops": [
-    {
-      "type": "PICKUP|DELIVER|HOOK|DROP|ACQUIRE|RELEASE|BORDER CROSSING",
-      "location": "string",
-      "company": "string or null",
-      "appointment_time": "string or null",
-      "miles": number or 0,
-      "cargo": "string or null",
-      "bol": "string or null"
-    }
-  ],
-  "customs_broker": "string or null",
-  "dispatcher_name": "string or null (the Name field or Dispatched By field, NOT the driver)"
-}`;
+  const SCHEMA_PROMPT = LLM_SYSTEM_PROMPT;
 
   const response = await client.messages.create({
     model: 'claude-sonnet-4-6',
