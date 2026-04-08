@@ -214,22 +214,38 @@ export default function MobileQuickAddPanel({ trips, isOpen, onClose }: MobileQu
     location: '',
     province: '',
     quantity: '',
+    pricePerUnit: '',
     amount: '',
     odometer: '',
     unit: 'Gallons',
+    currency: 'auto' as 'auto' | 'USD' | 'CAD',
   });
+
+  // City autocomplete state
+  const [citySearch, setCitySearch] = useState('');
+  const [citySuggestions, setCitySuggestions] = useState<any[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [citySearchTimeout, setCitySearchTimeout] = useState<ReturnType<typeof setTimeout> | null>(null);
 
   const [odometerForm, setOdometerForm] = useState({
     start: '',
     end: '',
   });
 
+  // Effective currency for fuel: auto-detect from province, or manual override
+  const effectiveFuelCurrency = useMemo(() => {
+    if (fuelForm.currency !== 'auto') return fuelForm.currency;
+    if (!fuelForm.province) return 'USD';
+    const loc = LOCATIONS[fuelForm.province as keyof typeof LOCATIONS];
+    return loc?.country === 'CA' ? 'CAD' : 'USD';
+  }, [fuelForm.currency, fuelForm.province]);
+
   useEffect(() => {
     if (trips.length > 0 && !selectedTrip) {
       setSelectedTrip(trips[0].trip_number);
     }
   }, [trips, selectedTrip]);
-  
+
   // Reset states when modal is closed
   useEffect(() => {
     if (!isOpen) {
@@ -238,8 +254,62 @@ export default function MobileQuickAddPanel({ trips, isOpen, onClose }: MobileQu
     }
   }, [isOpen]);
 
+  // City autocomplete search
+  const handleCitySearch = (value: string) => {
+    setCitySearch(value);
+    setShowSuggestions(true);
+    if (citySearchTimeout) clearTimeout(citySearchTimeout);
+    if (value.length < 2) { setCitySuggestions([]); return; }
+    const t = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/dispatch/geocode?q=${encodeURIComponent(value)}`);
+        const data = await res.json();
+        setCitySuggestions(data || []);
+      } catch { setCitySuggestions([]); }
+    }, 250);
+    setCitySearchTimeout(t);
+  };
+
+  const handleCitySelect = (suggestion: any) => {
+    // Extract province/state code from ORS result
+    // suggestion.state is the region name (e.g. "Ontario"), need to match to LOCATIONS
+    const regionName = suggestion.state || '';
+    const country = suggestion.country || '';
+    const isCA = country === 'Canada';
+    const provinceCode = Object.entries(LOCATIONS).find(([_, v]) =>
+      v.name === regionName && v.country === (isCA ? 'CA' : 'US')
+    )?.[0] || '';
+    const locData = provinceCode ? LOCATIONS[provinceCode as keyof typeof LOCATIONS] : null;
+
+    setCitySearch(suggestion.city || suggestion.label);
+    setShowSuggestions(false);
+    setCitySuggestions([]);
+    setFuelForm(prev => ({
+      ...prev,
+      location: suggestion.city || suggestion.label,
+      province: provinceCode,
+      unit: locData ? locData.unit : 'Gallons',
+    }));
+  };
+
+  // Auto-calculate amount when qty or price changes
+  const handleFuelQtyOrPrice = (field: 'quantity' | 'pricePerUnit', value: string) => {
+    setFuelForm(prev => {
+      const updated = { ...prev, [field]: value };
+      const qty = parseFloat(field === 'quantity' ? value : prev.quantity);
+      const price = parseFloat(field === 'pricePerUnit' ? value : prev.pricePerUnit);
+      if (!isNaN(qty) && !isNaN(price) && qty > 0 && price > 0) {
+        updated.amount = (qty * price).toFixed(2);
+      }
+      return updated;
+    });
+  };
+
   const resetForms = () => {
-    setFuelForm({ date: new Date().toISOString().split('T')[0], location: '', province: '', quantity: '', amount: '', odometer: '', unit: 'Gallons' });
+    setFuelForm({ date: new Date().toISOString().split('T')[0], location: '', province: '', quantity: '', pricePerUnit: '', amount: '', odometer: '', unit: 'Gallons', currency: 'auto' });
+    setCitySearch('');
+    setCitySuggestions([]);
+    setShowSuggestions(false);
     setOdometerForm({ start: '', end: '' });
     setExtraPayItems([]);
     setTollEntries([{ id: 1, amount: 0 }]);
@@ -268,6 +338,7 @@ export default function MobileQuickAddPanel({ trips, isOpen, onClose }: MobileQu
           unit: fuelForm.unit,
           amount_usd: fuelForm.amount ? parseFloat(fuelForm.amount) : undefined,
           odometer: fuelForm.odometer ? parseFloat(fuelForm.odometer) : undefined,
+          currency: effectiveFuelCurrency,
         }),
       });
       alert('Fuel added!');
@@ -601,49 +672,77 @@ export default function MobileQuickAddPanel({ trips, isOpen, onClose }: MobileQu
                   onChange={(e) => setFuelForm({ ...fuelForm, date: e.target.value })}
                   className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-4 text-base font-bold outline-none focus:border-green-600 [color-scheme:dark]"
                 />
-                <input
-                  type="text"
-                  placeholder="City * (required)"
-                  value={fuelForm.location}
-                  onChange={(e) => setFuelForm({ ...fuelForm, location: e.target.value })}
-                  className={`w-full bg-zinc-950 border rounded-xl p-4 text-base font-bold outline-none focus:border-green-600 ${
-                    fuelForm.location ? 'border-zinc-800' : 'border-red-600/50'
-                  }`}
-                />
-                {/* Smart Location Selector - Province REQUIRED */}
-                <select
-                  value={fuelForm.province}
-                  onChange={(e) => {
-                    const province = e.target.value;
-                    const locationData = province ? LOCATIONS[province as keyof typeof LOCATIONS] : null;
-                    setFuelForm({ 
-                      ...fuelForm, 
-                      province: province,
-                      unit: locationData ? locationData.unit : 'Gallons'
-                    });
-                  }}
-                  className={`w-full bg-zinc-950 border rounded-xl p-4 text-base font-bold outline-none focus:border-green-600 ${
-                    fuelForm.province ? 'border-green-600/50 text-green-400' : 'border-red-600/50 text-red-400'
-                  }`}
-                >
-                  <option value="">Province/State * (required)</option>
-                  <optgroup label="🇨🇦 Canada">
-                    {Object.entries(LOCATIONS).filter(([_, v]) => v.country === 'CA').map(([code, data]) => (
-                      <option key={code} value={code}>{data.name}</option>
-                    ))}
-                  </optgroup>
-                  <optgroup label="🇺🇸 United States">
-                    {Object.entries(LOCATIONS).filter(([_, v]) => v.country === 'US').map(([code, data]) => (
-                      <option key={code} value={code}>{data.name}</option>
-                    ))}
-                  </optgroup>
-                </select>
-                {/* Unit indicator (auto-set by province) */}
-                <div className="text-xs text-zinc-500 text-center mb-1">
-                  Unit: <span className={`font-bold ${fuelForm.unit === 'Litres' ? 'text-emerald-300' : 'text-green-400'}`}>
-                    {fuelForm.unit}
-                  </span> {fuelForm.province && `(auto-set from ${LOCATIONS[fuelForm.province as keyof typeof LOCATIONS]?.name || 'province'})`}
+
+                {/* City autocomplete */}
+                <div className="relative">
+                  <input
+                    type="text"
+                    placeholder="City * — start typing..."
+                    value={citySearch}
+                    onChange={(e) => handleCitySearch(e.target.value)}
+                    onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+                    onFocus={() => citySearch.length >= 2 && setShowSuggestions(true)}
+                    className={`w-full bg-zinc-950 border rounded-xl p-4 text-base font-bold outline-none focus:border-green-600 ${
+                      fuelForm.location ? 'border-green-600/50' : 'border-red-600/50'
+                    }`}
+                  />
+                  {fuelForm.location && (
+                    <div className="flex items-center gap-2 mt-1 px-1">
+                      <span className="text-xs text-green-400 font-bold">{fuelForm.location}</span>
+                      {fuelForm.province && (
+                        <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${
+                          LOCATIONS[fuelForm.province as keyof typeof LOCATIONS]?.country === 'CA'
+                            ? 'bg-red-600/20 text-red-300' : 'bg-blue-600/20 text-blue-300'
+                        }`}>
+                          {LOCATIONS[fuelForm.province as keyof typeof LOCATIONS]?.country === 'CA' ? '🇨🇦' : '🇺🇸'} {fuelForm.province}
+                        </span>
+                      )}
+                      <button
+                        onClick={() => { setFuelForm(prev => ({ ...prev, location: '', province: '' })); setCitySearch(''); }}
+                        className="text-zinc-600 hover:text-red-400 text-xs ml-auto"
+                      >✕</button>
+                    </div>
+                  )}
+                  {showSuggestions && citySuggestions.length > 0 && (
+                    <div className="absolute z-50 left-0 right-0 top-full mt-1 bg-zinc-900 border border-zinc-700 rounded-xl overflow-hidden shadow-2xl">
+                      {citySuggestions.map((s, i) => (
+                        <button
+                          key={i}
+                          onMouseDown={() => handleCitySelect(s)}
+                          className="w-full text-left px-4 py-3 text-sm font-bold hover:bg-zinc-800 border-b border-zinc-800 last:border-0"
+                        >
+                          <span className="text-white">{s.city || s.label}</span>
+                          <span className="text-zinc-500 text-xs ml-2">{s.state}, {s.country === 'Canada' ? '🇨🇦' : '🇺🇸'}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
+
+                {/* Currency toggle */}
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-black text-zinc-500 uppercase">Currency</span>
+                  <div className="flex bg-zinc-900 rounded-xl p-1 border border-zinc-800 gap-1">
+                    {(['auto', 'USD', 'CAD'] as const).map(c => (
+                      <button
+                        key={c}
+                        onClick={() => setFuelForm(prev => ({ ...prev, currency: c }))}
+                        className={`px-3 py-1.5 rounded-lg text-[11px] font-black uppercase transition-all ${
+                          fuelForm.currency === c
+                            ? c === 'auto' ? 'bg-green-600 text-white' : c === 'USD' ? 'bg-blue-600 text-white' : 'bg-red-600 text-white'
+                            : 'text-zinc-500 hover:text-zinc-300'
+                        }`}
+                      >
+                        {c === 'auto' ? `Auto (${effectiveFuelCurrency === 'CAD' ? '🇨🇦' : '🇺🇸'})` : c}
+                      </button>
+                    ))}
+                  </div>
+                  <span className={`text-xs font-black px-2 py-1 rounded-lg ${
+                    effectiveFuelCurrency === 'CAD' ? 'bg-red-600/20 text-red-300' : 'bg-blue-600/20 text-blue-300'
+                  }`}>{effectiveFuelCurrency}</span>
+                </div>
+
+                {/* Qty + Price per unit */}
                 <div className="grid grid-cols-2 gap-2">
                   <div className="relative">
                     <input
@@ -651,7 +750,7 @@ export default function MobileQuickAddPanel({ trips, isOpen, onClose }: MobileQu
                       step="0.01"
                       placeholder="Qty *"
                       value={fuelForm.quantity}
-                      onChange={(e) => setFuelForm({ ...fuelForm, quantity: e.target.value })}
+                      onChange={(e) => handleFuelQtyOrPrice('quantity', e.target.value)}
                       className={`bg-zinc-950 border rounded-xl p-3 text-base font-bold outline-none focus:border-green-600 w-full pr-10 ${
                         fuelForm.quantity ? 'border-zinc-800' : 'border-red-600/50'
                       }`}
@@ -662,15 +761,41 @@ export default function MobileQuickAddPanel({ trips, isOpen, onClose }: MobileQu
                       {fuelForm.unit === 'Litres' ? 'L' : 'Gal'}
                     </span>
                   </div>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      step="0.001"
+                      placeholder={`Price/${fuelForm.unit === 'Litres' ? 'L' : 'Gal'} (opt)`}
+                      value={fuelForm.pricePerUnit}
+                      onChange={(e) => handleFuelQtyOrPrice('pricePerUnit', e.target.value)}
+                      className="bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-base font-bold outline-none focus:border-green-600 w-full pl-5"
+                    />
+                    <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-zinc-500 font-bold">
+                      {effectiveFuelCurrency === 'CAD' ? 'C' : '$'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Total amount */}
+                <div className="relative">
                   <input
                     type="number"
                     step="0.01"
-                    placeholder="$ (opt)"
+                    placeholder={`Total ${effectiveFuelCurrency} (opt)`}
                     value={fuelForm.amount}
                     onChange={(e) => setFuelForm({ ...fuelForm, amount: e.target.value })}
-                    className="bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-base font-bold outline-none focus:border-green-600"
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-base font-bold outline-none focus:border-green-600 pl-8"
                   />
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-zinc-400 font-bold">
+                    {effectiveFuelCurrency === 'CAD' ? 'C$' : '$'}
+                  </span>
+                  {fuelForm.pricePerUnit && fuelForm.quantity && (
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] text-zinc-500">
+                      {fuelForm.quantity}×{fuelForm.pricePerUnit}
+                    </span>
+                  )}
                 </div>
+
                 <input
                   type="number"
                   placeholder="Odometer (optional)"
