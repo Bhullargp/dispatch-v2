@@ -51,9 +51,9 @@ export default function GlobalNav() {
               title="Edit Profile"
             >
               <span className="w-6 h-6 rounded-full bg-emerald-600/20 border border-emerald-500/30 flex items-center justify-center text-[10px] text-emerald-400 font-black overflow-hidden">
-                {(user?.username || user?.email || '?')[0].toUpperCase()}
+                {(user?.email || user?.username || '?')[0].toUpperCase()}
               </span>
-              <span className="hidden lg:inline">{user?.username || user?.email || '...'}</span>
+              <span className="hidden lg:inline">{user?.email || user?.username || '...'}</span>
             </Link>
             <LogoutButton />
           </div>
