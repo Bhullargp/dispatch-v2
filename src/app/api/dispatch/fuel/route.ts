@@ -10,7 +10,12 @@ export async function POST(request: Request) {
     if (response || !access) return response;
 
     const body = await request.json();
-    const { trip_number, date, location, quantity, unit, amount_usd, odometer } = body;
+    const {
+      trip_number, date, location, province, country,
+      gallons, liters, price_per_unit, amount_usd, unit,
+      odometer, prev_odometer, fuel_type,
+      def_liters, def_cost, def_price_per_unit, currency,
+    } = body;
 
     let target_trip = trip_number;
     if ((trip_number === 'AUTO' || !trip_number) && date) {
@@ -29,13 +34,24 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Trip not found' }, { status: 404 });
     }
 
-    const result = await db().run(
-      `INSERT INTO fuel (trip_number, date, location, quantity, unit, amount_usd, odometer, user_id)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-      [target_trip, date, location, quantity, unit, amount_usd, odometer, access.adminMode ? null : access.session.userId]
+    await db().run(
+      `INSERT INTO fuel (
+        trip_number, date, location, province, country,
+        gallons, liters, price_per_unit, amount_usd, unit,
+        odometer, prev_odometer, fuel_type,
+        def_liters, def_cost, def_price_per_unit, currency, user_id
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+      [
+        target_trip, date, location, province || null, country || null,
+        gallons || null, liters || null, price_per_unit || null, amount_usd || null, unit || 'Gallons',
+        odometer || null, prev_odometer || null, fuel_type || 'diesel',
+        def_liters || null, def_cost || null, def_price_per_unit || null,
+        currency || 'USD',
+        access.adminMode ? null : access.session.userId,
+      ]
     );
 
-    return NextResponse.json({ success: true, id: result.changes });
+    return NextResponse.json({ success: true });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -78,7 +94,12 @@ export async function PATCH(request: Request) {
     if (response || !access) return response;
 
     const body = await request.json();
-    const { id, location, quantity, amount_usd, trip_number, date, unit, odometer } = body;
+    const {
+      id, trip_number, date, location, province, country,
+      gallons, liters, price_per_unit, amount_usd, unit,
+      odometer, prev_odometer, fuel_type,
+      def_liters, def_cost, def_price_per_unit, currency,
+    } = body;
     if (!id) return NextResponse.json({ error: 'Missing fuel record id' }, { status: 400 });
 
     const existing = await db().get('SELECT id FROM fuel WHERE id = $1 AND ($2 OR user_id = $3)', [id, access.adminMode ? true : false, access.session.userId]);
@@ -91,13 +112,20 @@ export async function PATCH(request: Request) {
     const updates: string[] = [];
     const params: any[] = [];
     let idx = 1;
-    if (location !== undefined) { updates.push(`location = $${idx++}`); params.push(location); }
-    if (quantity !== undefined) { updates.push(`quantity = $${idx++}`); params.push(quantity); }
-    if (amount_usd !== undefined) { updates.push(`amount_usd = $${idx++}`); params.push(amount_usd); }
-    if (trip_number !== undefined) { updates.push(`trip_number = $${idx++}`); params.push(trip_number); }
-    if (date !== undefined) { updates.push(`date = $${idx++}`); params.push(date); }
-    if (unit !== undefined) { updates.push(`unit = $${idx++}`); params.push(unit); }
-    if (odometer !== undefined) { updates.push(`odometer = $${idx++}`); params.push(odometer); }
+
+    const fields: [string, any][] = [
+      ['trip_number', trip_number], ['date', date], ['location', location],
+      ['province', province], ['country', country], ['gallons', gallons],
+      ['liters', liters], ['price_per_unit', price_per_unit], ['amount_usd', amount_usd],
+      ['unit', unit], ['odometer', odometer], ['prev_odometer', prev_odometer],
+      ['fuel_type', fuel_type], ['def_liters', def_liters], ['def_cost', def_cost],
+      ['def_price_per_unit', def_price_per_unit], ['currency', currency],
+    ];
+
+    for (const [col, val] of fields) {
+      if (val !== undefined) { updates.push(`${col} = $${idx++}`); params.push(val); }
+    }
+
     if (updates.length === 0) return NextResponse.json({ error: 'Nothing to update' }, { status: 400 });
 
     params.push(id, access.adminMode ? true : false, access.session.userId);
