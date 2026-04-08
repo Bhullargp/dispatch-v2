@@ -29,6 +29,8 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
   const [addingStop, setAddingStop] = useState(false);
   const [deletingStopId, setDeletingStopId] = useState<number | null>(null);
   const [addingFuel, setAddingFuel] = useState(false);
+  const [tripFuel, setTripFuel] = useState<any[]>([]);
+  const [loadingFuel, setLoadingFuel] = useState(false);
   const [showNewPayableForm, setShowNewPayableForm] = useState(false);
   const [newPayableName, setNewPayableName] = useState('');
   const [newPayableRateType, setNewPayableRateType] = useState<'hourly' | 'fixed'>('fixed');
@@ -53,6 +55,17 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
   const [prevReimbNames, setPrevReimbNames] = useState<string[]>([]);
 
   useEffect(() => { setMounted(true); }, []);
+
+  // Fetch fuel entries for this trip
+  useEffect(() => {
+    if (!trip.trip_number) return;
+    setLoadingFuel(true);
+    fetch(`/api/dispatch/fuel?trip_number=${encodeURIComponent(trip.trip_number)}`)
+      .then(r => r.json())
+      .then(data => setTripFuel(Array.isArray(data) ? data : []))
+      .catch(() => {})
+      .finally(() => setLoadingFuel(false));
+  }, [trip.trip_number, actionSuccess]);
 
   // Fetch reimbursements for this trip
   useEffect(() => {
@@ -565,15 +578,24 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                 </div>
               )}
             </div>
-            <a
-              href={currentTrip.pdf_path || '#'}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={(e) => { if (!currentTrip.pdf_path) e.preventDefault(); }}
-              className="bg-zinc-900 hover:bg-zinc-800 text-[10px] font-black uppercase px-6 py-3 rounded-xl border border-zinc-800 transition-all flex items-center gap-2 h-full"
-            >
-              📄 View PDF
-            </a>
+            <div className="flex gap-2 h-full">
+              <a
+                href={currentTrip.pdf_path || '#'}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => { if (!currentTrip.pdf_path) e.preventDefault(); }}
+                className="bg-zinc-900 hover:bg-zinc-800 text-[10px] font-black uppercase px-4 py-3 rounded-xl border border-zinc-800 transition-all flex items-center gap-2"
+              >
+                📄 View PDF
+              </a>
+              <a
+                href={`/api/dispatch/envelope?trip=${encodeURIComponent(currentTrip.trip_number)}`}
+                download={`trip-envelope-${currentTrip.trip_number}.pdf`}
+                className="bg-red-700 hover:bg-red-600 text-white text-[10px] font-black uppercase px-4 py-3 rounded-xl border border-red-600 transition-all flex items-center gap-2"
+              >
+                📋 Trip Envelope
+              </a>
+            </div>
         </div>
       </header>
 
@@ -1171,6 +1193,95 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
             </section>
           </div>
         </div>
+
+        {/* ── Fuel Entries ── */}
+        <section className="bg-black border border-zinc-900 rounded-3xl p-8">
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-[10px] font-black uppercase text-zinc-500 tracking-[0.3em]">
+              ⛽ Fuel Entries
+              {tripFuel.length > 0 && (
+                <span className="ml-2 text-green-400 normal-case font-mono">({tripFuel.length})</span>
+              )}
+            </h2>
+            {tripFuel.length > 0 && (
+              <div className="flex gap-4 text-xs font-mono text-zinc-500">
+                {(() => {
+                  const totalGal = tripFuel.reduce((s, f) => s + (parseFloat(f.gallons) || 0), 0);
+                  const totalLit = tripFuel.reduce((s, f) => s + (parseFloat(f.liters) || 0), 0);
+                  const totalAmt = tripFuel.reduce((s, f) => s + (parseFloat(f.amount_usd) || 0), 0);
+                  return (<>
+                    {totalGal > 0 && <span className="text-green-400 font-black">{totalGal.toFixed(2)} gal</span>}
+                    {totalLit > 0 && <span className="text-emerald-400 font-black">{totalLit.toFixed(1)} L</span>}
+                    {totalAmt > 0 && <span className="text-yellow-400 font-black">${totalAmt.toFixed(2)}</span>}
+                  </>);
+                })()}
+              </div>
+            )}
+          </div>
+
+          {loadingFuel ? (
+            <p className="text-zinc-600 text-xs font-mono">Loading fuel entries...</p>
+          ) : tripFuel.length === 0 ? (
+            <p className="text-zinc-700 text-xs font-mono italic">No fuel entries for this trip yet.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs font-mono">
+                <thead>
+                  <tr className="text-zinc-600 uppercase tracking-widest text-[9px] border-b border-zinc-900">
+                    <th className="text-left pb-2 pr-4">Date</th>
+                    <th className="text-left pb-2 pr-4">Location</th>
+                    <th className="text-left pb-2 pr-4">Type</th>
+                    <th className="text-right pb-2 pr-4">Gallons</th>
+                    <th className="text-right pb-2 pr-4">Litres</th>
+                    <th className="text-right pb-2 pr-4">Price/Unit</th>
+                    <th className="text-right pb-2 pr-4">Total</th>
+                    <th className="text-right pb-2">Odometer</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tripFuel.map((f, i) => (
+                    <tr key={f.id || i} className="border-b border-zinc-900/50 hover:bg-zinc-900/20 transition-colors">
+                      <td className="py-2 pr-4 text-zinc-400">{f.date || ''}</td>
+                      <td className="py-2 pr-4 text-white font-black">
+                        {f.location || ''}
+                        {f.province && <span className="text-zinc-500 font-normal">, {f.province}</span>}
+                      </td>
+                      <td className="py-2 pr-4">
+                        <span className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase ${
+                          f.fuel_type === 'def' ? 'bg-blue-900/50 text-blue-400' :
+                          f.fuel_type === 'both' ? 'bg-purple-900/50 text-purple-400' :
+                          'bg-green-900/40 text-green-400'
+                        }`}>{f.fuel_type || 'diesel'}</span>
+                      </td>
+                      <td className="py-2 pr-4 text-right text-zinc-300">{f.gallons ? parseFloat(f.gallons).toFixed(3) : '—'}</td>
+                      <td className="py-2 pr-4 text-right text-zinc-300">{f.liters ? parseFloat(f.liters).toFixed(1) : '—'}</td>
+                      <td className="py-2 pr-4 text-right text-zinc-400">
+                        {f.price_per_unit ? `${f.currency === 'CAD' ? 'C$' : '$'}${parseFloat(f.price_per_unit).toFixed(3)}` : '—'}
+                      </td>
+                      <td className="py-2 pr-4 text-right text-yellow-400 font-black">
+                        {f.amount_usd ? `$${parseFloat(f.amount_usd).toFixed(2)}` : '—'}
+                      </td>
+                      <td className="py-2 text-right text-zinc-500">{f.odometer ? Number(f.odometer).toLocaleString() : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              {/* DEF summary if any */}
+              {tripFuel.some(f => f.def_liters) && (
+                <div className="mt-4 pt-4 border-t border-zinc-900 flex gap-6 text-xs font-mono">
+                  <span className="text-zinc-600 uppercase tracking-widest">DEF Total:</span>
+                  <span className="text-blue-400 font-black">
+                    {tripFuel.reduce((s, f) => s + (parseFloat(f.def_liters) || 0), 0).toFixed(2)} L
+                  </span>
+                  <span className="text-blue-300 font-black">
+                    ${tripFuel.reduce((s, f) => s + (parseFloat(f.def_cost) || 0), 0).toFixed(2)}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+        </section>
 
         <section className="bg-black border border-zinc-900 rounded-3xl p-10">
           <h2 className="text-[10px] font-black uppercase text-zinc-700 tracking-[0.3em] mb-8">Archived Raw PDF Data</h2>
