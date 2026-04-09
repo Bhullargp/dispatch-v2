@@ -13,13 +13,26 @@ export async function GET(req: Request) {
     const { access, response } = requireAccess(req);
     if (response || !access) return response;
 
-    const jobs = await db().query(`
-      SELECT id, original_filename, status, trip_number, error_message, attempt_count, max_attempts, created_at, updated_at, processed_at
-      FROM upload_jobs
-      WHERE user_id = $1
-      ORDER BY id DESC
-      LIMIT 8
-    `, [access.session.userId]);
+    const url = new URL(req.url);
+    const tripNumber = url.searchParams.get('trip_number');
+
+    let jobs;
+    if (tripNumber) {
+      jobs = await db().query(`
+        SELECT id, original_filename, status, trip_number, stored_path, error_message, attempt_count, max_attempts, created_at, updated_at, processed_at
+        FROM upload_jobs
+        WHERE user_id = $1 AND trip_number = $2 AND status = 'done'
+        ORDER BY id DESC
+      `, [access.session.userId, tripNumber]);
+    } else {
+      jobs = await db().query(`
+        SELECT id, original_filename, status, trip_number, error_message, attempt_count, max_attempts, created_at, updated_at, processed_at
+        FROM upload_jobs
+        WHERE user_id = $1
+        ORDER BY id DESC
+        LIMIT 8
+      `, [access.session.userId]);
+    }
 
     return NextResponse.json({ jobs });
   } catch (error: any) {

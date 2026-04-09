@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import AuthGuard from '../AuthGuard';
 import PdfUploader from '../PdfUploader';
@@ -172,6 +172,8 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
   const [tripFuel, setTripFuel] = useState<Record<string, any[]>>({});
   const [fuelLoading, setFuelLoading] = useState<string | null>(null);
 
+  const periodScrollRef = useRef<HTMLDivElement>(null);
+
   // Deduction form state
   const [showDeductionForm, setShowDeductionForm] = useState(false);
   const DED_FORM_RESET: { name: string; customName: string; amount: string; date: string; is_recurring: boolean; recurring_frequency: 'weekly' | 'biweekly' | 'monthly' } = { name: '', customName: '', amount: '', date: new Date().toISOString().split('T')[0], is_recurring: false, recurring_frequency: 'monthly' };
@@ -271,6 +273,22 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
   }, []);
 
   useEffect(() => { loadData(); }, [loadData]);
+
+  // Scroll selected period into center of scrollable container
+  useEffect(() => {
+    if (!selectedPeriod || !periodScrollRef.current) return;
+    // Small delay to ensure DOM is rendered
+    const timer = setTimeout(() => {
+      const container = periodScrollRef.current;
+      if (!container) return;
+      const selectedEl = container.querySelector(`[data-period="${selectedPeriod}"]`) as HTMLElement;
+      if (selectedEl) {
+        const scrollLeft = selectedEl.offsetLeft - container.offsetWidth / 2 + selectedEl.offsetWidth / 2;
+        container.scrollTo({ left: scrollLeft, behavior: 'smooth' });
+      }
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [selectedPeriod, periods]);
 
   const markPeriodPaid = async (payPeriod: string, markPaid: boolean) => {
     try {
@@ -521,7 +539,7 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
           </div>
         )}
 
-        {/* ── Period selector ── */}
+        {/* ── Period selector (swipeable) ── */}
         <section>
           <div className="flex items-center justify-between mb-3">
             <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Pay Periods</p>
@@ -532,71 +550,63 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
               {selectedPeriod && periodStatuses[selectedPeriod]?.status === 'empty' && '📭 No Trips'}
             </p>
           </div>
-          <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide snap-x snap-mandatory">
-            {periods.slice(0, 8).map(p => {
-              const ps = periodStatuses[p.payDate];
-              const isSelected = selectedPeriod === p.payDate;
-              const status = ps?.status || 'empty';
-              const tripCount = ps?.tripCount || 0;
-              const incompleteCount = ps?.incompleteCount || 0;
-              const pc = getPeriodColor(p.payDate);
+          <div className="relative">
+            {/* Fade edges */}
+            <div className="absolute left-0 top-0 bottom-0 w-12 bg-gradient-to-r from-zinc-950 to-transparent z-10 pointer-events-none" />
+            <div className="absolute right-0 top-0 bottom-0 w-12 bg-gradient-to-l from-zinc-950 to-transparent z-10 pointer-events-none" />
+            <div ref={periodScrollRef} className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide snap-x snap-mandatory px-8" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+              {periods.map(p => {
+                const ps = periodStatuses[p.payDate];
+                const isSelected = selectedPeriod === p.payDate;
+                const status = ps?.status || 'empty';
+                const tripCount = ps?.tripCount || 0;
+                const incompleteCount = ps?.incompleteCount || 0;
+                const pc = getPeriodColor(p.payDate);
 
-              // Color coding based on status + period color
-              let borderClr = `border-[${pc.accent}]/20`;
-              let bgClr = 'bg-zinc-900/60';
-              let textClr = 'text-zinc-400';
-              let subClr = 'text-zinc-600';
-              let glow = '';
-
-              if (isSelected) {
-                bgClr = 'bg-zinc-900';
-                textClr = 'text-white';
-                subClr = 'text-zinc-300';
-                glow = `shadow-[0_0_20px_${pc.accent}33]`;
-              } else if (status === 'incomplete') {
-                borderClr = 'border-amber-700/50';
-                bgClr = 'bg-amber-900/20';
-                textClr = 'text-amber-400';
-                subClr = 'text-amber-600/70';
-              } else if (status === 'upcoming') {
-                borderClr = 'border-blue-700/50';
-                bgClr = 'bg-blue-900/20';
-                textClr = 'text-blue-400';
-                subClr = 'text-blue-600/70';
-              }
-
-              return (
-                <button
-                  key={p.payDate}
-                  onClick={() => setSelectedPeriod(p.payDate)}
-                  className={`snap-start flex-shrink-0 px-4 py-3 rounded-2xl text-left transition-all border ${bgClr} ${borderClr} ${textClr} ${glow} hover:scale-[1.02] active:scale-[0.98] relative overflow-hidden`}
-                  style={{
-                    borderColor: isSelected ? pc.accent : status === 'incomplete' ? undefined : status === 'upcoming' ? undefined : `${pc.accent}33`,
-                    borderBottomWidth: '3px',
-                    borderBottomColor: isSelected ? pc.accent : `${pc.accent}66`,
-                  }}
-                >
-                  <div className="flex items-center gap-1.5">
-                    <p className={`text-[11px] font-black uppercase tracking-wider ${isSelected ? 'text-white' : textClr}`}>
-                      {p.label}
+                return (
+                  <button
+                    key={p.payDate}
+                    data-period={p.payDate}
+                    onClick={() => setSelectedPeriod(p.payDate)}
+                    className={`snap-center flex-shrink-0 px-5 py-3 rounded-2xl text-left transition-all duration-200 border relative overflow-hidden ${
+                      isSelected
+                        ? 'bg-zinc-900 text-white scale-105 shadow-lg'
+                        : status === 'incomplete'
+                          ? 'bg-amber-900/15 text-amber-400 border-amber-700/40 hover:bg-amber-900/25'
+                          : status === 'upcoming'
+                            ? 'bg-blue-900/15 text-blue-400 border-blue-700/40 hover:bg-blue-900/25'
+                            : 'bg-zinc-900/40 text-zinc-500 hover:bg-zinc-900/60 hover:text-zinc-400'
+                    }`}
+                    style={{
+                      borderColor: isSelected ? pc.accent : undefined,
+                      borderBottomWidth: '3px',
+                      borderBottomColor: isSelected ? pc.accent : `${pc.accent}44`,
+                      boxShadow: isSelected ? `0 0 25px ${pc.accent}22` : undefined,
+                      minWidth: '140px',
+                    }}
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <p className={`text-[11px] font-black uppercase tracking-wider ${isSelected ? 'text-white' : ''}`}>
+                        {p.label}
+                      </p>
+                      {status === 'upcoming' && !isSelected && <span className="text-[7px] bg-blue-600/30 text-blue-400 px-1.5 py-0.5 rounded-full font-black">NEXT</span>}
+                      {status === 'incomplete' && <span className="text-[7px] bg-amber-600/30 text-amber-400 px-1.5 py-0.5 rounded-full font-black">!</span>}
+                      {status === 'complete' && !isSelected && <span className="text-[7px] bg-emerald-600/20 text-emerald-500 px-1.5 py-0.5 rounded-full font-black">✓</span>}
+                      {ps?.paidStatus === 'paid' && <span className="text-[7px] bg-green-600/30 text-green-400 px-1.5 py-0.5 rounded-full font-black">PAID</span>}
+                    </div>
+                    <p className={`text-[10px] mt-0.5 ${isSelected ? 'text-zinc-300' : 'text-zinc-600'}`}>
+                      {p.payLabel}
                     </p>
-                    {status === 'upcoming' && !isSelected && <span className="text-[8px] bg-blue-600/30 text-blue-400 px-1.5 py-0.5 rounded-full font-black">UPCOMING</span>}
-                    {status === 'incomplete' && <span className="text-[8px] bg-amber-600/30 text-amber-400 px-1.5 py-0.5 rounded-full font-black">INCOMPLETE</span>}
-                    {status === 'complete' && !isSelected && <span className="text-[8px] bg-emerald-600/20 text-emerald-500 px-1.5 py-0.5 rounded-full font-black">✓</span>}
-                    {ps?.paidStatus === 'paid' && <span className="text-[8px] bg-green-600/30 text-green-400 px-1.5 py-0.5 rounded-full font-black">💰 PAID</span>}
-                  </div>
-                  <p className={`text-[10px] mt-0.5 ${isSelected ? 'text-zinc-300' : subClr}`}>
-                    {p.payLabel}
-                  </p>
-                  {tripCount > 0 && (
-                    <p className={`text-[9px] mt-1 font-black ${isSelected ? 'text-zinc-400' : 'text-zinc-500'}`}>
-                      {tripCount} trip{tripCount !== 1 ? 's' : ''}
-                      {incompleteCount > 0 && <span className="text-amber-500"> ({incompleteCount} need attention)</span>}
-                    </p>
-                  )}
-                </button>
-              );
-            })}
+                    {tripCount > 0 && (
+                      <p className={`text-[9px] mt-1 font-black ${isSelected ? 'text-zinc-400' : 'text-zinc-600'}`}>
+                        {tripCount} trip{tripCount !== 1 ? 's' : ''}
+                        {incompleteCount > 0 && <span className="text-amber-500"> ({incompleteCount}!)</span>}
+                      </p>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
           </div>
           {/* Action buttons */}
           <div className="flex gap-2 mt-3 flex-wrap">

@@ -5,15 +5,14 @@ import { useRouter, usePathname } from 'next/navigation';
 import AuthGuard, { LogoutButton } from '../AuthGuard';
 import Link from 'next/link';
 
-type Tab = 'profile' | 'pay-rates' | 'extra-pay' | 'trip-rules' | 'safety-bonus' | 'admin';
+type Tab = 'profile' | 'pay-rates' | 'extra-pay' | 'trip-rules' | 'safety-bonus';
 
-const TABS: { id: Tab; label: string; icon: string; adminOnly?: boolean }[] = [
+const TABS: { id: Tab; label: string; icon: string }[] = [
   { id: 'profile', label: 'Profile', icon: '👤' },
   { id: 'pay-rates', label: 'Pay Rates', icon: '💰' },
   { id: 'extra-pay', label: 'Extra Pay', icon: '📝' },
   { id: 'trip-rules', label: 'Trip Rules', icon: '📏' },
   { id: 'safety-bonus', label: 'Safety Bonus', icon: '🛡️' },
-  { id: 'admin', label: 'Admin Panel', icon: '🛡️', adminOnly: true },
 ];
 
 const US_STATES = ['AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC'];
@@ -27,7 +26,7 @@ export default function SettingsPageClient({ userId, role, setupComplete }: { us
 
   useEffect(() => {
     const hash = window.location.hash.replace('#', '') as Tab;
-    if (TABS.find(t => t.id === hash && (!t.adminOnly || isAdmin))) setTab(hash);
+    if (TABS.find(t => t.id === hash)) setTab(hash);
   }, []);
 
   const changeTab = (t: Tab) => {
@@ -68,7 +67,7 @@ export default function SettingsPageClient({ userId, role, setupComplete }: { us
 
       <main className="p-4 md:p-8 max-w-5xl mx-auto">
         <div className="flex gap-1 overflow-x-auto pb-2 mb-6 scrollbar-hide">
-          {TABS.filter(t => !t.adminOnly || isAdmin).map(t => (
+          {TABS.map(t => (
             <button key={t.id} onClick={() => changeTab(t.id)}
               className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-[11px] font-black uppercase tracking-wider whitespace-nowrap transition-all ${tab === t.id ? 'bg-emerald-600 text-white shadow-[0_0_15px_rgba(16,185,129,0.4)]' : 'bg-zinc-900/50 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 border border-zinc-800/50'}`}>
               <span>{t.icon}</span>
@@ -83,7 +82,6 @@ export default function SettingsPageClient({ userId, role, setupComplete }: { us
           {tab === 'extra-pay' && <ExtraPayTab />}
           {tab === 'trip-rules' && <TripRulesTab />}
           {tab === 'safety-bonus' && <SafetyBonusTab />}
-          {tab === 'admin' && isAdmin && <AdminTab />}
         </div>
       </main>
     </AuthGuard>
@@ -873,6 +871,8 @@ function TripRulesTab() {
 function SafetyBonusTab() {
   const [enabled, setEnabled] = useState(false);
   const [ratePerMile, setRatePerMile] = useState('0.02');
+  const [bonusType, setBonusType] = useState<'per_mile' | 'monthly' | 'quarterly'>('per_mile');
+  const [fixedAmount, setFixedAmount] = useState('');
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
 
@@ -885,7 +885,9 @@ function SafetyBonusTab() {
       .then(data => {
         if (data.safety_bonus) {
           setEnabled(data.safety_bonus.enabled);
-          setRatePerMile(String(data.safety_bonus.rate_per_mile));
+          setRatePerMile(String(data.safety_bonus.rate_per_mile || 0.02));
+          setBonusType(data.safety_bonus.bonus_type || 'per_mile');
+          setFixedAmount(String(data.safety_bonus.fixed_amount || ''));
         }
       })
       .catch(() => {});
@@ -911,7 +913,9 @@ function SafetyBonusTab() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           enabled,
-          rate_per_mile: parseFloat(ratePerMile),
+          rate_per_mile: parseFloat(ratePerMile) || 0,
+          bonus_type: bonusType,
+          fixed_amount: parseFloat(fixedAmount) || 0,
         }),
       });
       if (!res.ok) throw new Error('Failed to save');
@@ -924,14 +928,14 @@ function SafetyBonusTab() {
   };
 
   const safetyRate = parseFloat(ratePerMile) || 0;
-  const usBaseRate = baseRates.us - (enabled ? safetyRate : 0);
+  const usBaseRate = baseRates.us - (enabled && bonusType === 'per_mile' ? safetyRate : 0);
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-black uppercase tracking-tight">Safety Bonus</h2>
-          <p className="text-zinc-500 text-xs mt-1">Part of your pay rate, not extra</p>
+          <p className="text-zinc-500 text-xs mt-1">Configure how safety bonus is calculated</p>
         </div>
         {msg && <span className="text-green-400 text-xs font-bold">{msg}</span>}
       </div>
@@ -940,14 +944,85 @@ function SafetyBonusTab() {
       <div className="bg-emerald-900/10 border border-emerald-800/30 rounded-2xl p-5 space-y-3">
         <p className="text-emerald-300 text-xs font-bold">💡 How Safety Bonus Works</p>
         <div className="text-zinc-400 text-[11px] space-y-1.5 leading-relaxed">
-          <p>Your total pay rate <span className="text-white font-black">already includes</span> the safety bonus. It's not added on top.</p>
-          <p>Example: <span className="text-white font-black">${baseRates.us.toFixed(2)}/mile</span> = <span className="text-emerald-400 font-black">${usBaseRate.toFixed(2)}</span> (base) + <span className="text-amber-400 font-black">${safetyRate.toFixed(2)}</span> (safety)</p>
+          {bonusType === 'per_mile' ? (
+            <>
+              <p>Your total pay rate <span className="text-white font-black">already includes</span> the safety bonus. It's not added on top.</p>
+              <p>Example: <span className="text-white font-black">${baseRates.us.toFixed(2)}/mile</span> = <span className="text-emerald-400 font-black">${usBaseRate.toFixed(2)}</span> (base) + <span className="text-amber-400 font-black">${safetyRate.toFixed(2)}</span> (safety)</p>
+            </>
+          ) : (
+            <p>A fixed <span className="text-white font-black">${fixedAmount || '0'}</span> safety bonus is applied <span className="text-amber-400 font-black">{bonusType === 'monthly' ? 'every month' : 'every quarter (3 months)'}</span>. The company can deduct it if safety standards aren't met.</p>
+          )}
           <p>If you make a mistake, the company can <span className="text-red-400">deduct the safety portion</span> from that pay period.</p>
         </div>
       </div>
 
-      {/* Rate breakdown */}
-      {enabled && (
+      <div className="bg-zinc-950 border border-zinc-800 rounded-2xl p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm font-black">Enable safety bonus?</p>
+            <p className="text-zinc-500 text-[10px] mt-1">Track safety bonus as a separate component of pay</p>
+          </div>
+          <button
+            onClick={() => setEnabled(!enabled)}
+            className={`w-12 h-6 rounded-full transition-all ${enabled ? 'bg-emerald-600' : 'bg-zinc-700'}`}
+          >
+            <div className={`w-5 h-5 bg-white rounded-full transition-all ${enabled ? 'translate-x-6' : 'translate-x-0.5'} mt-0.5`} />
+          </button>
+        </div>
+
+        {enabled && (
+          <>
+            {/* Bonus type selector */}
+            <div>
+              <label className="text-[10px] font-black uppercase tracking-wider text-zinc-500 block mb-2">Bonus Type</label>
+              <div className="grid grid-cols-3 gap-2">
+                {([
+                  { id: 'per_mile', label: 'Per Mile', desc: '$/mile included in rate' },
+                  { id: 'monthly', label: 'Monthly', desc: 'Fixed $ every month' },
+                  { id: 'quarterly', label: 'Quarterly', desc: 'Fixed $ every 3 months' },
+                ] as const).map(bt => (
+                  <button key={bt.id} onClick={() => setBonusType(bt.id)}
+                    className={`p-3 rounded-xl border text-left transition-all ${
+                      bonusType === bt.id
+                        ? 'bg-emerald-600/20 border-emerald-500/40 text-emerald-400'
+                        : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:border-zinc-700'
+                    }`}>
+                    <p className="text-xs font-black">{bt.label}</p>
+                    <p className="text-[9px] text-zinc-500 mt-0.5">{bt.desc}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {bonusType === 'per_mile' ? (
+              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
+                <label className="text-[10px] font-black uppercase tracking-wider text-zinc-500 block mb-2">Safety bonus per mile ($)</label>
+                <div className="flex items-center gap-2">
+                  <span className="text-zinc-500 font-black">$</span>
+                  <input type="number" step="0.001" value={ratePerMile} onChange={e => setRatePerMile(e.target.value)}
+                    className="w-32 bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-sm font-black outline-none focus:border-emerald-500 text-right" />
+                  <span className="text-zinc-600 text-xs">/mile</span>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
+                <label className="text-[10px] font-black uppercase tracking-wider text-zinc-500 block mb-2">
+                  {bonusType === 'monthly' ? 'Monthly' : 'Quarterly'} bonus amount ($)
+                </label>
+                <div className="flex items-center gap-2">
+                  <span className="text-zinc-500 font-black">$</span>
+                  <input type="number" step="1" value={fixedAmount} onChange={e => setFixedAmount(e.target.value)}
+                    className="w-32 bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-sm font-black outline-none focus:border-emerald-500 text-right" />
+                  <span className="text-zinc-600 text-xs">/{bonusType === 'monthly' ? 'month' : 'quarter'}</span>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Rate breakdown for per_mile */}
+      {enabled && bonusType === 'per_mile' && (
         <div className="bg-zinc-950 border border-zinc-800 rounded-2xl p-5 space-y-3">
           <h3 className="text-[10px] font-black uppercase tracking-wider text-zinc-500">Your Rate Breakdown</h3>
           <div className="space-y-2">
@@ -969,41 +1044,6 @@ function SafetyBonusTab() {
           </p>
         </div>
       )}
-
-      <div className="bg-zinc-950 border border-zinc-800 rounded-2xl p-5 space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm font-black">Include safety bonus in rate?</p>
-            <p className="text-zinc-500 text-[10px] mt-1">When enabled, your rate is split into base + safety</p>
-          </div>
-          <button
-            onClick={() => setEnabled(!enabled)}
-            className={`w-12 h-6 rounded-full transition-all ${enabled ? 'bg-emerald-600' : 'bg-zinc-700'}`}
-          >
-            <div className={`w-5 h-5 bg-white rounded-full transition-all ${enabled ? 'translate-x-6' : 'translate-x-0.5'} mt-0.5`} />
-          </button>
-        </div>
-
-        {enabled && (
-          <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
-            <label className="text-[10px] font-black uppercase tracking-wider text-zinc-500 block mb-2">Safety bonus per mile ($)</label>
-            <div className="flex items-center gap-2">
-              <span className="text-zinc-500 font-black">$</span>
-              <input
-                type="number"
-                step="0.001"
-                value={ratePerMile}
-                onChange={e => setRatePerMile(e.target.value)}
-                className="w-32 bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-sm font-black outline-none focus:border-emerald-500 text-right"
-              />
-              <span className="text-zinc-600 text-xs">/mile</span>
-            </div>
-            <p className="text-zinc-600 text-[10px] mt-2">
-              If disabled, full rate (${baseRates.us.toFixed(2)}) goes to base pay
-            </p>
-          </div>
-        )}
-      </div>
 
       <button onClick={save} disabled={saving}
         className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-[11px] font-black uppercase tracking-wider px-6 py-3 rounded-xl transition-all">

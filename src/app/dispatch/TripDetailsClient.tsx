@@ -53,6 +53,8 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
   const [reimbSaving, setReimbSaving] = useState(false);
   const [editingReimbId, setEditingReimbId] = useState<number | null>(null);
   const [prevReimbNames, setPrevReimbNames] = useState<string[]>([]);
+  const [tripPdfs, setTripPdfs] = useState<any[]>([]);
+  const [showPdfMenu, setShowPdfMenu] = useState(false);
 
   useEffect(() => { setMounted(true); }, []);
 
@@ -66,6 +68,15 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
       .catch(() => {})
       .finally(() => setLoadingFuel(false));
   }, [trip.trip_number, actionSuccess]);
+
+  // Fetch PDFs for this trip
+  useEffect(() => {
+    if (!trip.trip_number) return;
+    fetch(`/api/dispatch/upload?trip_number=${encodeURIComponent(trip.trip_number)}`)
+      .then(r => r.json())
+      .then(data => setTripPdfs(Array.isArray(data.jobs) ? data.jobs : []))
+      .catch(() => {});
+  }, [trip.trip_number]);
 
   // Fetch reimbursements for this trip
   useEffect(() => {
@@ -579,15 +590,54 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
               )}
             </div>
             <div className="flex gap-2 h-full">
-              <a
-                href={currentTrip.pdf_path || '#'}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={(e) => { if (!currentTrip.pdf_path) e.preventDefault(); }}
-                className="bg-zinc-900 hover:bg-zinc-800 text-[10px] font-black uppercase px-4 py-3 rounded-xl border border-zinc-800 transition-all flex items-center gap-2"
-              >
-                📄 View PDF
-              </a>
+              <div className="relative">
+                {tripPdfs.length === 1 ? (
+                  <a
+                    href={tripPdfs[0].stored_path}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="bg-zinc-900 hover:bg-zinc-800 text-[10px] font-black uppercase px-4 py-3 rounded-xl border border-zinc-800 transition-all flex items-center gap-2"
+                  >
+                    📄 View PDF
+                  </a>
+                ) : tripPdfs.length > 1 ? (
+                  <>
+                    <button
+                      onClick={() => setShowPdfMenu(v => !v)}
+                      className="bg-zinc-900 hover:bg-zinc-800 text-[10px] font-black uppercase px-4 py-3 rounded-xl border border-zinc-800 transition-all flex items-center gap-2"
+                    >
+                      📄 View PDF <span className="text-zinc-500">▾</span>
+                    </button>
+                    {showPdfMenu && (
+                      <div className="absolute top-full left-0 mt-1 z-50 bg-zinc-900 border border-zinc-700 rounded-xl shadow-xl overflow-hidden min-w-[220px]">
+                        {tripPdfs.map((pdf, i) => (
+                          <a
+                            key={pdf.id}
+                            href={pdf.stored_path}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={() => setShowPdfMenu(false)}
+                            className="flex flex-col px-4 py-3 hover:bg-zinc-800 transition-all border-b border-zinc-800 last:border-0"
+                          >
+                            <span className="text-[10px] font-black text-zinc-200 truncate max-w-[200px]">{pdf.original_filename}</span>
+                            {i === 0 && <span className="text-[9px] text-emerald-500 font-bold mt-0.5">Latest</span>}
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <a
+                    href={currentTrip.pdf_path || '#'}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => { if (!currentTrip.pdf_path) e.preventDefault(); }}
+                    className="bg-zinc-900 hover:bg-zinc-800 text-[10px] font-black uppercase px-4 py-3 rounded-xl border border-zinc-800 transition-all flex items-center gap-2 opacity-60"
+                  >
+                    📄 View PDF
+                  </a>
+                )}
+              </div>
               <a
                 href={`/api/dispatch/envelope?trip=${encodeURIComponent(currentTrip.trip_number)}`}
                 download={`trip-envelope-${currentTrip.trip_number}.pdf`}
@@ -609,14 +659,11 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
         )}
 
         {/* ── Crew & Equipment Card ── */}
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+        <div className="grid grid-cols-3 gap-3">
           {[
             { label: 'Lead Driver', key: 'driver_name', icon: '👤', value: currentTrip.driver_name || currentTrip.lead_driver, accent: 'emerald' },
             { label: 'Co-Driver', key: 'co_driver', icon: '👥', value: currentTrip.co_driver, accent: 'zinc', placeholder: 'Solo' },
             { label: 'Truck #', key: 'truck_number', icon: '🚛', value: currentTrip.truck_number || currentTrip.truck, accent: 'amber' },
-            { label: 'Trailer #', key: 'trailer_number', icon: '📦', value: currentTrip.trailer_number || currentTrip.trailer, accent: 'blue' },
-            { label: 'Dispatcher', key: 'dispatcher_name', icon: '📋', value: currentTrip.dispatcher_name, accent: 'purple' },
-            { label: 'Customs Broker', key: 'customs_broker', icon: '🛃', value: currentTrip.customs_broker, accent: 'cyan' },
           ].map(({ label, key, icon, value, accent, placeholder }) => (
             <button
               key={key}
@@ -641,36 +688,6 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
           ))}
         </div>
 
-        {/* Route */}
-        {currentTrip.route && currentTrip.route !== 'Unknown' && (
-          <div className="flex items-center gap-3 bg-zinc-900/20 border border-zinc-900 rounded-2xl px-5 py-3">
-            <span className="text-[9px] font-black uppercase tracking-widest text-zinc-600">Route</span>
-            <span className="text-sm font-bold text-zinc-300 font-mono">{currentTrip.route}</span>
-          </div>
-        )}
-
-        {/* Stop Counters */}
-        <div className="flex flex-wrap gap-2 mt-3 mb-2">
-          {(() => {
-            const pickups = currentStops.filter(s => (s.stop_type || '').toUpperCase() === 'PICKUP').length;
-            const deliveries = currentStops.filter(s => (s.stop_type || '').toUpperCase() === 'DELIVER' || (s.stop_type || '') === 'Delivery').length;
-            const layovers = currentExtras.filter(e => e.type === 'Layover').reduce((sum, e) => sum + (e.quantity || 1), 0);
-            const extraPU = currentExtras.filter(e => e.type === 'Extra Pickup').reduce((sum, e) => sum + (e.quantity || 1), 0);
-            const extraDL = currentExtras.filter(e => e.type === 'Extra Delivery').reduce((sum, e) => sum + (e.quantity || 1), 0);
-            const switches = currentExtras.filter(e => e.type === 'Trailer Switch').reduce((sum, e) => sum + (e.quantity || 1), 0);
-
-            return (
-              <>
-                {pickups > 0 && <span className="text-[9px] font-black uppercase bg-green-900/30 border border-green-700/40 text-green-400 px-2 py-1 rounded-full">🚛 {pickups} Pickup{pickups > 1 ? 's' : ''}</span>}
-                {deliveries > 0 && <span className="text-[9px] font-black uppercase bg-blue-900/30 border border-blue-700/40 text-emerald-400 px-2 py-1 rounded-full">📦 {deliveries} Deliver{deliveries > 1 ? 'ies' : 'y'}</span>}
-                {layovers > 0 && <span className="text-[9px] font-black uppercase bg-purple-900/30 border border-purple-700/40 text-purple-400 px-2 py-1 rounded-full">🛏 {layovers} Layover{layovers > 1 ? 's' : ''}</span>}
-                {extraPU > 0 && <span className="text-[9px] font-black uppercase bg-cyan-900/30 border border-cyan-700/40 text-cyan-400 px-2 py-1 rounded-full">➕ {extraPU} Extra PU</span>}
-                {extraDL > 0 && <span className="text-[9px] font-black uppercase bg-amber-900/30 border border-amber-700/40 text-amber-400 px-2 py-1 rounded-full">➕ {extraDL} Extra DL</span>}
-                {switches > 0 && <span className="text-[9px] font-black uppercase bg-orange-900/30 border border-orange-700/40 text-orange-400 px-2 py-1 rounded-full">🔄 {switches} Switch{switches > 1 ? 'es' : ''}</span>}
-              </>
-            );
-          })()}
-        </div>
 
         {/* OVERVIEW - Mobile View */}
         <section className="md:hidden bg-zinc-900/30 border border-zinc-800 rounded-3xl p-8 md:p-10 shadow-2xl relative overflow-hidden">
@@ -1324,12 +1341,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
           )}
         </section>
 
-        <section className="bg-black border border-zinc-900 rounded-3xl p-10">
-          <h2 className="text-[10px] font-black uppercase text-zinc-700 tracking-[0.3em] mb-8">Archived Raw PDF Data</h2>
-          <div className="p-10 rounded-3xl bg-zinc-950/20 border border-zinc-900/50 overflow-x-auto shadow-inner">
-            <pre className="text-[11px] text-zinc-600 font-mono leading-relaxed whitespace-pre-wrap italic">{currentTrip.raw_data || 'No raw data available.'}</pre>
-          </div>
-        </section>
+        {/* Raw PDF data kept in DB for system use — hidden from user view */}
       </main>
 
       {/* PAY BREAKDOWN MODAL */}

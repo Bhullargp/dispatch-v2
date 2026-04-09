@@ -70,18 +70,8 @@ function generatePeriods() {
   const unique = periods.filter(p => { if (seen.has(p.payDate)) return false; seen.add(p.payDate); return true; });
   unique.sort((a, b) => b.payDate.localeCompare(a.payDate));
 
-  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-  const firstPast = unique.findIndex(p => p.payDate <= todayStr);
-  const startIdx = Math.max(0, firstPast - 1);
-  const window = unique.slice(startIdx, startIdx + 10);
-
-  const upcomingIdx = window.findIndex(p => p.payDate >= todayStr);
-  if (upcomingIdx > 0) {
-    const upcoming = window.splice(upcomingIdx, 1)[0];
-    window.unshift(upcoming);
-  }
-
-  return window;
+  // Return all generated periods (frontend handles scrolling/selection)
+  return unique;
 }
 
 async function autoAssignMissingPeriods(userId: number, adminMode: boolean) {
@@ -131,11 +121,9 @@ export async function GET(request: Request) {
     );
 
     const todayStr = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}`;
-    let defaultPeriod = periods[0]?.payDate;
-    const upcomingIdx = periods.findIndex(p => p.payDate >= todayStr);
-    if (upcomingIdx >= 0) {
-      defaultPeriod = periods[upcomingIdx].payDate;
-    }
+    // Default to the nearest upcoming pay date
+    const upcoming = periods.filter(p => p.payDate >= todayStr);
+    const defaultPeriod = upcoming.length > 0 ? upcoming[upcoming.length - 1].payDate : periods[0]?.payDate;
     const currentPeriod = selectedPeriod || defaultPeriod;
 
     const periodStatuses: Record<string, { status: string; tripCount: number; incompleteCount: number; paidStatus: string }> = {};
@@ -164,6 +152,31 @@ export async function GET(request: Request) {
 
     const thisMonthTrips = allTrips.filter((t: any) => t.start_date?.startsWith(thisMonth) || t.end_date?.startsWith(thisMonth));
     const lastMonthTrips = allTrips.filter((t: any) => t.start_date?.startsWith(lastMonth) || t.end_date?.startsWith(lastMonth));
+
+    // Auto-apply recurring deductions to current and upcoming periods
+    try {
+      const recurringDeds = await db().query(
+        'SELECT DISTINCT name, amount FROM deductions WHERE is_recurring = 1 AND user_id = $1',
+        [access.session.userId]
+      ) as any[];
+
+      if (recurringDeds.length > 0) {
+        for (const p of periods) {
+          for (const rd of recurringDeds) {
+            const existing = await db().get(
+              'SELECT id FROM deductions WHERE user_id = $1 AND pay_period = $2 AND name = $3',
+              [access.session.userId, p.payDate, rd.name]
+            );
+            if (!existing) {
+              await db().run(
+                'INSERT INTO deductions (user_id, pay_period, name, amount, is_recurring) VALUES ($1, $2, $3, $4, 1)',
+                [access.session.userId, p.payDate, rd.name, rd.amount]
+              );
+            }
+          }
+        }
+      }
+    } catch {}
 
     let deductions: any[] = [];
     try {

@@ -8,13 +8,49 @@ import pool, { db } from '@/lib/db';
 
 const execFileAsync = promisify(execFile);
 
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
-const MINIMAX_API_KEY = process.env.MINIMAX_API_KEY || '';
 const MINIMAX_API_URL = 'https://api.minimax.chat/v1/chat/completions';
-const MINIMAX_MODEL = process.env.MINIMAX_MODEL || 'MiniMax-Text-01';
-const ZAI_API_KEY = process.env.ZAI_API_KEY || '';
 const ZAI_API_URL = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
 const ZAI_MODEL = 'glm-4.5-air';
+
+// Runtime LLM config — reads from DB (admin_settings), falls back to env vars
+interface LlmConfig {
+  primary: 'minimax' | 'claude' | 'zai' | 'regex';
+  minimaxApiKey: string;
+  minimaxModel: string;
+  anthropicApiKey: string;
+  zaiApiKey: string;
+}
+
+async function getLlmConfig(): Promise<LlmConfig> {
+  try {
+    const rows = await db().query(
+      "SELECT key, value FROM system_defaults WHERE key LIKE 'llm_%'",
+      []
+    ) as Array<{ key: string; value: string }>;
+    const s: Record<string, string> = Object.fromEntries(rows.map(r => [r.key, r.value]));
+    return {
+      primary:        (s.llm_primary as LlmConfig['primary']) || 'minimax',
+      minimaxApiKey:  s.llm_minimax_api_key   || process.env.MINIMAX_API_KEY   || '',
+      minimaxModel:   s.llm_minimax_model      || process.env.MINIMAX_MODEL     || 'MiniMax-Text-01',
+      anthropicApiKey:s.llm_anthropic_api_key  || process.env.ANTHROPIC_API_KEY || '',
+      zaiApiKey:      s.llm_zai_api_key        || process.env.ZAI_API_KEY       || '',
+    };
+  } catch {
+    return {
+      primary: 'minimax',
+      minimaxApiKey:   process.env.MINIMAX_API_KEY   || '',
+      minimaxModel:    process.env.MINIMAX_MODEL      || 'MiniMax-Text-01',
+      anthropicApiKey: process.env.ANTHROPIC_API_KEY  || '',
+      zaiApiKey:       process.env.ZAI_API_KEY        || '',
+    };
+  }
+}
+
+// Keep env-based constants for backwards compat with non-DB code paths
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
+const MINIMAX_API_KEY = process.env.MINIMAX_API_KEY || '';
+const MINIMAX_MODEL = process.env.MINIMAX_MODEL || 'MiniMax-Text-01';
+const ZAI_API_KEY = process.env.ZAI_API_KEY || '';
 
 export type ParsedStop = {
   stop_type: string;
@@ -266,8 +302,9 @@ Return ONLY valid JSON, no markdown, no explanation:
   "dispatcher_name": "string or null"
 }`;
 
-export async function extractWithLlm(text: string): Promise<LlmExtractResult> {
-  if (!ZAI_API_KEY) {
+export async function extractWithLlm(text: string, apiKey?: string): Promise<LlmExtractResult> {
+  const key = apiKey || ZAI_API_KEY;
+  if (!key) {
     throw new Error('ZAI_API_KEY not configured. Add it to .env.local');
   }
 
@@ -277,7 +314,7 @@ export async function extractWithLlm(text: string): Promise<LlmExtractResult> {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${ZAI_API_KEY}`,
+      'Authorization': `Bearer ${key}`,
     },
     body: JSON.stringify({
       model: ZAI_MODEL,
@@ -318,8 +355,10 @@ export async function extractWithLlm(text: string): Promise<LlmExtractResult> {
   return parsed;
 }
 
-export async function extractWithMinimax(text: string): Promise<LlmExtractResult> {
-  if (!MINIMAX_API_KEY) {
+export async function extractWithMinimax(text: string, apiKey?: string, model?: string): Promise<LlmExtractResult> {
+  const key = apiKey || MINIMAX_API_KEY;
+  const mdl = model || MINIMAX_MODEL;
+  if (!key) {
     throw new Error('MINIMAX_API_KEY not configured. Add it to .env.local');
   }
 
@@ -329,10 +368,10 @@ export async function extractWithMinimax(text: string): Promise<LlmExtractResult
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${MINIMAX_API_KEY}`,
+      'Authorization': `Bearer ${key}`,
     },
     body: JSON.stringify({
-      model: MINIMAX_MODEL,
+      model: mdl,
       messages: [
         { role: 'system', content: LLM_SYSTEM_PROMPT },
         { role: 'user', content: `Parse this driver itinerary:\n\n${truncated}` },
@@ -370,12 +409,13 @@ export async function extractWithMinimax(text: string): Promise<LlmExtractResult
   return parsed;
 }
 
-export async function extractWithClaude(pdfBuffer: Buffer): Promise<LlmExtractResult> {
-  if (!ANTHROPIC_API_KEY) {
+export async function extractWithClaude(pdfBuffer: Buffer, apiKey?: string): Promise<LlmExtractResult> {
+  const key = apiKey || ANTHROPIC_API_KEY;
+  if (!key) {
     throw new Error('ANTHROPIC_API_KEY not configured. Add it to .env.local');
   }
 
-  const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+  const client = new Anthropic({ apiKey: key });
   const base64Pdf = pdfBuffer.toString('base64');
 
   const SCHEMA_PROMPT = LLM_SYSTEM_PROMPT;
@@ -684,57 +724,45 @@ export async function processClaimedUploadJob(job: UploadJob) {
 
     const rawText = await extractTextFromPdf(buffer);
 
+    // Load runtime LLM config from DB (admin can change at any time)
+    const cfg = await getLlmConfig();
+
     let parsed: ParsedTrip;
 
-    if (MINIMAX_API_KEY) {
-      // Primary: Minimax (fast, cost-effective, OpenAI-compatible)
+    // Ordered extraction chain based on admin's primary model selection
+    const tryMinimax = async () => {
+      if (!cfg.minimaxApiKey) throw new Error('Minimax API key not configured');
+      const llmResult = await extractWithMinimax(rawText, cfg.minimaxApiKey, cfg.minimaxModel);
+      return llmResultToParsedTrip(llmResult, rawText);
+    };
+    const tryClaude = async () => {
+      if (!cfg.anthropicApiKey) throw new Error('Anthropic API key not configured');
+      const llmResult = await extractWithClaude(buffer, cfg.anthropicApiKey);
+      return llmResultToParsedTrip(llmResult, rawText);
+    };
+    const tryZai = async () => {
+      if (!cfg.zaiApiKey) throw new Error('Z.AI API key not configured');
+      const llmResult = await extractWithLlm(rawText, cfg.zaiApiKey);
+      return llmResultToParsedTrip(llmResult, rawText);
+    };
+
+    // Build ordered list: primary first, then fallbacks
+    const allMethods = ['minimax', 'claude', 'zai'] as const;
+    const ordered = [cfg.primary, ...allMethods.filter(m => m !== cfg.primary)];
+
+    parsed = undefined as any;
+    for (const method of ordered) {
+      if (parsed) break;
+      if (method === 'regex') { parsed = parseDriverItinerary(rawText); break; }
       try {
-        const llmResult = await extractWithMinimax(rawText);
-        parsed = llmResultToParsedTrip(llmResult, rawText);
-      } catch (minimaxError: any) {
-        console.warn(`Minimax extraction failed, trying fallback: ${minimaxError.message}`);
-        if (ANTHROPIC_API_KEY) {
-          try {
-            const llmResult = await extractWithClaude(buffer);
-            parsed = llmResultToParsedTrip(llmResult, rawText);
-          } catch (claudeError: any) {
-            console.warn(`Claude extraction failed, falling back to regex: ${claudeError.message}`);
-            parsed = parseDriverItinerary(rawText);
-          }
-        } else {
-          parsed = parseDriverItinerary(rawText);
-        }
+        if (method === 'minimax') parsed = await tryMinimax();
+        else if (method === 'claude') parsed = await tryClaude();
+        else if (method === 'zai') parsed = await tryZai();
+      } catch (err: any) {
+        console.warn(`[pdf] ${method} failed: ${err.message}`);
       }
-    } else if (ANTHROPIC_API_KEY) {
-      // Fallback: Claude (sends raw PDF bytes, best OCR accuracy)
-      try {
-        const llmResult = await extractWithClaude(buffer);
-        parsed = llmResultToParsedTrip(llmResult, rawText);
-      } catch (claudeError: any) {
-        console.warn(`Claude extraction failed, trying Z.AI: ${claudeError.message}`);
-        if (ZAI_API_KEY) {
-          try {
-            const llmResult = await extractWithLlm(rawText);
-            parsed = llmResultToParsedTrip(llmResult, rawText);
-          } catch (zaiError: any) {
-            console.warn(`Z.AI extraction failed, falling back to regex: ${zaiError.message}`);
-            parsed = parseDriverItinerary(rawText);
-          }
-        } else {
-          parsed = parseDriverItinerary(rawText);
-        }
-      }
-    } else if (ZAI_API_KEY) {
-      try {
-        const llmResult = await extractWithLlm(rawText);
-        parsed = llmResultToParsedTrip(llmResult, rawText);
-      } catch (llmError: any) {
-        console.warn(`Z.AI extraction failed, falling back to regex: ${llmError.message}`);
-        parsed = parseDriverItinerary(rawText);
-      }
-    } else {
-      parsed = parseDriverItinerary(rawText);
     }
+    if (!parsed) parsed = parseDriverItinerary(rawText);
 
     if (!parsed.hasDetectedTripNumber) {
       throw new Error('Could not detect trip number in PDF. Please verify the document format.');

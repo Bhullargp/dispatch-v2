@@ -315,23 +315,39 @@ export default function TripSheet({ initialTrips, isAdmin = false }: { initialTr
                 const start = formatDate(trip.start_date);
                 const end = formatDate(trip.end_date);
                 const tripUrl = `/dispatch/${trip.trip_number}?from=tripsheet`;
-                const stop1 = trip.first_stop?.split(',')[0] || '---';
-                const stop2 = trip.last_stop?.split(',')[0];
-                const routeHint = stop2 && stop2 !== stop1 ? `${stop1} → ${stop2}` : stop1;
+                const s1 = trip.first_stop?.split(',')[0]?.trim();
+                const s2 = trip.last_stop?.split(',')[0]?.trim();
+                const routeHint = (() => {
+                  if (s1 && s2 && s1 !== s2) return `${s1} → ${s2}`;
+                  if (s1) return s1;
+                  if (trip.route && trip.route !== 'Unknown') return trip.route;
+                  return '---';
+                })();
                 const totalPay = calculateTripPay(trip);
 
                 return (
                   <tr key={trip.trip_number} className="group hover:bg-white/[0.02] transition-all cursor-pointer relative" style={trip.pay_period ? { borderLeftWidth: '3px', borderLeftColor: getPeriodColor(trip.pay_period).accent } : undefined}>
                     <td className="px-8 py-8 font-mono font-black text-base tracking-tighter group-hover:text-emerald-400 transition-colors relative">
                       <Link href={tripUrl} className="absolute inset-0 z-10" />
-                      <div className="flex items-center gap-4">
-                        <div className={`w-2 h-2 rounded-full ${
-                          trip.status === 'Active' ? 'bg-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.6)] animate-pulse' : 
-                          trip.status === 'Completed' ? 'bg-green-500 shadow-[0_0_12px_rgba(34,197,94,0.6)]' : 
-                          trip.status === 'Not Started' ? 'bg-yellow-500' : 
-                          trip.status === 'Incomplete' ? 'bg-red-500' : 
-                          trip.status === 'Cancelled' ? 'bg-orange-500' : 
-                          'bg-zinc-500'}`} />
+                      <div className="flex items-center gap-3">
+                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[8px] font-black uppercase tracking-wider border ${
+                          trip.status === 'Active'      ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' :
+                          trip.status === 'Completed'   ? 'bg-green-500/10 text-green-400 border-green-500/30' :
+                          trip.status === 'Incomplete'  ? 'bg-red-500/10 text-red-400 border-red-500/30' :
+                          trip.status === 'Not Started' ? 'bg-zinc-500/10 text-zinc-400 border-zinc-600/30' :
+                          trip.status === 'Cancelled'   ? 'bg-amber-500/10 text-amber-400 border-amber-500/30' :
+                          'bg-zinc-800/30 text-zinc-600 border-zinc-700/30'
+                        }`}>
+                          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                            trip.status === 'Active'      ? 'bg-emerald-400 animate-pulse' :
+                            trip.status === 'Completed'   ? 'bg-green-400' :
+                            trip.status === 'Incomplete'  ? 'bg-red-400' :
+                            trip.status === 'Not Started' ? 'bg-zinc-400' :
+                            trip.status === 'Cancelled'   ? 'bg-amber-400' :
+                            'bg-zinc-600'
+                          }`} />
+                          {trip.status || 'Unknown'}
+                        </span>
                         {trip.trip_number}
                       </div>
                     </td>
