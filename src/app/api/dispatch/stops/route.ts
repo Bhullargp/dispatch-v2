@@ -60,6 +60,36 @@ export async function PATCH(request: Request) {
   }
 }
 
+export async function PUT(request: Request) {
+  try {
+    await ensureDispatchAuthSchemaAndSeed();
+    const { access, response } = requireAccess(request);
+    if (response || !access) return response;
+
+    const { trip_number, stop_ids } = await request.json();
+    if (!trip_number || !Array.isArray(stop_ids)) {
+      return NextResponse.json({ error: 'trip_number and stop_ids[] required' }, { status: 400 });
+    }
+
+    const ownedTrip = await db().get(
+      'SELECT trip_number FROM trips WHERE trip_number = $1 AND ($2 OR user_id = $3)',
+      [trip_number, access.adminMode ? true : false, access.session.userId]
+    );
+    if (!ownedTrip) return NextResponse.json({ error: 'Trip not found' }, { status: 404 });
+
+    // Ensure stop_order column exists
+    try { await db().run('ALTER TABLE stops ADD COLUMN IF NOT EXISTS stop_order INTEGER DEFAULT 0'); } catch {}
+
+    for (let i = 0; i < stop_ids.length; i++) {
+      await db().run('UPDATE stops SET stop_order = $1 WHERE id = $2 AND trip_number = $3', [i, stop_ids[i], trip_number]);
+    }
+
+    return NextResponse.json({ success: true });
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}
+
 export async function DELETE(request: Request) {
   try {
     await ensureDispatchAuthSchemaAndSeed();

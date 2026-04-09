@@ -285,13 +285,7 @@ export default function FuelHistoryClient({ initialFuel, trips }: { initialFuel:
         )}
       </main>
 
-      {/* Quick Add Button - Show on both mobile and desktop */}
-      <FloatingAddButton onClick={() => setIsQuickAddOpen(true)} />
-      <MobileQuickAddPanel 
-        trips={trips.filter((t: any) => t.status === 'Active' || t.status === 'Not Started')} 
-        isOpen={isQuickAddOpen}
-        onClose={() => setIsQuickAddOpen(false)}
-      />
+      {/* Quick add handled by root layout MobileQuickAddWrapper */}
     </AuthGuard>
   );
 }

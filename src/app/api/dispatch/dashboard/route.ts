@@ -68,7 +68,7 @@ function generatePeriods() {
 
   const seen = new Set<string>();
   const unique = periods.filter(p => { if (seen.has(p.payDate)) return false; seen.add(p.payDate); return true; });
-  unique.sort((a, b) => b.payDate.localeCompare(a.payDate));
+  unique.sort((a, b) => a.payDate.localeCompare(b.payDate));
 
   // Return all generated periods (frontend handles scrolling/selection)
   return unique;
@@ -111,7 +111,8 @@ export async function GET(request: Request) {
     (SELECT location FROM stops WHERE trip_number = t.trip_number AND location NOT LIKE '%Caledon%' AND (${access.adminMode ? '1=1' : 'user_id = t.user_id'}) ORDER BY id ASC LIMIT 1) as first_stop,
     (SELECT location FROM stops WHERE trip_number = t.trip_number AND location NOT LIKE '%Caledon%' AND (${access.adminMode ? '1=1' : 'user_id = t.user_id'}) ORDER BY id DESC LIMIT 1) as last_stop,
     (SELECT json_agg(json_build_object('type', type, 'amount', amount, 'quantity', quantity)) FROM extra_pay WHERE trip_number = t.trip_number AND (${access.adminMode ? '1=1' : 'user_id = t.user_id'})) as extra_pay_json,
-    (SELECT json_agg(json_build_object('stop_type', stop_type, 'location', location, 'date', date, 'miles_from_last', miles_from_last) ORDER BY id ASC) FROM stops WHERE trip_number = t.trip_number AND (${access.adminMode ? '1=1' : 'user_id = t.user_id'})) as stops_json
+    (SELECT json_agg(json_build_object('stop_type', stop_type, 'location', location, 'date', date, 'miles_from_last', miles_from_last) ORDER BY COALESCE(stop_order, 999999) ASC, id ASC) FROM stops WHERE trip_number = t.trip_number AND (${access.adminMode ? '1=1' : 'user_id = t.user_id'})) as stops_json,
+    (SELECT json_agg(json_build_object('name', name, 'amount', amount, 'category', category)) FROM trip_expenses WHERE trip_number = t.trip_number AND (${access.adminMode ? '1=1' : 'user_id = t.user_id'})) as expenses_json
   FROM trips t WHERE ${scope.clause} ORDER BY trip_number DESC
 `;
     const allTrips = await db().query(baseQuery, scope.params) as any[];
@@ -121,9 +122,9 @@ export async function GET(request: Request) {
     );
 
     const todayStr = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}`;
-    // Default to the nearest upcoming pay date
+    // Default to the nearest upcoming pay date (ascending order, so first upcoming is nearest)
     const upcoming = periods.filter(p => p.payDate >= todayStr);
-    const defaultPeriod = upcoming.length > 0 ? upcoming[upcoming.length - 1].payDate : periods[0]?.payDate;
+    const defaultPeriod = upcoming.length > 0 ? upcoming[0].payDate : periods[periods.length - 1]?.payDate;
     const currentPeriod = selectedPeriod || defaultPeriod;
 
     const periodStatuses: Record<string, { status: string; tripCount: number; incompleteCount: number; paidStatus: string }> = {};

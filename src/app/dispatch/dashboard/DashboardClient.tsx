@@ -31,6 +31,7 @@ interface Trip {
   rate_type: string | null;
   extra_pay_json: string | null;
   stops_json: string | null;
+  expenses_json: string | null;
   first_stop: string | null;
   last_stop: string | null;
   status: string;
@@ -124,7 +125,10 @@ function spansPayCutoff(trip: Trip): boolean {
 }
 
 function fmt(n: number) {
-  return n.toLocaleString('en-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 2 });
+  return `C$${n.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+function fmtUSD(n: number) {
+  return `US$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 function fmtNum(n: number) {
   return n.toLocaleString('en-CA', { maximumFractionDigits: 0 });
@@ -132,9 +136,9 @@ function fmtNum(n: number) {
 
 function getStopCounters(trip: Trip) {
   let stops: Stop[] = [];
-  try { stops = JSON.parse(trip.stops_json || '[]'); } catch {}
-  let extras: { type: string; quantity: number }[] = [];
-  try { extras = JSON.parse(trip.extra_pay_json || '[]'); } catch {}
+  try { stops = Array.isArray(trip.stops_json) ? trip.stops_json as any : JSON.parse(trip.stops_json || '[]'); } catch {}
+  let extras: { type: string; quantity: number; amount: number }[] = [];
+  try { const epj = trip.extra_pay_json; extras = Array.isArray(epj) ? epj : JSON.parse(epj || '[]'); } catch {}
 
   const pickups = stops.filter(s => (s.stop_type || '').toUpperCase() === 'PICKUP').length;
   const deliveries = stops.filter(s => (s.stop_type || '').toUpperCase() === 'DELIVER' || s.stop_type === 'Delivery').length;
@@ -142,8 +146,10 @@ function getStopCounters(trip: Trip) {
   const extraPU = extras.filter(e => e.type === 'Extra Pickup').reduce((sum, e) => sum + (e.quantity || 1), 0);
   const extraDL = extras.filter(e => e.type === 'Extra Delivery').reduce((sum, e) => sum + (e.quantity || 1), 0);
   const switches = extras.filter(e => e.type === 'Trailer Switch').reduce((sum, e) => sum + (e.quantity || 1), 0);
+  const waitingHrs = extras.filter(e => e.type === 'Waiting Time').reduce((sum, e) => sum + (e.quantity || 0), 0);
+  const tollAmount = extras.filter(e => e.type === 'Tolls').reduce((sum, e) => sum + (e.amount || 0), 0);
 
-  return { pickups, deliveries, layovers, extraPU, extraDL, switches, totalStops: stops.length };
+  return { pickups, deliveries, layovers, extraPU, extraDL, switches, totalStops: stops.length, waitingHrs, tollAmount };
 }
 
 function formatDateDisplay(dateStr: string | null) {
@@ -205,6 +211,13 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
   const [showSafetyDeductionForm, setShowSafetyDeductionForm] = useState(false);
   const [safetyDedForm, setSafetyDedForm] = useState({ amount: '', type: 'custom' });
 
+  // Quick Add Trip state
+  const [showQuickAddTrip, setShowQuickAddTrip] = useState(false);
+  const QAT_RESET = { trip_number: '', start_date: '', end_date: '', total_miles: '', status: 'Active', truck_number: '', trailer_number: '' };
+  const [qatForm, setQatForm] = useState(QAT_RESET);
+  const [savingQat, setSavingQat] = useState(false);
+  const [qatError, setQatError] = useState('');
+
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
@@ -236,12 +249,13 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
         if (sbData.safety_bonus) setSafetyBonus(sbData.safety_bonus);
       } catch {}
 
-      // Parse stops for each trip
+      // Parse stops for each trip (stops_json may be string or already-parsed array)
       const stopsMap: Record<string, Stop[]> = {};
       if (dash.allTrips) {
         for (const trip of dash.allTrips) {
           try {
-            stopsMap[trip.trip_number] = JSON.parse(trip.stops_json || '[]');
+            const raw = trip.stops_json;
+            stopsMap[trip.trip_number] = Array.isArray(raw) ? raw : JSON.parse(raw || '[]');
           } catch { stopsMap[trip.trip_number] = []; }
         }
       }
@@ -274,21 +288,29 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
 
   useEffect(() => { loadData(); }, [loadData]);
 
-  // Scroll selected period into center of scrollable container
+  // Scroll so the selected period sits near the left, with one previous period visible
+  const initialScrollDone = useRef(false);
   useEffect(() => {
-    if (!selectedPeriod || !periodScrollRef.current) return;
-    // Small delay to ensure DOM is rendered
+    if (loading || !selectedPeriod) return;
+    const delay = initialScrollDone.current ? 100 : 300;
     const timer = setTimeout(() => {
       const container = periodScrollRef.current;
       if (!container) return;
       const selectedEl = container.querySelector(`[data-period="${selectedPeriod}"]`) as HTMLElement;
-      if (selectedEl) {
-        const scrollLeft = selectedEl.offsetLeft - container.offsetWidth / 2 + selectedEl.offsetWidth / 2;
-        container.scrollTo({ left: scrollLeft, behavior: 'smooth' });
+      if (!selectedEl) return;
+      const oneCardBack = Math.max(0, selectedEl.offsetLeft - 160);
+      if (!initialScrollDone.current) {
+        // First load: direct assignment avoids any scroll-snap interference
+        container.style.scrollSnapType = 'none';
+        container.scrollLeft = oneCardBack;
+        requestAnimationFrame(() => { container.style.scrollSnapType = ''; });
+        initialScrollDone.current = true;
+      } else {
+        container.scrollTo({ left: oneCardBack, behavior: 'smooth' });
       }
-    }, 100);
+    }, delay);
     return () => clearTimeout(timer);
-  }, [selectedPeriod, periods]);
+  }, [loading, selectedPeriod, periods]);
 
   const markPeriodPaid = async (payPeriod: string, markPaid: boolean) => {
     try {
@@ -305,7 +327,35 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
   };
 
   const quickAddTrip = () => {
-    window.location.href = '/dispatch/trips?action=new';
+    setQatForm(QAT_RESET);
+    setQatError('');
+    setShowQuickAddTrip(true);
+  };
+
+  const saveQuickTrip = async () => {
+    if (!qatForm.trip_number.trim()) { setQatError('Trip number is required'); return; }
+    setSavingQat(true);
+    setQatError('');
+    try {
+      const res = await fetch('/api/dispatch/trips', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          trip_number: qatForm.trip_number.trim(),
+          start_date: qatForm.start_date || null,
+          end_date: qatForm.end_date || null,
+          total_miles: qatForm.total_miles ? parseFloat(qatForm.total_miles) : null,
+          status: qatForm.status,
+          truck_number: qatForm.truck_number || null,
+          trailer_number: qatForm.trailer_number || null,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setQatError(data.error || 'Failed to create trip'); return; }
+      setShowQuickAddTrip(false);
+      await refreshDashboard();
+    } catch { setQatError('Network error'); }
+    finally { setSavingQat(false); }
   };
 
   const refreshDashboard = useCallback(async () => {
@@ -554,7 +604,7 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
             {/* Fade edges */}
             <div className="absolute left-0 top-0 bottom-0 w-12 bg-gradient-to-r from-zinc-950 to-transparent z-10 pointer-events-none" />
             <div className="absolute right-0 top-0 bottom-0 w-12 bg-gradient-to-l from-zinc-950 to-transparent z-10 pointer-events-none" />
-            <div ref={periodScrollRef} className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide snap-x snap-mandatory px-8" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+            <div ref={periodScrollRef} className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide snap-x px-8" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
               {periods.map(p => {
                 const ps = periodStatuses[p.payDate];
                 const isSelected = selectedPeriod === p.payDate;
@@ -1040,6 +1090,11 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
                 const isExpanded = expandedTrip === trip.trip_number;
                 const stops = tripStops[trip.trip_number] || [];
 
+                // Reimbursements for collapsed card
+                let tripExpenses: { name: string; amount: number; category: string }[] = [];
+                try { const ej = trip.expenses_json; tripExpenses = Array.isArray(ej) ? ej : JSON.parse(ej || '[]'); } catch {}
+                const reimbTotal = tripExpenses.reduce((sum, e) => sum + (e.amount || 0), 0);
+
                 return (
                   <div
                     key={trip.trip_number}
@@ -1099,6 +1154,8 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
                           {counters.layovers > 0 && <span className="text-[8px] font-black bg-purple-900/20 text-purple-400 px-1.5 py-0.5 rounded-full">🛏{counters.layovers}LO</span>}
                           {counters.extraPU > 0 && <span className="text-[8px] font-black bg-cyan-900/20 text-cyan-400 px-1.5 py-0.5 rounded-full">+{counters.extraPU}EPU</span>}
                           {counters.extraDL > 0 && <span className="text-[8px] font-black bg-amber-900/20 text-amber-400 px-1.5 py-0.5 rounded-full">+{counters.extraDL}EDL</span>}
+                          {counters.waitingHrs > 0 && <span className="text-[8px] font-black bg-yellow-900/20 text-yellow-400 px-1.5 py-0.5 rounded-full">⏳{counters.waitingHrs}h</span>}
+                          {counters.tollAmount > 0 && <span className="text-[8px] font-black bg-orange-900/20 text-orange-400 px-1.5 py-0.5 rounded-full">🛣️{fmtUSD(counters.tollAmount)}</span>}
                         </div>
                         <div className="flex gap-3 mt-1.5 text-[10px] text-zinc-500 font-bold flex-wrap">
                           {trip.start_date && <span>{trip.start_date}{trip.end_date ? ` → ${trip.end_date}` : ''}</span>}
@@ -1111,9 +1168,21 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
                       <div className="text-right md:w-32 flex-shrink-0">
                         <p className="text-lg font-black text-white">{fmt(pay.total)}</p>
                         {pay.extras > 0 && (
-                          <p className="text-[10px] text-zinc-500">+{fmt(pay.extras)} extras</p>
+                          <div className="text-[10px] space-y-0.5 mt-0.5">
+                            {Object.entries(pay.extraBreakdown).map(([type, amt]) => (
+                              <p key={type} className="text-amber-400/70">+{fmt(amt)} <span className="text-zinc-600">{type}</span></p>
+                            ))}
+                          </div>
                         )}
-                        {pay.isCanada && <p className="text-[9px] text-red-400 font-black">🇨🇦 CA Rate</p>}
+                        {reimbTotal > 0 && (
+                          <p className="text-[10px] text-cyan-400/70 mt-0.5">+{fmt(reimbTotal)} reimb.</p>
+                        )}
+                        {pay.isCanada && <p className="text-[9px] text-red-400 font-black mt-0.5">🇨🇦 CA Rate</p>}
+                      </div>
+
+                      {/* Expand indicator */}
+                      <div className="flex-shrink-0 w-6 hidden md:flex items-center justify-center">
+                        <span className={`text-zinc-600 text-xs transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`}>▼</span>
                       </div>
 
                       {/* Period assignment */}
@@ -1132,9 +1201,9 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
                             }`}
                           >
                             <option value="">— Assign Period —</option>
-                            {periods.slice(0, 8).map(p => (
+                            {[...periods].reverse().map(p => (
                               <option key={p.payDate} value={p.payDate}>
-                                {p.label} ({p.payLabel})
+                                {p.label} ({p.payLabel}){p.payDate === selectedPeriod ? ' ★' : ''}
                               </option>
                             ))}
                           </select>
@@ -1194,25 +1263,56 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
 
                         {/* Extra Pay Items */}
                         {(() => {
-                          let extras: { type: string; quantity: number; rate: number; total: number }[] = [];
-                          try { extras = JSON.parse(trip.extra_pay_json || '[]'); } catch {}
+                          let extras: { type: string; quantity: number; amount: number }[] = [];
+                          try { const epj = trip.extra_pay_json; extras = Array.isArray(epj) ? epj : JSON.parse(epj || '[]'); } catch {}
                           if (extras.length === 0) return null;
+                          const extrasTotal = extras.reduce((sum, e) => sum + (e.amount || 0), 0);
                           return (
                             <div className="px-4 py-2">
-                              <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-2">💰 Extra Pay</p>
+                              <div className="flex items-center justify-between mb-2">
+                                <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500">💰 Extra Pay</p>
+                                <span className="text-xs font-black text-emerald-400">{fmt(extrasTotal)}</span>
+                              </div>
                               <div className="space-y-1.5">
-                                {extras.map((ex, i) => (
+                                {extras.map((ex, i) => {
+                                  const unitRate = ex.quantity ? ex.amount / ex.quantity : ex.amount;
+                                  return (
+                                    <div key={i} className="flex items-center justify-between py-1.5 px-3 bg-zinc-900/60 rounded-xl">
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded-full bg-amber-900/20 text-amber-400 border border-amber-800/30">
+                                          {ex.type}
+                                        </span>
+                                        {ex.quantity > 1 && <span className="text-[10px] text-zinc-500">×{ex.quantity}</span>}
+                                      </div>
+                                      <div className="flex items-center gap-2">
+                                        {ex.quantity > 1 && <span className="text-[10px] text-zinc-500">@ {fmt(unitRate)}</span>}
+                                        <span className="text-xs font-bold text-emerald-400">{fmt(ex.amount || 0)}</span>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        })()}
+
+                        {/* Reimbursements (trip expenses) */}
+                        {(() => {
+                          let exps: { name: string; amount: number; category: string }[] = [];
+                          try { const ej = trip.expenses_json; exps = Array.isArray(ej) ? ej : JSON.parse(ej || '[]'); } catch {}
+                          if (exps.length === 0) return null;
+                          const totalExp = exps.reduce((sum, e) => sum + (e.amount || 0), 0);
+                          return (
+                            <div className="px-4 py-2">
+                              <div className="flex items-center justify-between mb-2">
+                                <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500">💳 Reimbursements</p>
+                                <span className="text-xs font-black text-cyan-400">{fmt(totalExp)}</span>
+                              </div>
+                              <div className="space-y-1.5">
+                                {exps.map((ex, i) => (
                                   <div key={i} className="flex items-center justify-between py-1.5 px-3 bg-zinc-900/60 rounded-xl">
-                                    <div className="flex items-center gap-2">
-                                      <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded-full bg-amber-900/20 text-amber-400 border border-amber-800/30">
-                                        {ex.type}
-                                      </span>
-                                      <span className="text-[10px] text-zinc-500">×{ex.quantity || 1}</span>
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                      <span className="text-[10px] text-zinc-500">@ {fmt(ex.rate || 0)}</span>
-                                      <span className="text-xs font-bold text-emerald-400">{fmt(ex.total || (ex.quantity || 1) * (ex.rate || 0))}</span>
-                                    </div>
+                                    <span className="text-xs text-zinc-300 font-bold">{ex.name}</span>
+                                    <span className="text-xs font-black text-cyan-400">{fmt(ex.amount || 0)}</span>
                                   </div>
                                 ))}
                               </div>
@@ -1237,7 +1337,7 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
                           return (
                             <div className="px-4 py-2 pb-4">
                               <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-2">
-                                ⛽ Fuel · {fuel.length} stop{fuel.length !== 1 ? 's' : ''} · {fuelGal.toFixed(1)} gal · {fmt(fuelTotal)}
+                                ⛽ Fuel · {fuel.length} stop{fuel.length !== 1 ? 's' : ''} · {fuelGal.toFixed(1)} gal · {fmtUSD(fuelTotal)}
                               </p>
                               <div className="space-y-1.5">
                                 {fuel.map((f: any) => (
@@ -1251,9 +1351,9 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
                                     <div className="flex items-center gap-2">
                                       <span className="text-[10px] text-zinc-500">{f.quantity?.toFixed(1) || '?'} gal</span>
                                       {f.quantity > 0 && f.amount_usd > 0 && (
-                                        <span className="text-[9px] text-zinc-600">@ ${(f.amount_usd / f.quantity).toFixed(3)}/gal</span>
+                                        <span className="text-[9px] text-zinc-600">@ US${(f.amount_usd / f.quantity).toFixed(3)}/gal</span>
                                       )}
-                                      <span className="text-xs font-bold text-orange-400">{fmt(f.amount_usd || 0)}</span>
+                                      <span className="text-xs font-bold text-orange-400">{fmtUSD(f.amount_usd || 0)}</span>
                                     </div>
                                   </div>
                                 ))}
@@ -1299,11 +1399,11 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <p className="text-[10px] font-black uppercase tracking-widest text-cyan-400/80">⛽ Fuel Ups</p>
-                  <p className="text-lg font-black text-cyan-400 mt-1">{fmt(totalCost)}</p>
+                  <p className="text-lg font-black text-cyan-400 mt-1">{fmtUSD(totalCost)}</p>
                 </div>
                 <div className="text-right space-y-1">
                   <p className="text-[10px] text-zinc-500 font-bold">
-                    <span className="text-zinc-300">{totalGallons.toFixed(1)} gal</span> · avg <span className="text-cyan-400">${avgPerGal.toFixed(3)}/gal</span>
+                    <span className="text-zinc-300">{totalGallons.toFixed(1)} gal</span> · avg <span className="text-cyan-400">US${avgPerGal.toFixed(3)}/gal</span>
                   </p>
                   <p className="text-[10px] text-zinc-600 font-bold">{periodFuel.length} fuel up{periodFuel.length !== 1 ? 's' : ''}</p>
                 </div>
@@ -1324,8 +1424,8 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
                       </div>
                       <div className="flex items-center gap-4 flex-shrink-0">
                         <span className="text-[10px] text-zinc-500 font-bold">{gal.toFixed(1)} gal</span>
-                        <span className="text-[10px] text-cyan-400/70 font-bold">${ppg.toFixed(3)}</span>
-                        <span className="text-xs font-black text-cyan-400">{fmt(cost)}</span>
+                        <span className="text-[10px] text-cyan-400/70 font-bold">US${ppg.toFixed(3)}</span>
+                        <span className="text-xs font-black text-cyan-400">{fmtUSD(cost)}</span>
                         {f.trip_number && (
                           <span className="text-[9px] text-zinc-600 font-black">#{f.trip_number}</span>
                         )}
@@ -1566,6 +1666,121 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
                 </button>
                 <button
                   onClick={() => setShowDeductionForm(false)}
+                  className="text-[10px] font-black uppercase tracking-wider px-4 py-3 rounded-xl bg-zinc-800 text-zinc-400 hover:text-white transition-all"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Quick Add Trip Modal ── */}
+        {showQuickAddTrip && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={() => setShowQuickAddTrip(false)}>
+            <div className="bg-zinc-950 border border-blue-800/40 rounded-3xl p-6 w-full max-w-md space-y-4 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-black uppercase tracking-widest text-blue-400">+ Quick Add Trip</p>
+                <button onClick={() => setShowQuickAddTrip(false)} className="text-zinc-600 hover:text-white text-lg">✕</button>
+              </div>
+
+              {/* Trip Number */}
+              <div>
+                <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1 block">Trip Number *</label>
+                <input
+                  type="text"
+                  placeholder="e.g. T052300"
+                  value={qatForm.trip_number}
+                  onChange={e => setQatForm(f => ({ ...f, trip_number: e.target.value }))}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2.5 text-xs text-white placeholder-zinc-600 outline-none focus:border-blue-600 uppercase"
+                  autoFocus
+                />
+              </div>
+
+              {/* Dates */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1 block">Start Date</label>
+                  <input
+                    type="date"
+                    value={qatForm.start_date}
+                    onChange={e => setQatForm(f => ({ ...f, start_date: e.target.value }))}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2.5 text-xs text-white outline-none focus:border-blue-600"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1 block">End Date</label>
+                  <input
+                    type="date"
+                    value={qatForm.end_date}
+                    onChange={e => setQatForm(f => ({ ...f, end_date: e.target.value }))}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2.5 text-xs text-white outline-none focus:border-blue-600"
+                  />
+                </div>
+              </div>
+
+              {/* Miles */}
+              <div>
+                <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1 block">Total Miles</label>
+                <input
+                  type="number"
+                  placeholder="0"
+                  value={qatForm.total_miles}
+                  onChange={e => setQatForm(f => ({ ...f, total_miles: e.target.value }))}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2.5 text-xs text-white placeholder-zinc-600 outline-none focus:border-blue-600"
+                />
+              </div>
+
+              {/* Truck / Trailer */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1 block">Truck #</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. 101"
+                    value={qatForm.truck_number}
+                    onChange={e => setQatForm(f => ({ ...f, truck_number: e.target.value }))}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2.5 text-xs text-white placeholder-zinc-600 outline-none focus:border-blue-600"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1 block">Trailer #</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. 201"
+                    value={qatForm.trailer_number}
+                    onChange={e => setQatForm(f => ({ ...f, trailer_number: e.target.value }))}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2.5 text-xs text-white placeholder-zinc-600 outline-none focus:border-blue-600"
+                  />
+                </div>
+              </div>
+
+              {/* Status */}
+              <div>
+                <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1 block">Status</label>
+                <select
+                  value={qatForm.status}
+                  onChange={e => setQatForm(f => ({ ...f, status: e.target.value }))}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2.5 text-xs text-white outline-none focus:border-blue-600"
+                >
+                  <option value="Active">Active</option>
+                  <option value="Completed">Completed</option>
+                  <option value="Pending">Pending</option>
+                </select>
+              </div>
+
+              {qatError && <p className="text-xs text-red-400">{qatError}</p>}
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  onClick={saveQuickTrip}
+                  disabled={savingQat}
+                  className="flex-1 text-[10px] font-black uppercase tracking-wider px-4 py-3 rounded-xl bg-blue-600 text-white hover:bg-blue-500 transition-all disabled:opacity-50"
+                >
+                  {savingQat ? 'Saving...' : 'Create Trip'}
+                </button>
+                <button
+                  onClick={() => setShowQuickAddTrip(false)}
                   className="text-[10px] font-black uppercase tracking-wider px-4 py-3 rounded-xl bg-zinc-800 text-zinc-400 hover:text-white transition-all"
                 >
                   Cancel

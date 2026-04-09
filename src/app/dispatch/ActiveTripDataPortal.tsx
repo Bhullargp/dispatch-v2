@@ -448,13 +448,7 @@ export default function ActiveTripDataPortal({ trip, fuelEntries, extraPay, inve
             View Full Trip Details
         </Link>
 
-      {/* Quick Add Button - Show on both mobile and desktop */}
-      <FloatingAddButton onClick={() => setIsQuickAddOpen(true)} />
-      <MobileQuickAddPanel 
-        trips={[{ trip_number: trip.trip_number, status: trip.status }]} 
-        isOpen={isQuickAddOpen}
-        onClose={() => setIsQuickAddOpen(false)}
-      />
+      {/* Quick add handled by root layout MobileQuickAddWrapper */}
 
       </div>
     </AuthGuard>

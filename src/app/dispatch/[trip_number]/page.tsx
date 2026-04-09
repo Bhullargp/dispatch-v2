@@ -21,7 +21,7 @@ export default async function TripDetailPage({ params, searchParams }: { params:
     access.adminMode ? [trip_number] : [trip_number, access.session.userId]
   ) as any;
   const stops = await db().query(
-    `SELECT * FROM stops WHERE trip_number = $1 AND (${access.adminMode ? '1=1' : 'user_id = $2'}) ORDER BY id ASC`,
+    `SELECT * FROM stops WHERE trip_number = $1 AND (${access.adminMode ? '1=1' : 'user_id = $2'}) ORDER BY COALESCE(stop_order, 999999) ASC, id ASC`,
     access.adminMode ? [trip_number] : [trip_number, access.session.userId]
   );
   const extraPay = await db().query(

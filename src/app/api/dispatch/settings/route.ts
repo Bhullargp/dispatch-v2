@@ -23,8 +23,10 @@ export async function GET(request: Request) {
     const canadaUnder = mileage.canada_under_1000;
     const canadaOver = mileage.canada_over_1000;
 
-    // Get setup_complete status
-    const user = await db().get('SELECT setup_complete FROM users WHERE id = $1', [access.session.userId]) as any;
+    // Ensure display_name column exists
+    await db().run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT`);
+    // Get profile fields
+    const user = await db().get('SELECT setup_complete, display_name, phone, truck_number, trailer_number, avatar_url, avatar_preset FROM users WHERE id = $1', [access.session.userId]) as any;
 
     // Get custom pay rules
     const customRules = await db().query(

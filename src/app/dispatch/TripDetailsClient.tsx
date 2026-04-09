@@ -190,6 +190,25 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
     }
   };
 
+  const moveStop = async (index: number, direction: 'up' | 'down') => {
+    const newIndex = direction === 'up' ? index - 1 : index + 1;
+    if (newIndex < 0 || newIndex >= currentStops.length) return;
+    const reordered = [...currentStops];
+    [reordered[index], reordered[newIndex]] = [reordered[newIndex], reordered[index]];
+    setCurrentStops(reordered);
+    // Persist new order
+    try {
+      await fetch('/api/dispatch/stops', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          trip_number: currentTrip.trip_number,
+          stop_ids: reordered.map((s: any) => s.id),
+        }),
+      });
+    } catch {}
+  };
+
   const getPayItems = (): PayableItem[] => {
     const userItems = userExtraPayItems.map(item => ({
       ...item,
@@ -1234,13 +1253,27 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                     <div className="-mt-1.5 flex-grow">
                       <div className="flex justify-between items-start">
                         <p className="text-[9px] font-black text-emerald-400 uppercase tracking-widest mb-2 font-mono">{formatDateDisplay(stop.date)}</p>
-                        <button
-                          onClick={() => deleteStop(stop.id, i)}
-                          disabled={deletingStopId === stop.id}
-                          className="bg-zinc-900/50 hover:bg-red-900 disabled:opacity-60 p-1.5 rounded-lg text-red-500 hover:text-white text-[9px] font-black transition-all border border-zinc-800 shadow-md uppercase tracking-tighter"
-                        >
-                          {deletingStopId === stop.id ? 'Deleting...' : 'Delete'}
-                        </button>
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => moveStop(i, 'up')}
+                            disabled={i === 0}
+                            className="w-6 h-6 flex items-center justify-center rounded-lg bg-zinc-900/50 hover:bg-zinc-800 disabled:opacity-20 text-zinc-400 hover:text-white text-[10px] border border-zinc-800 transition-all"
+                            title="Move up"
+                          >▲</button>
+                          <button
+                            onClick={() => moveStop(i, 'down')}
+                            disabled={i === currentStops.length - 1}
+                            className="w-6 h-6 flex items-center justify-center rounded-lg bg-zinc-900/50 hover:bg-zinc-800 disabled:opacity-20 text-zinc-400 hover:text-white text-[10px] border border-zinc-800 transition-all"
+                            title="Move down"
+                          >▼</button>
+                          <button
+                            onClick={() => deleteStop(stop.id, i)}
+                            disabled={deletingStopId === stop.id}
+                            className="bg-zinc-900/50 hover:bg-red-900 disabled:opacity-60 p-1.5 rounded-lg text-red-500 hover:text-white text-[9px] font-black transition-all border border-zinc-800 shadow-md uppercase tracking-tighter"
+                          >
+                            {deletingStopId === stop.id ? '...' : 'Del'}
+                          </button>
+                        </div>
                       </div>
                       <p className="text-md font-black text-zinc-100 leading-tight mb-2 tracking-tight">{stop.location}</p>
                       <span className="text-[9px] font-black text-zinc-500 uppercase bg-black/40 px-3 py-1.5 rounded-xl border border-zinc-800/50">{stop.stop_type || 'Stop'} • {stop.miles_from_last || 0} mi</span>

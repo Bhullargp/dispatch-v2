@@ -7,7 +7,7 @@ import React from 'react';
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
 const S = StyleSheet.create({
-  page: { fontFamily: 'Helvetica', fontSize: 8, padding: '10mm 8mm', backgroundColor: '#fff', color: '#111' },
+  page: { fontFamily: 'Helvetica', fontSize: 8, padding: '10mm 8mm 20mm 8mm', backgroundColor: '#fff', color: '#111' },
   // Header
   headerRow: { flexDirection: 'row', alignItems: 'flex-end', marginBottom: 6, borderBottom: '2pt solid #cc1111', paddingBottom: 4 },
   logoBox: { width: 90 },
@@ -29,10 +29,17 @@ const S = StyleSheet.create({
   odoLabel: { fontSize: 6, color: '#888', fontFamily: 'Helvetica-Bold', textTransform: 'uppercase' },
   // Section label
   sectionLabel: { fontSize: 7, fontFamily: 'Helvetica-Bold', color: '#cc1111', textTransform: 'uppercase', marginBottom: 2, marginTop: 4 },
-  // Notes row
-  noteRow: { flexDirection: 'row', borderTop: '0.5pt solid #e8c8c8', minHeight: 16, alignItems: 'center', paddingLeft: 4, paddingVertical: 2 },
-  // Footer
-  footer: { marginTop: 8, borderTop: '1pt solid #cc1111', paddingTop: 3, flexDirection: 'row', justifyContent: 'space-between' },
+  // Extras two-column table
+  extrasTable: { border: '1pt solid #e8c8c8', marginBottom: 6 },
+  extrasHead: { flexDirection: 'row', backgroundColor: '#fff5f5', borderBottom: '1pt solid #cc1111' },
+  extrasRow: { flexDirection: 'row', borderTop: '0.5pt solid #e8c8c8', minHeight: 14 },
+  extrasDesc: { flex: 3, padding: '3pt 6pt', fontFamily: 'Helvetica-Bold', fontSize: 8 },
+  extrasAmt: { flex: 1, padding: '3pt 6pt', textAlign: 'right', fontFamily: 'Helvetica-Bold', fontSize: 8, color: '#cc1111' },
+  extrasHeadDesc: { flex: 3, padding: '3pt 6pt', fontFamily: 'Helvetica-Bold', fontSize: 7, color: '#cc1111' },
+  extrasHeadAmt: { flex: 1, padding: '3pt 6pt', fontFamily: 'Helvetica-Bold', fontSize: 7, color: '#cc1111', textAlign: 'right' },
+  extrasTotalRow: { flexDirection: 'row', borderTop: '1pt solid #cc1111', backgroundColor: '#fff5f5' },
+  // Footer — fixed at bottom of page
+  footer: { position: 'absolute', bottom: 8, left: '8mm', right: '8mm', borderTop: '1pt solid #cc1111', paddingTop: 3, flexDirection: 'row', justifyContent: 'space-between' },
   footerText: { fontSize: 7, color: '#888' },
 });
 
@@ -50,7 +57,9 @@ function fmtNum(n: any, dec = 0) {
 }
 
 // ─── PDF Document ─────────────────────────────────────────────────────────────
-function TripEnvelope({ trip, stops, fuel, extraPay }: { trip: any; stops: any[]; fuel: any[]; extraPay: any[] }) {
+function TripEnvelope({ trip, stops, fuel, extraPay, expenses, driverName }: {
+  trip: any; stops: any[]; fuel: any[]; extraPay: any[]; expenses: any[]; driverName: string;
+}) {
   const odometerEnd = trip.end_odometer || trip.odometer_end || '';
   const odometerStart = trip.start_odometer || trip.odometer_start || '';
   const odometerTotal = (odometerEnd && odometerStart)
@@ -58,7 +67,6 @@ function TripEnvelope({ trip, stops, fuel, extraPay }: { trip: any; stops: any[]
     : trip.total_miles ? fmtNum(trip.total_miles, 0) : '';
 
   const distUnit = 'MILES';
-  const driverName = trip.driver_name || trip.lead_driver || '';
   const truckNum = trip.truck_number || trip.truck || '';
   const trailerNum = trip.trailer_number || trip.trailer || '';
 
@@ -66,17 +74,42 @@ function TripEnvelope({ trip, stops, fuel, extraPay }: { trip: any; stops: any[]
   const stopRows = [...stops];
   while (stopRows.length < 8) stopRows.push(null);
 
-  // Fuel — pad to at least 10 rows
+  // Fuel — pad to at least 4 empty rows
   const fuelRows = [...fuel];
-  while (fuelRows.length < 10) fuelRows.push(null);
+  while (fuelRows.length < 4) fuelRows.push(null);
 
-  // Extra pay notes
-  const extraNotes: string[] = extraPay.map(e => {
-    const qty = e.quantity ? `x${e.quantity}` : '';
-    const amt = e.amount ? ` = $${parseFloat(e.amount).toFixed(2)}` : '';
-    return `${e.type || e.description}${qty ? ' ' + qty : ''}${amt}`;
-  });
-  if (trip.notes) extraNotes.push(trip.notes);
+  // Build extras rows: { description, amount, isToll }
+  type ExtraRow = { desc: string; amt: number; isToll?: boolean };
+  const extraRows: ExtraRow[] = [];
+
+  for (const e of extraPay) {
+    const type = e.type || e.description || '';
+    const qty = e.quantity ? parseInt(e.quantity) : 1;
+    const amt = e.amount ? parseFloat(e.amount) : 0;
+
+    if (type === 'Waiting Time') {
+      extraRows.push({ desc: `Waiting Time — ${qty} Hr${qty !== 1 ? 's' : ''}`, amt });
+    } else if (type === 'Tolls') {
+      extraRows.push({ desc: `Toll`, amt, isToll: true });
+    } else if (type === 'Layover') {
+      extraRows.push({ desc: `+ ${qty} Layover${qty > 1 ? 's' : ''}`, amt });
+    } else if (type === 'Trailer Switch') {
+      extraRows.push({ desc: `+ ${qty} Trailer Switch${qty > 1 ? 'es' : ''}`, amt });
+    } else {
+      extraRows.push({ desc: `+ ${qty} ${type}`, amt });
+    }
+  }
+
+  // Reimbursements/expenses (tolls receipts etc.) — shown as CAD
+  for (const exp of expenses) {
+    const amt = exp.amount ? parseFloat(exp.amount) : 0;
+    const name = exp.name || exp.category || 'Expense';
+    extraRows.push({ desc: name, amt, isToll: true });
+  }
+
+  const extrasTotal = extraRows.reduce((sum, r) => sum + r.amt, 0);
+  const tollsTotal = extraRows.filter(r => r.isToll).reduce((sum, r) => sum + r.amt, 0);
+  const payTotal = extraRows.filter(r => !r.isToll).reduce((sum, r) => sum + r.amt, 0);
 
   return React.createElement(
     Document,
@@ -114,7 +147,6 @@ function TripEnvelope({ trip, stops, fuel, extraPay }: { trip: any; stops: any[]
           React.createElement(Text, { style: [S.tHeadCell, { flex: 1.4 }] }, 'DRIVER NAME'),
           React.createElement(Text, { style: [S.tHeadCell, { flex: 1, borderRight: 0 }] }, 'DATES'),
         ),
-        // ENDING / FROM row
         React.createElement(View, { style: S.tRow },
           React.createElement(View, { style: [S.tCell, { flex: 0.6 }] },
             React.createElement(Text, { style: S.odoLabel }, 'ENDING'),
@@ -129,7 +161,6 @@ function TripEnvelope({ trip, stops, fuel, extraPay }: { trip: any; stops: any[]
             React.createElement(Text, { style: { fontFamily: 'Helvetica-Bold' } }, fmtDate(trip.start_date)),
           ),
         ),
-        // STARTING / TO row
         React.createElement(View, { style: S.tRow },
           React.createElement(View, { style: [S.tCell, { flex: 0.6 }] },
             React.createElement(Text, { style: S.odoLabel }, 'STARTING'),
@@ -144,7 +175,6 @@ function TripEnvelope({ trip, stops, fuel, extraPay }: { trip: any; stops: any[]
             React.createElement(Text, { style: { fontFamily: 'Helvetica-Bold' } }, fmtDate(trip.end_date)),
           ),
         ),
-        // TOTAL row
         React.createElement(View, { style: S.tRow },
           React.createElement(View, { style: [S.tCell, { flex: 0.6 }] },
             React.createElement(Text, { style: S.odoLabel }, 'TOTAL'),
@@ -174,21 +204,76 @@ function TripEnvelope({ trip, stops, fuel, extraPay }: { trip: any; stops: any[]
             React.createElement(Text, { style: [S.tCell, { flex: 0.6 }] }, ''),
             React.createElement(Text, { style: [S.tCell, { flex: 0.5 }] }, ''),
             React.createElement(Text, { style: [S.tCell, { flex: 0.7, borderRight: 0, fontFamily: s?.stop_type ? 'Helvetica-Bold' : 'Helvetica' }] },
-              s ? (s.stop_type || '').toUpperCase().replace('PICKUP', 'P/U').replace('DELIVERY', 'D/L').replace('DROP', 'DROP') : ''
+              s ? (s.stop_type || '').toUpperCase()
+                .replace('PICKUP', 'P/U')
+                .replace('DELIVERY', 'D/L')
+                .replace('DELIVER', 'D/L') : ''
             ),
           )
         ),
       ),
 
-      // ── Extra pay / notes ──
-      ...extraNotes.map((note, i) =>
-        React.createElement(View, { key: i, style: S.noteRow },
-          React.createElement(Text, null, `+ ${note}`),
-        )
-      ),
-      extraNotes.length === 0
-        ? React.createElement(View, { style: { height: 32 } }, React.createElement(Text, null, ''))
-        : null,
+      // ── Extra Pay & Reimbursements (two-column) ──
+      ...(extraRows.length > 0 ? [
+        React.createElement(View, { style: { flexDirection: 'row', gap: 8 } },
+
+          // Left: Extra Pay (payable items only)
+          React.createElement(View, { style: { flex: 1 } },
+            React.createElement(Text, { style: S.sectionLabel }, 'EXTRA PAY'),
+            React.createElement(View, { style: S.extrasTable },
+              React.createElement(View, { style: S.extrasHead },
+                React.createElement(Text, { style: S.extrasHeadDesc }, 'DESCRIPTION'),
+                React.createElement(Text, { style: S.extrasHeadAmt }, 'AMOUNT'),
+              ),
+              ...extraRows.filter(r => !r.isToll).map((r, i) =>
+                React.createElement(View, { key: i, style: S.extrasRow },
+                  React.createElement(Text, { style: S.extrasDesc }, r.desc),
+                  React.createElement(Text, { style: S.extrasAmt }, r.amt > 0 ? `$${r.amt.toFixed(2)}` : ''),
+                )
+              ),
+              extraRows.filter(r => !r.isToll).length === 0
+                ? React.createElement(View, { style: S.extrasRow },
+                    React.createElement(Text, { style: [S.extrasDesc, { color: '#aaa' }] }, '—'),
+                    React.createElement(Text, { style: S.extrasAmt }, ''),
+                  )
+                : null,
+              // Subtotal
+              React.createElement(View, { style: S.extrasTotalRow },
+                React.createElement(Text, { style: [S.extrasDesc, { color: '#cc1111' }] }, 'SUBTOTAL'),
+                React.createElement(Text, { style: [S.extrasAmt, { color: '#cc1111' }] }, `$${payTotal.toFixed(2)}`),
+              ),
+            ),
+          ),
+
+          // Right: Reimbursements / Tolls
+          React.createElement(View, { style: { flex: 1 } },
+            React.createElement(Text, { style: S.sectionLabel }, 'REIMBURSEMENTS & TOLLS'),
+            React.createElement(View, { style: S.extrasTable },
+              React.createElement(View, { style: S.extrasHead },
+                React.createElement(Text, { style: S.extrasHeadDesc }, 'DESCRIPTION'),
+                React.createElement(Text, { style: S.extrasHeadAmt }, 'AMOUNT (CAD)'),
+              ),
+              ...extraRows.filter(r => r.isToll).map((r, i) =>
+                React.createElement(View, { key: i, style: S.extrasRow },
+                  React.createElement(Text, { style: S.extrasDesc }, r.desc),
+                  React.createElement(Text, { style: S.extrasAmt }, r.amt > 0 ? `$${r.amt.toFixed(2)}` : ''),
+                )
+              ),
+              extraRows.filter(r => r.isToll).length === 0
+                ? React.createElement(View, { style: S.extrasRow },
+                    React.createElement(Text, { style: [S.extrasDesc, { color: '#aaa' }] }, '—'),
+                    React.createElement(Text, { style: S.extrasAmt }, ''),
+                  )
+                : null,
+              // Subtotal
+              React.createElement(View, { style: S.extrasTotalRow },
+                React.createElement(Text, { style: [S.extrasDesc, { color: '#cc1111' }] }, 'SUBTOTAL'),
+                React.createElement(Text, { style: [S.extrasAmt, { color: '#cc1111' }] }, `$${tollsTotal.toFixed(2)}`),
+              ),
+            ),
+          ),
+        ),
+      ] : []),
 
       // ── Fuel table ──
       React.createElement(Text, { style: S.sectionLabel }, 'FUEL'),
@@ -201,11 +286,10 @@ function TripEnvelope({ trip, stops, fuel, extraPay }: { trip: any; stops: any[]
           React.createElement(Text, { style: [S.tHeadCell, { flex: 0.8, borderRight: 0 }] }, 'AMT'),
         ),
         ...fuelRows.map((f, i) => {
-          const isLitre = f && (f.unit === 'Litres' || (f.liters && !f.gallons));
-          const gal = f ? (f.gallons ? fmtNum(f.gallons, 3) : '') : '';
-          const lit = f ? (f.liters ? fmtNum(f.liters, 1) : '') : '';
+          const gal = f && f.unit !== 'Litres' ? fmtNum(f.quantity, 3) : '';
+          const lit = f && f.unit === 'Litres' ? fmtNum(f.quantity, 1) : '';
           const amt = f ? (f.amount_usd ? `$${fmtNum(f.amount_usd, 2)}` : '') : '';
-          const loc = f ? `${f.location || ''}${f.province ? ', ' + f.province : ''}` : '';
+          const loc = f ? `${f.location || ''}` : '';
           return React.createElement(View, { key: i, style: S.tRow },
             React.createElement(Text, { style: [S.tCell, { flex: 0.7 }] }, f ? fmtDate(f.date) : ''),
             React.createElement(Text, { style: [S.tCell, { flex: 1.8 }] }, loc),
@@ -219,10 +303,10 @@ function TripEnvelope({ trip, stops, fuel, extraPay }: { trip: any; stops: any[]
           React.createElement(Text, { style: [S.tCell, { flex: 0.7, fontFamily: 'Helvetica-Bold' }] }, 'TOTAL'),
           React.createElement(Text, { style: [S.tCell, { flex: 1.8 }] }, ''),
           React.createElement(Text, { style: [S.tCell, { flex: 0.8, textAlign: 'right', fontFamily: 'Helvetica-Bold' }] },
-            fmtNum(fuel.reduce((s, f) => s + (parseFloat(f.gallons) || 0), 0), 3)
+            fmtNum(fuel.filter(f => f.unit !== 'Litres').reduce((s, f) => s + (parseFloat(f.quantity) || 0), 0), 3)
           ),
           React.createElement(Text, { style: [S.tCell, { flex: 0.8, textAlign: 'right', fontFamily: 'Helvetica-Bold' }] },
-            fmtNum(fuel.reduce((s, f) => s + (parseFloat(f.liters) || 0), 0), 1)
+            fmtNum(fuel.filter(f => f.unit === 'Litres').reduce((s, f) => s + (parseFloat(f.quantity) || 0), 0), 1)
           ),
           React.createElement(Text, { style: [S.tCell, { flex: 0.8, borderRight: 0, textAlign: 'right', fontFamily: 'Helvetica-Bold' }] },
             `$${fmtNum(fuel.reduce((s, f) => s + (parseFloat(f.amount_usd) || 0), 0), 2)}`
@@ -259,8 +343,25 @@ export async function GET(request: Request) {
     ) as any;
     if (!trip) return NextResponse.json({ error: 'Trip not found' }, { status: 404 });
 
+    // Ensure profile columns exist on users
+    for (const col of ['display_name TEXT', 'phone TEXT', 'truck_number TEXT', 'trailer_number TEXT', 'avatar_url TEXT', 'avatar_preset TEXT']) {
+      await db().run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ${col}`).catch(() => {});
+    }
+
+    // Use display_name from user profile if set, otherwise fall back to trip's extracted driver_name
+    let driverName = '';
+    try {
+      const user = await db().get(
+        'SELECT username, display_name FROM users WHERE id = $1',
+        [access.session.userId]
+      ) as any;
+      driverName = user?.display_name || trip.driver_name || user?.username || '';
+    } catch {
+      driverName = trip.driver_name || '';
+    }
+
     const stops = await db().query(
-      `SELECT * FROM stops WHERE trip_number = $1 AND (${scopeClause}) ORDER BY stop_order ASC, id ASC`,
+      `SELECT * FROM stops WHERE trip_number = $1 AND (${scopeClause}) ORDER BY COALESCE(stop_order, 999999) ASC, id ASC`,
       access.adminMode ? [trip_number] : [trip_number, access.session.userId]
     ) as any[];
 
@@ -274,7 +375,12 @@ export async function GET(request: Request) {
       access.adminMode ? [trip_number] : [trip_number, access.session.userId]
     ) as any[];
 
-    const element = React.createElement(TripEnvelope, { trip, stops, fuel, extraPay });
+    const expenses = await db().query(
+      `SELECT * FROM trip_expenses WHERE trip_number = $1 AND (${scopeClause}) ORDER BY created_at ASC`,
+      access.adminMode ? [trip_number] : [trip_number, access.session.userId]
+    ) as any[];
+
+    const element = React.createElement(TripEnvelope, { trip, stops, fuel, extraPay, expenses, driverName });
     const buffer = await renderToBuffer(element as any);
     const uint8 = new Uint8Array(buffer);
 

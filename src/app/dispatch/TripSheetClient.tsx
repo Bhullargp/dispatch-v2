@@ -473,12 +473,7 @@ export default function TripSheet({ initialTrips, isAdmin = false }: { initialTr
       </main>
       <footer className="mt-20 py-10 text-center"><p className="text-[8px] font-black uppercase text-zinc-800 tracking-[1em]">Secure End-to-End Environment</p></footer>
       
-      <FloatingAddButton onClick={() => setIsQuickAddOpen(true)} />
-      <MobileQuickAddPanel 
-        trips={trips.filter(t => t.status === 'Active' || t.status === 'Not Started')} 
-        isOpen={isQuickAddOpen}
-        onClose={() => setIsQuickAddOpen(false)}
-      />
+      {/* Quick add handled by root layout MobileQuickAddWrapper */}
     </div>
     </AuthGuard>
   );
