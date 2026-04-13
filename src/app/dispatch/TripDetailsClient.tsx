@@ -593,6 +593,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                             throw new Error(data?.error || 'Save failed');
                           }
                           setCurrentTrip({ ...currentTrip, manual_rate: rate, rate_type: 'manual' });
+                          setRateInput(rate.toString());
                           setActionSuccess('Custom rate saved');
                           setTimeout(() => setActionSuccess(null), 2000);
                         } catch (err: any) {
