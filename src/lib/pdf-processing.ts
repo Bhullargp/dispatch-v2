@@ -531,20 +531,21 @@ export async function mergeTripAndStops(userId: number, parsed: ParsedTrip, pdfP
     console.log('[DEBUG] UPDATE params:', upd.length);
     await d.run(
       `UPDATE trips
-      SET start_date = COALESCE($1, start_date),
-          end_date = COALESCE($2, end_date),
-          total_miles = CASE WHEN $3 > 0 THEN $3 ELSE total_miles END,
-          route = CASE WHEN $4 != 'Unknown' THEN $4 ELSE route END,
+      SET start_date = $1,
+          end_date = $2,
+          total_miles = $3,
+          route = $4,
+          status = 'Active',
           pdf_path = $5,
           raw_data = $6,
           user_id = $7,
-          driver_name = COALESCE($8, driver_name),
-          lead_driver = COALESCE($9, lead_driver),
-          truck_number = COALESCE($10, truck_number),
-          trailer_number = COALESCE($11, trailer_number),
-          truck = COALESCE($12, truck),
-          trailer = COALESCE($13, trailer),
-          trailer_2 = COALESCE($14, trailer_2)
+          driver_name = $8,
+          lead_driver = $9,
+          truck_number = $10,
+          trailer_number = $11,
+          truck = $12,
+          trailer = $13,
+          trailer_2 = $14
       WHERE trip_number = $15 AND user_id = $16`,
       upd
     );
