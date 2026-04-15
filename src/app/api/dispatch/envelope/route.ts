@@ -7,36 +7,40 @@ import React from 'react';
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
 const S = StyleSheet.create({
-  page: { fontFamily: 'Helvetica', fontSize: 8, padding: '10mm 8mm 20mm 8mm', backgroundColor: '#fff', color: '#111' },
+  page: { fontFamily: 'Helvetica', fontSize: 7.5, padding: '8mm 8mm 12mm 8mm', backgroundColor: '#fff', color: '#111' },
   // Header
-  headerRow: { flexDirection: 'row', alignItems: 'flex-end', marginBottom: 6, borderBottom: '2pt solid #cc1111', paddingBottom: 4 },
+  headerRow: { flexDirection: 'row', alignItems: 'flex-end', marginBottom: 5, borderBottom: '2pt solid #cc1111', paddingBottom: 3 },
   logoBox: { width: 90 },
   logoTitle: { fontSize: 14, fontFamily: 'Helvetica-Bold', color: '#cc1111', letterSpacing: 1.5 },
   logoSub: { fontSize: 7, color: '#444', marginTop: 1 },
   subTitle: { flex: 1, textAlign: 'right', fontSize: 11, fontFamily: 'Helvetica-Bold', color: '#cc1111', letterSpacing: 2 },
   // Truck/Trip row
-  truckTripRow: { flexDirection: 'row', marginBottom: 6, alignItems: 'center', gap: 30 },
+  truckTripRow: { flexDirection: 'row', marginBottom: 5, alignItems: 'center', gap: 24 },
   ttLabel: { fontSize: 8, color: '#555' },
   ttValue: { fontSize: 12, fontFamily: 'Helvetica-Bold', marginLeft: 4, borderBottom: '1pt solid #ccc', minWidth: 80, paddingBottom: 1 },
   // Table
-  table: { border: '1pt solid #cc1111', marginBottom: 6 },
+  table: { border: '1pt solid #cc1111', marginBottom: 5 },
   tHead: { flexDirection: 'row', backgroundColor: '#cc1111', color: '#fff' },
-  tHeadCell: { padding: '3pt 4pt', fontFamily: 'Helvetica-Bold', fontSize: 7, flex: 1, borderRight: '0.5pt solid #aa0000' },
+  tHeadCell: { padding: '2.5pt 4pt', fontFamily: 'Helvetica-Bold', fontSize: 6.5, flex: 1, borderRight: '0.5pt solid #aa0000' },
   tRow: { flexDirection: 'row', borderTop: '0.5pt solid #e8c8c8' },
-  tCell: { padding: '3pt 4pt', flex: 1, borderRight: '0.5pt solid #e8c8c8', minHeight: 16 },
-  tCellBold: { padding: '3pt 4pt', flex: 1, borderRight: '0.5pt solid #e8c8c8', fontFamily: 'Helvetica-Bold', minHeight: 16 },
+  tCell: { padding: '2.5pt 4pt', flex: 1, borderRight: '0.5pt solid #e8c8c8', minHeight: 14 },
+  tCellBold: { padding: '2.5pt 4pt', flex: 1, borderRight: '0.5pt solid #e8c8c8', fontFamily: 'Helvetica-Bold', minHeight: 14 },
+  locationCell: { flexDirection: 'row', alignItems: 'baseline', flexWrap: 'wrap', gap: 2 },
+  locationText: { fontSize: 8, fontFamily: 'Helvetica-Bold' },
+  stopTypeInline: { fontSize: 7, color: '#555' },
+  stopTypeCellText: { fontSize: 7, color: '#555', fontFamily: 'Helvetica' },
   // Odometer sub-labels
   odoLabel: { fontSize: 6, color: '#888', fontFamily: 'Helvetica-Bold', textTransform: 'uppercase' },
   // Section label
-  sectionLabel: { fontSize: 7, fontFamily: 'Helvetica-Bold', color: '#cc1111', textTransform: 'uppercase', marginBottom: 2, marginTop: 4 },
+  sectionLabel: { fontSize: 7, fontFamily: 'Helvetica-Bold', color: '#cc1111', textTransform: 'uppercase', marginBottom: 2, marginTop: 3 },
   // Extras two-column table
-  extrasTable: { border: '1pt solid #e8c8c8', marginBottom: 6 },
+  extrasTable: { border: '1pt solid #e8c8c8', marginBottom: 5 },
   extrasHead: { flexDirection: 'row', backgroundColor: '#fff5f5', borderBottom: '1pt solid #cc1111' },
-  extrasRow: { flexDirection: 'row', borderTop: '0.5pt solid #e8c8c8', minHeight: 14 },
-  extrasDesc: { flex: 3, padding: '3pt 6pt', fontFamily: 'Helvetica-Bold', fontSize: 8 },
-  extrasAmt: { flex: 1, padding: '3pt 6pt', textAlign: 'right', fontFamily: 'Helvetica-Bold', fontSize: 8, color: '#cc1111' },
-  extrasHeadDesc: { flex: 3, padding: '3pt 6pt', fontFamily: 'Helvetica-Bold', fontSize: 7, color: '#cc1111' },
-  extrasHeadAmt: { flex: 1, padding: '3pt 6pt', fontFamily: 'Helvetica-Bold', fontSize: 7, color: '#cc1111', textAlign: 'right' },
+  extrasRow: { flexDirection: 'row', borderTop: '0.5pt solid #e8c8c8', minHeight: 13 },
+  extrasDesc: { flex: 3, padding: '2.5pt 6pt', fontFamily: 'Helvetica-Bold', fontSize: 7.5 },
+  extrasAmt: { flex: 1, padding: '2.5pt 6pt', textAlign: 'right', fontFamily: 'Helvetica-Bold', fontSize: 7.5, color: '#cc1111' },
+  extrasHeadDesc: { flex: 3, padding: '2.5pt 6pt', fontFamily: 'Helvetica-Bold', fontSize: 6.5, color: '#cc1111' },
+  extrasHeadAmt: { flex: 1, padding: '2.5pt 6pt', fontFamily: 'Helvetica-Bold', fontSize: 6.5, color: '#cc1111', textAlign: 'right' },
   extrasTotalRow: { flexDirection: 'row', borderTop: '1pt solid #cc1111', backgroundColor: '#fff5f5' },
   // Footer — fixed at bottom of page
   footer: { position: 'absolute', bottom: 8, left: '8mm', right: '8mm', borderTop: '1pt solid #cc1111', paddingTop: 3, flexDirection: 'row', justifyContent: 'space-between' },
@@ -54,6 +58,10 @@ function fmtDate(d: string | null | undefined) {
 function fmtNum(n: any, dec = 0) {
   const v = parseFloat(n);
   return isNaN(v) ? '' : v.toFixed(dec);
+}
+
+function fmtStopType(stopType: string | null | undefined) {
+  return (stopType || '').trim().replace(/\s+/g, ' ').toUpperCase();
 }
 
 // ─── PDF Document ─────────────────────────────────────────────────────────────
@@ -111,12 +119,14 @@ function TripEnvelope({ trip, stops, fuel, extraPay, expenses, driverName }: {
   const tollsTotal = extraRows.filter(r => r.isToll).reduce((sum, r) => sum + r.amt, 0);
   const payTotal = extraRows.filter(r => !r.isToll).reduce((sum, r) => sum + r.amt, 0);
 
+  const pageSize: 'LETTER' | [number, number] = (stops.length > 10 || fuel.length > 4) ? [612, 1008] : 'LETTER';
+
   return React.createElement(
     Document,
     { title: `Trip Envelope ${trip.trip_number}` },
     React.createElement(
       Page,
-      { size: 'LETTER', style: S.page },
+      { size: pageSize, style: S.page },
 
       // ── Header ──
       React.createElement(View, { style: S.headerRow },
@@ -189,17 +199,26 @@ function TripEnvelope({ trip, stops, fuel, extraPay, expenses, driverName }: {
       // ── Stops table ──
       React.createElement(View, { style: S.table },
         React.createElement(View, { style: S.tHead },
+          React.createElement(Text, { style: [S.tHeadCell, { flex: 0.8 }] }, 'STOP TYPE'),
           React.createElement(Text, { style: [S.tHeadCell, { flex: 0.6 }] }, 'TRAILER #'),
-          React.createElement(Text, { style: [S.tHeadCell, { flex: 2 }] }, 'COMPANY, CITY, PROVINCE'),
+          React.createElement(Text, { style: [S.tHeadCell, { flex: 2.2 }] }, 'COMPANY, CITY, PROVINCE'),
           React.createElement(Text, { style: [S.tHeadCell, { flex: 0.6 }] }, 'REEFER TEMP'),
           React.createElement(Text, { style: [S.tHeadCell, { flex: 0.5 }] }, 'TRIP #'),
           React.createElement(Text, { style: [S.tHeadCell, { flex: 0.7, borderRight: 0 }] }, 'P/U DELIVER DROP'),
         ),
-        ...stopRows.map((s, i) =>
-          React.createElement(View, { key: i, style: S.tRow },
+        ...stopRows.map((s, i) => {
+          const stopType = fmtStopType(s?.stop_type);
+          const location = s?.location || '';
+          const stopTypeInline = stopType ? ` [${stopType}]` : '';
+
+          return React.createElement(View, { key: i, style: S.tRow },
+            React.createElement(Text, { style: [S.tCell, S.stopTypeCellText, { flex: 0.8 }] }, stopType),
             React.createElement(Text, { style: [S.tCell, { flex: 0.6 }] }, s ? (trailerNum || '') : ''),
-            React.createElement(Text, { style: [S.tCell, { flex: 2, fontFamily: s ? 'Helvetica-Bold' : 'Helvetica' }] },
-              s ? `${s.location || ''}` : ''
+            React.createElement(View, { style: [S.tCell, S.locationCell, { flex: 2.2 }] },
+              s ? React.createElement(React.Fragment, null,
+                React.createElement(Text, { style: S.locationText }, location),
+                stopType ? React.createElement(Text, { style: S.stopTypeInline }, stopTypeInline) : null,
+              ) : null
             ),
             React.createElement(Text, { style: [S.tCell, { flex: 0.6 }] }, ''),
             React.createElement(Text, { style: [S.tCell, { flex: 0.5 }] }, ''),
@@ -209,8 +228,8 @@ function TripEnvelope({ trip, stops, fuel, extraPay, expenses, driverName }: {
                 .replace('DELIVERY', 'D/L')
                 .replace('DELIVER', 'D/L') : ''
             ),
-          )
-        ),
+          );
+        }),
       ),
 
       // ── Extra Pay & Reimbursements (two-column) ──
@@ -286,8 +305,8 @@ function TripEnvelope({ trip, stops, fuel, extraPay, expenses, driverName }: {
           React.createElement(Text, { style: [S.tHeadCell, { flex: 0.8, borderRight: 0 }] }, 'AMT'),
         ),
         ...fuelRows.map((f, i) => {
-          const gal = f && f.unit !== 'Litres' ? fmtNum(f.quantity, 3) : '';
-          const lit = f && f.unit === 'Litres' ? fmtNum(f.quantity, 1) : '';
+          const gal = f ? fmtNum(f.gallons, 3) : '';
+          const lit = f ? fmtNum(f.liters, 1) : '';
           const amt = f ? (f.amount_usd ? `$${fmtNum(f.amount_usd, 2)}` : '') : '';
           const loc = f ? `${f.location || ''}` : '';
           return React.createElement(View, { key: i, style: S.tRow },
@@ -298,20 +317,6 @@ function TripEnvelope({ trip, stops, fuel, extraPay, expenses, driverName }: {
             React.createElement(Text, { style: [S.tCell, { flex: 0.8, borderRight: 0, textAlign: 'right' }] }, amt),
           );
         }),
-        // Totals row
-        React.createElement(View, { style: [S.tRow, { backgroundColor: '#fff5f5' }] },
-          React.createElement(Text, { style: [S.tCell, { flex: 0.7, fontFamily: 'Helvetica-Bold' }] }, 'TOTAL'),
-          React.createElement(Text, { style: [S.tCell, { flex: 1.8 }] }, ''),
-          React.createElement(Text, { style: [S.tCell, { flex: 0.8, textAlign: 'right', fontFamily: 'Helvetica-Bold' }] },
-            fmtNum(fuel.filter(f => f.unit !== 'Litres').reduce((s, f) => s + (parseFloat(f.quantity) || 0), 0), 3)
-          ),
-          React.createElement(Text, { style: [S.tCell, { flex: 0.8, textAlign: 'right', fontFamily: 'Helvetica-Bold' }] },
-            fmtNum(fuel.filter(f => f.unit === 'Litres').reduce((s, f) => s + (parseFloat(f.quantity) || 0), 0), 1)
-          ),
-          React.createElement(Text, { style: [S.tCell, { flex: 0.8, borderRight: 0, textAlign: 'right', fontFamily: 'Helvetica-Bold' }] },
-            `$${fmtNum(fuel.reduce((s, f) => s + (parseFloat(f.amount_usd) || 0), 0), 2)}`
-          ),
-        ),
       ),
 
       // ── Footer ──

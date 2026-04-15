@@ -318,6 +318,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
       route: currentTrip.route || null,
       first_stop: currentStops?.[0]?.location || null,
       last_stop: currentStops?.[currentStops.length - 1]?.location || null,
+      stops_json: currentStops && currentStops.length > 0 ? JSON.stringify(currentStops.map((s: any) => ({ location: s.location, stop_type: s.stop_type }))) : null,
     };
 
     const result = calcTripPay(tripInput, mileRates, getPayItems());
@@ -431,7 +432,10 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
 
               {/* Rate Picker Dropdown */}
               {showRatePicker && (
-                <div className="bg-zinc-950/90 border border-zinc-700/50 rounded-2xl p-4 space-y-3 backdrop-blur-sm">
+                <div className="relative">
+                  {/* Click-outside overlay */}
+                  <div className="fixed inset-0 z-30" onClick={() => setShowRatePicker(false)} />
+                  <div className="relative z-40 bg-zinc-950/90 border border-zinc-700/50 rounded-2xl p-4 space-y-3 backdrop-blur-sm">
                   <div className="grid grid-cols-2 gap-2">
                     {/* US Rate */}
                     <button
@@ -447,6 +451,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                           if (!res.ok) throw new Error('Save failed');
                           setCurrentTrip({ ...currentTrip, manual_rate: rate, rate_type: 'manual' });
                           setRateInput(rate.toString());
+                          setShowRatePicker(false);
                           setActionSuccess('Rate set to US');
                           setTimeout(() => setActionSuccess(null), 2000);
                         } catch (err: any) { setActionError(err?.message || 'Save failed'); }
@@ -480,6 +485,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                           if (!res.ok) throw new Error('Save failed');
                           setCurrentTrip({ ...currentTrip, manual_rate: rate, rate_type: 'manual' });
                           setRateInput(rate.toString());
+                          setShowRatePicker(false);
                           setActionSuccess('Rate set to Canada <1000mi');
                           setTimeout(() => setActionSuccess(null), 2000);
                         } catch (err: any) { setActionError(err?.message || 'Save failed'); }
@@ -513,6 +519,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                           if (!res.ok) throw new Error('Save failed');
                           setCurrentTrip({ ...currentTrip, manual_rate: rate, rate_type: 'manual' });
                           setRateInput(rate.toString());
+                          setShowRatePicker(false);
                           setActionSuccess('Rate set to Canada >1000mi');
                           setTimeout(() => setActionSuccess(null), 2000);
                         } catch (err: any) { setActionError(err?.message || 'Save failed'); }
@@ -545,6 +552,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                           if (!res.ok) throw new Error('Save failed');
                           setCurrentTrip({ ...currentTrip, manual_rate: null, rate_type: 'auto' });
                           setRateInput('1.06');
+                          setShowRatePicker(false);
                           setActionSuccess('Rate reset to Auto');
                           setTimeout(() => setActionSuccess(null), 2000);
                         } catch (err: any) { setActionError(err?.message || 'Save failed'); }
@@ -595,11 +603,15 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                           }
                           setCurrentTrip({ ...currentTrip, manual_rate: rate, rate_type: 'manual' });
                           setRateInput(rate.toString());
+                          setShowRatePicker(false);
                           setActionSuccess('Custom rate saved');
                           setTimeout(() => setActionSuccess(null), 2000);
                         } catch (err: any) {
                           setActionError(err?.message || 'Save failed');
-                        } finally { setIsSaving(false); }
+                        } finally {
+                          setIsSaving(false);
+                          setShowRatePicker(false);
+                        }
                       }}
                       disabled={isSaving}
                       className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-[9px] font-black uppercase px-3 py-1.5 rounded-lg transition-all"
@@ -607,6 +619,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                       {isSaving ? '...' : 'Apply'}
                     </button>
                   </div>
+                </div>
                 </div>
               )}
             </div>
@@ -672,13 +685,13 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                     setOpeningReceiptEnvelope(true);
                     const res = await fetch(`/api/dispatch/envelope/${encodeURIComponent(currentTrip.trip_number)}/merge-pdfs`);
                     const data = await res.json().catch(() => ({}));
-                    if (!res.ok) throw new Error(data?.error || 'Could not load receipt links');
+                    if (!res.ok) throw new Error(data?.error || 'Could not load receipts');
                     const urls = Array.isArray(data.receiptUrls) ? data.receiptUrls : [];
                     if (!urls.length) throw new Error('No fuel receipts linked to this trip yet');
-                    urls.forEach((url: string) => window.open(url, '_blank', 'noopener,noreferrer'));
-                    setActionSuccess(`Opened ${urls.length} fuel receipt${urls.length === 1 ? '' : 's'}`);
+                    window.open(urls[0], '_blank', 'noopener,noreferrer');
+                    setActionSuccess(`Opening fuel receipt (${urls.length} found)`);
                   } catch (err: any) {
-                    setActionError(err?.message || 'Could not open receipt envelope');
+                    setActionError(err?.message || 'Could not open receipts');
                   } finally {
                     setOpeningReceiptEnvelope(false);
                   }
@@ -1307,8 +1320,21 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                           </button>
                         </div>
                       </div>
-                      <p className="text-md font-black text-zinc-100 leading-tight mb-2 tracking-tight">{stop.location}</p>
-                      <span className="text-[9px] font-black text-zinc-500 uppercase bg-black/40 px-3 py-1.5 rounded-xl border border-zinc-800/50">{stop.stop_type || 'Stop'} • {stop.miles_from_last || 0} mi</span>
+                      {/* Parse city/state for highlighting — extract last comma-separated parts, strip postal codes */}
+                      {(() => {
+                        const parts = stop.location?.split(',').map((p: string) => p.trim()) || [];
+                        // Last part may contain "STATE ZIP" or "PROVINCE POSTAL" — strip numeric postal codes
+                        let last = parts[parts.length - 1] || '';
+                        last = last.replace(/\s+[A-Z]\d[A-Z]\s*\d[A-Z]\d/i, '').replace(/\s+\d{5}(-\d{4})?/i, '').trim();
+                        const cityState = parts.length >= 2 ? parts[parts.length - 2] + ', ' + last : stop.location;
+                        const address = parts.length >= 3 ? parts.slice(0, parts.length - 2).join(', ') : '';
+                        return (
+                          <>
+                            {address && <p className="text-[9px] text-zinc-500 leading-tight mb-0.5">{address}</p>}
+                            <p className="text-md font-black text-amber-300 leading-tight tracking-tight underline underline-offset-2 decoration-amber-500/40">{cityState} <span className="text-[9px] font-black text-amber-500 no-underline normal-case">{stop.stop_type ? `(${stop.stop_type?.toUpperCase()})` : ''}{stop.miles_from_last ? ` • ${stop.miles_from_last} mi` : ''}</span></p>
+                          </>
+                        );
+                      })()}
                     </div>
                   </div>
                 ))}
@@ -1387,18 +1413,21 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                       </td>
                       <td className="py-2 pr-4 text-right text-zinc-500">{f.odometer ? Number(f.odometer).toLocaleString() : '—'}</td>
                       <td className="py-2 text-right">
-                        {f.receiptUrl ? (
-                          <a
-                            href={f.receiptUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-amber-400 hover:text-amber-300 font-black"
-                          >
-                            View
-                          </a>
-                        ) : (
-                          <span className="text-zinc-700">—</span>
-                        )}
+                        {(() => {
+                          const receiptUrl = f.receiptUrl || f.document_url || f.receipt_url;
+                          return receiptUrl ? (
+                            <a
+                              href={receiptUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="bg-amber-700 hover:bg-amber-600 text-white px-2 py-1 rounded text-[9px] font-black"
+                            >
+                              View
+                            </a>
+                          ) : (
+                            <span className="text-zinc-700">—</span>
+                          );
+                        })()}
                       </td>
                     </tr>
                   ))}

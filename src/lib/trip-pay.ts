@@ -113,31 +113,23 @@ export function calcExtras(extraPayJson: string | null | any[], extraItems: Paya
  * A cross-border trip with even one US stop pays at the US rate.
  */
 export function detectCanada(trip: TripPayInput): boolean {
-  const route = (trip.route || '').toUpperCase().trim();
-
-  // Explicit manual overrides
-  if (route === 'USA' || route === 'US') return false;
-  if (route === 'CANADA' || route === 'CA') return true;
-
-  // If we have all stops, check every single one
+  // PRIMARY: check only DELIVERY and PICKUP stops — ignore acquire/release/hook/drop
   if (trip.stops_json) {
     try {
-      const stops: Array<{ location?: string; stop_type?: string }> =
-        Array.isArray(trip.stops_json) ? trip.stops_json : JSON.parse(trip.stops_json as string);
-      const locations = stops.map(s => s.location || '').filter(Boolean);
-      if (locations.length > 0) {
-        // Any US stop → US rate immediately
-        if (locations.some(locationIsUSA)) return false;
-        // All Canada → Canada rate
-        if (locations.every(locationIsCanada)) return true;
+      const stops = Array.isArray(trip.stops_json) ? trip.stops_json : JSON.parse(trip.stops_json as string);
+      const delStops = stops.filter((s: any) => {
+        const t = (s.stop_type || '').toUpperCase();
+        return t === 'DELIVERY' || t === 'PICKUP' || t === 'PICK UP';
+      });
+      if (delStops.length > 0) {
+        const locs = delStops.map((s: any) => s.location || '').filter(Boolean);
+        if (locs.some(locationIsUSA)) return false;
+        if (locs.every(locationIsCanada)) return true;
       }
     } catch {}
   }
-
-  // Fallback: first & last stop
-  // Any US stop in first/last → US rate
+  // Fallback: first & last stop (any type)
   if (locationIsUSA(trip.first_stop) || locationIsUSA(trip.last_stop)) return false;
-  // Both Canada → Canada rate
   return locationIsCanada(trip.first_stop) && locationIsCanada(trip.last_stop);
 }
 
