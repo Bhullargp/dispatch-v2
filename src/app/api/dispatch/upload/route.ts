@@ -60,25 +60,8 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Invalid PDF file. Please upload a valid PDF.' }, { status: 400 });
     }
 
+    // Hash still used for job lookup, but no duplicate block — Boss said re-uploads always have updated info.
     const contentHash = crypto.createHash('sha256').update(buffer).digest('hex');
-    const duplicateJob = await db().get(`
-      SELECT id, trip_number
-      FROM upload_jobs
-      WHERE user_id = $1 AND content_hash = $2 AND status IN ('processing', 'done')
-      ORDER BY id DESC
-      LIMIT 1
-    `, [access.session.userId, contentHash]) as { id: number; trip_number?: string } | undefined;
-
-    if (duplicateJob) {
-      return NextResponse.json(
-        {
-          error: duplicateJob.trip_number
-            ? `Duplicate upload detected. This PDF was already processed as trip ${duplicateJob.trip_number}.`
-            : 'Duplicate upload detected. This PDF was already submitted recently.',
-        },
-        { status: 409 }
-      );
-    }
 
     const uploadDir = join(process.cwd(), 'public', 'itineraries');
     await mkdir(uploadDir, { recursive: true });
