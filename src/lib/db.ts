@@ -25,7 +25,7 @@ export function db() {
     },
     async run(sql: string, params: any[] = []) {
       const result = await pool.query(sql, params);
-      return { changes: result.rowCount ?? 0 };
+      return { changes: result.rowCount ?? 0, rows: result.rows };
     },
   };
 }

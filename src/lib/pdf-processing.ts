@@ -518,17 +518,17 @@ export async function mergeTripAndStops(userId: number, parsed: ParsedTrip, pdfP
     [effectiveTripNumber, userId]
   ) as { trip_number: string } | undefined;
 
+  const dbg = [effectiveTripNumber, parsed.startDate, parsed.endDate, parsed.totalMiles, parsed.route, '', pdfPath, parsed.rawText, userId, parsed.driverName || null, parsed.leadDriver || null, parsed.truckNumber || null, parsed.trailerNumber || null, parsed.truckNumber || null, parsed.trailerNumber || null, parsed.trailerNumber || null];
+  console.log('[DEBUG] INSERT/UPDATE params:', dbg.length);
   if (!existing) {
     await d.run(
       `INSERT INTO trips (trip_number, start_date, end_date, total_miles, route, status, notes, pdf_path, raw_data, user_id, driver_name, lead_driver, truck_number, trailer_number, truck, trailer)
-      VALUES ($1, $2, $3, $4, $5, 'Active', $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
-      [
-        effectiveTripNumber, parsed.startDate, parsed.endDate, parsed.totalMiles, parsed.route, '', pdfPath, parsed.rawText, userId,
-        parsed.driverName || null, parsed.leadDriver || null, parsed.truckNumber || null, parsed.trailerNumber || null,
-        parsed.truckNumber || null, parsed.trailerNumber || null
-      ]
+      VALUES ($1, $2, $3, $4, $5, 'Active', $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+      dbg
     );
   } else {
+    const upd = [parsed.startDate, parsed.endDate, parsed.totalMiles, parsed.route, pdfPath, parsed.rawText, userId, parsed.driverName || null, parsed.leadDriver || null, parsed.truckNumber || null, parsed.trailerNumber || null, parsed.truckNumber || null, parsed.trailerNumber || null, parsed.trailerNumber || null, effectiveTripNumber, userId];
+    console.log('[DEBUG] UPDATE params:', upd.length);
     await d.run(
       `UPDATE trips
       SET start_date = COALESCE($1, start_date),
@@ -543,17 +543,14 @@ export async function mergeTripAndStops(userId: number, parsed: ParsedTrip, pdfP
           truck_number = COALESCE($10, truck_number),
           trailer_number = COALESCE($11, trailer_number),
           truck = COALESCE($12, truck),
-          trailer = COALESCE($13, trailer)
-      WHERE trip_number = $14 AND user_id = $15`,
-      [
-        parsed.startDate, parsed.endDate, parsed.totalMiles, parsed.totalMiles, parsed.route, parsed.route,
-        pdfPath, parsed.rawText, userId,
-        parsed.driverName || null, parsed.leadDriver || null, parsed.truckNumber || null, parsed.trailerNumber || null,
-        parsed.truckNumber || null, parsed.trailerNumber || null,
-        effectiveTripNumber, userId
-      ]
+          trailer = COALESCE($13, trailer),
+          trailer_2 = COALESCE($14, trailer_2)
+      WHERE trip_number = $15 AND user_id = $16`,
+      upd
     );
   }
+
+  // ── Stops: always upsert (works for both new and existing trips) ──
 
   const normalizeType = (t: string) => {
     const v = String(t || '').trim().toUpperCase();
