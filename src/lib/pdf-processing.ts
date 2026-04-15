@@ -14,9 +14,7 @@ const ZAI_MODEL = 'glm-4.5-air';
 
 // Runtime LLM config — reads from DB (admin_settings), falls back to env vars
 interface LlmConfig {
-  primary: 'minimax' | 'claude' | 'zai' | 'regex';
-  minimaxApiKey: string;
-  minimaxModel: string;
+  primary: 'claude' | 'zai' | 'regex';
   anthropicApiKey: string;
   zaiApiKey: string;
 }
@@ -29,17 +27,13 @@ async function getLlmConfig(): Promise<LlmConfig> {
     ) as Array<{ key: string; value: string }>;
     const s: Record<string, string> = Object.fromEntries(rows.map(r => [r.key, r.value]));
     return {
-      primary:        (s.llm_primary as LlmConfig['primary']) || 'minimax',
-      minimaxApiKey:  s.llm_minimax_api_key   || process.env.MINIMAX_API_KEY   || '',
-      minimaxModel:   s.llm_minimax_model      || process.env.MINIMAX_MODEL     || 'MiniMax-Text-01',
+      primary:        (s.llm_primary as LlmConfig['primary']) || 'claude',
       anthropicApiKey:s.llm_anthropic_api_key  || process.env.ANTHROPIC_API_KEY || '',
       zaiApiKey:      s.llm_zai_api_key        || process.env.ZAI_API_KEY       || '',
     };
   } catch {
     return {
-      primary: 'minimax',
-      minimaxApiKey:   process.env.MINIMAX_API_KEY   || '',
-      minimaxModel:    process.env.MINIMAX_MODEL      || 'MiniMax-Text-01',
+      primary: 'claude',
       anthropicApiKey: process.env.ANTHROPIC_API_KEY  || '',
       zaiApiKey:       process.env.ZAI_API_KEY        || '',
     };
@@ -728,11 +722,6 @@ export async function processClaimedUploadJob(job: UploadJob) {
     let parsed: ParsedTrip;
 
     // Ordered extraction chain based on admin's primary model selection
-    const tryMinimax = async () => {
-      if (!cfg.minimaxApiKey) throw new Error('Minimax API key not configured');
-      const llmResult = await extractWithMinimax(rawText, cfg.minimaxApiKey, cfg.minimaxModel);
-      return llmResultToParsedTrip(llmResult, rawText);
-    };
     const tryClaude = async () => {
       if (!cfg.anthropicApiKey) throw new Error('Anthropic API key not configured');
       const llmResult = await extractWithClaude(buffer, cfg.anthropicApiKey);
@@ -745,7 +734,7 @@ export async function processClaimedUploadJob(job: UploadJob) {
     };
 
     // Build ordered list: primary first, then fallbacks
-    const allMethods = ['minimax', 'claude', 'zai'] as const;
+    const allMethods = ['claude', 'zai'] as const;
     const ordered = [cfg.primary, ...allMethods.filter(m => m !== cfg.primary)];
 
     parsed = undefined as any;
@@ -753,8 +742,7 @@ export async function processClaimedUploadJob(job: UploadJob) {
       if (parsed) break;
       if (method === 'regex') { parsed = parseDriverItinerary(rawText); break; }
       try {
-        if (method === 'minimax') parsed = await tryMinimax();
-        else if (method === 'claude') parsed = await tryClaude();
+        if (method === 'claude') parsed = await tryClaude();
         else if (method === 'zai') parsed = await tryZai();
       } catch (err: any) {
         console.warn(`[pdf] ${method} failed: ${err.message}`);
