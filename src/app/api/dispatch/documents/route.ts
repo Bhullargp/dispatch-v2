@@ -3,7 +3,7 @@ import { db } from '@/lib/db';
 import { ensureDispatchAuthSchemaAndSeed } from '@/lib/dispatch-auth';
 import { requireAccess } from '@/lib/ownership';
 import { uploadFileToR2, deleteFileFromR2, listUserFiles, isR2Configured } from '@/lib/r2-storage';
-import crypto from 'crypto';
+import { ensureUserDocumentsTable } from '@/lib/dispatch-documents';
 
 // GET - List user's documents
 export async function GET(req: Request) {
@@ -45,83 +45,98 @@ export async function POST(req: Request) {
     const file = formData.get('file') as File | null;
     const description = formData.get('description') as string | null;
     const tripNumber = formData.get('tripNumber') as string | null;
+    const sourcePath = formData.get('sourcePath') as string | null;
 
-    if (!file) {
+    if (!file && !sourcePath) {
       return NextResponse.json({ error: 'Missing file' }, { status: 400 });
     }
 
-    // File size limit: 50MB
-    const MAX_FILE_SIZE = 50 * 1024 * 1024;
-    if (file.size > MAX_FILE_SIZE) {
-      return NextResponse.json(
-        { error: 'File size exceeds 50MB limit' },
-        { status: 400 }
-      );
-    }
-
-    // Allowed file types
-    const ALLOWED_TYPES = [
-      'application/pdf',
-      'image/jpeg',
-      'image/png',
-      'image/jpg',
-      'image/webp',
-      'image/heic',
-      'image/heif',
-    ];
-
-    if (!ALLOWED_TYPES.includes(file.type)) {
-      return NextResponse.json(
-        { error: 'Invalid file type. Only PDF and images (JPEG, PNG, WebP, HEIC) are supported.' },
-        { status: 400 }
-      );
-    }
-
-    const bytes = await file.arrayBuffer();
-    const buffer = Buffer.from(bytes);
-
-    // Upload to R2 with per-user isolation
-    const r2Result = await uploadFileToR2({
-      userId: access.session.userId,
-      file: buffer,
-      filename: file.name,
-      contentType: file.type,
-    });
-
-    // Store document metadata in database
     const database = db();
+    await ensureUserDocumentsTable();
 
-    // Ensure documents table exists
-    await database.run(`
-      CREATE TABLE IF NOT EXISTS user_documents (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id TEXT NOT NULL,
-        file_key TEXT NOT NULL,
-        original_filename TEXT NOT NULL,
-        file_type TEXT NOT NULL,
-        file_size INTEGER NOT NULL,
-        description TEXT,
-        trip_number TEXT,
-        uploaded_at TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS')),
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-      )
-    `);
+    let storedFile = null as null | { key: string; url: string; originalFilename: string; fileType: string; fileSize: number; sourcePath?: string | null };
 
-    await database.run(`
-      INSERT INTO user_documents (user_id, file_key, original_filename, file_type, file_size, description, trip_number)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
-    `, [access.session.userId, r2Result.key, file.name, file.type, file.size, description, tripNumber]);
+    if (file) {
+      // File size limit: 50MB
+      const MAX_FILE_SIZE = 50 * 1024 * 1024;
+      if (file.size > MAX_FILE_SIZE) {
+        return NextResponse.json(
+          { error: 'File size exceeds 50MB limit' },
+          { status: 400 }
+        );
+      }
 
-    return NextResponse.json({
-      success: true,
-      file: {
+      // Allowed file types
+      const ALLOWED_TYPES = [
+        'application/pdf',
+        'image/jpeg',
+        'image/png',
+        'image/jpg',
+        'image/webp',
+        'image/heic',
+        'image/heif',
+      ];
+
+      if (!ALLOWED_TYPES.includes(file.type)) {
+        return NextResponse.json(
+          { error: 'Invalid file type. Only PDF and images (JPEG, PNG, WebP, HEIC) are supported.' },
+          { status: 400 }
+        );
+      }
+
+      const bytes = await file.arrayBuffer();
+      const buffer = Buffer.from(bytes);
+
+      const r2Result = await uploadFileToR2({
+        userId: access.session.userId,
+        file: buffer,
+        filename: file.name,
+        contentType: file.type,
+      });
+
+      storedFile = {
         key: r2Result.key,
         url: r2Result.url,
         originalFilename: file.name,
         fileType: file.type,
         fileSize: file.size,
+      };
+    } else if (sourcePath) {
+      storedFile = {
+        key: sourcePath,
+        url: sourcePath,
+        originalFilename: sourcePath.split('/').pop() || 'receipt',
+        fileType: 'image/jpeg',
+        fileSize: 0,
+        sourcePath,
+      };
+    }
+
+    await database.run(`
+      INSERT INTO user_documents (user_id, s3_key, filename, file_type, file_size, description, trip_number, source_path)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `, [
+      access.session.userId,
+      storedFile?.key,
+      storedFile?.originalFilename,
+      storedFile?.fileType,
+      storedFile?.fileSize,
+      description,
+      tripNumber,
+      storedFile?.sourcePath || null,
+    ]);
+
+    return NextResponse.json({
+      success: true,
+      file: {
+        key: storedFile?.key,
+        url: storedFile?.url,
+        originalFilename: storedFile?.originalFilename,
+        fileType: storedFile?.fileType,
+        fileSize: storedFile?.fileSize,
         description,
         tripNumber,
+        sourcePath: storedFile?.sourcePath || null,
       }
     });
   } catch (error: any) {
@@ -155,9 +170,10 @@ export async function DELETE(req: Request) {
 
     // Delete from database
     const database = db();
+    await ensureUserDocumentsTable();
     await database.run(`
       DELETE FROM user_documents
-      WHERE user_id = $1 AND file_key = $2
+      WHERE user_id = $1 AND s3_key = $2
     `, [access.session.userId, key]);
 
     return NextResponse.json({ success: true });

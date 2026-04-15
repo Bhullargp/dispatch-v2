@@ -3,6 +3,7 @@ import { db } from '@/lib/db';
 import { ensureDispatchAuthSchemaAndSeed } from '@/lib/dispatch-auth';
 import { requireAccess } from '@/lib/ownership';
 import { isR2Configured } from '@/lib/r2-storage';
+import { ensureUserDocumentsTable, getTripDocuments } from '@/lib/dispatch-documents';
 
 // GET - List user's documents with metadata
 export async function GET(req: Request) {
@@ -19,41 +20,30 @@ export async function GET(req: Request) {
     }
 
     const database = db();
-
-    // Ensure documents table exists
-    await database.run(`
-      CREATE TABLE IF NOT EXISTS user_documents (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id TEXT NOT NULL,
-        file_key TEXT NOT NULL,
-        original_filename TEXT NOT NULL,
-        file_type TEXT NOT NULL,
-        file_size INTEGER NOT NULL,
-        description TEXT,
-        trip_number TEXT,
-        uploaded_at TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS')),
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-      )
-    `);
+    await ensureUserDocumentsTable();
 
     const { searchParams } = new URL(req.url);
     const tripNumber = searchParams.get('tripNumber');
 
-    let query = `
-      SELECT id, file_key, original_filename, file_type, file_size, description, trip_number, uploaded_at
-      FROM user_documents
-      WHERE user_id = $1
-    `;
-    const params: any[] = [access.session.userId];
-
     if (tripNumber) {
-      query += ` AND trip_number = $2`;
-      params.push(tripNumber);
+      const documents = await getTripDocuments(access.session.userId, tripNumber);
+      return NextResponse.json({ documents });
     }
 
-    query += ` ORDER BY uploaded_at DESC`;
-
-    const documents = await database.query(query, params);
+    const documents = await database.query(`
+      SELECT id,
+             s3_key AS file_key,
+             filename AS original_filename,
+             file_type,
+             file_size,
+             description,
+             trip_number,
+             source_path,
+             uploaded_at::text AS uploaded_at
+      FROM user_documents
+      WHERE user_id = $1
+      ORDER BY uploaded_at DESC, id DESC
+    `, [access.session.userId]);
 
     return NextResponse.json({ documents });
   } catch (error: any) {

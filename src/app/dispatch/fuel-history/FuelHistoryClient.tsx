@@ -224,9 +224,33 @@ export default function FuelHistoryClient({ initialFuel, trips }: { initialFuel:
               <div>
                 <h3 className="text-sm md:text-lg font-black tracking-tight">{f.location}</h3>
                 <p className="text-[10px] font-mono text-zinc-500">
-                  {f.quantity} {f.unit} • ${f.amount_usd?.toFixed(2)} USD
+                  {(f.gallons || f.liters || f.quantity || '—')} {f.unit} • ${Number(f.amount_usd || 0).toFixed(2)} USD
                   {f.odometer && ` • ODO: ${f.odometer}`}
                 </p>
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] font-black uppercase">
+                  {f.receiptUrl ? (
+                    <a
+                      href={f.receiptUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-amber-400 hover:text-amber-300"
+                    >
+                      🧾 Receipt
+                    </a>
+                  ) : (
+                    <span className="text-zinc-700">No receipt</span>
+                  )}
+                  {f.trip_number && f.trip_number !== 'UNLINKED' && (
+                    <a
+                      href={`/api/dispatch/envelope/${encodeURIComponent(f.trip_number)}/merge-pdfs`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-zinc-400 hover:text-white"
+                    >
+                      📦 Envelope
+                    </a>
+                  )}
+                </div>
               </div>
             </div>
 

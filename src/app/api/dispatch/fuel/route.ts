@@ -178,7 +178,7 @@ export async function POST(request: Request) {
 
       if (!existingDocument) {
         await db().run(
-          `INSERT INTO user_documents (user_id, file_key, original_filename, file_type, file_size, description, trip_number, source_path)
+          `INSERT INTO user_documents (user_id, s3_key, filename, file_type, file_size, description, trip_number, source_path)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
           [
             access.session.userId,
@@ -221,21 +221,20 @@ export async function GET(request: Request) {
         SELECT
           CASE WHEN ud.source_path IS NOT NULL AND ud.source_path <> ''
             THEN '/api/dispatch/documents/source?path=' || replace(ud.source_path, ' ', '%20')
-            ELSE '/api/dispatch/documents/download/' || replace(ud.file_key, '/', '%2F') || '?redirect=true'
+            ELSE '/api/dispatch/documents/download/' || replace(ud.s3_key, '/', '%2F') || '?redirect=true'
           END AS receipt_url,
-          ud.original_filename AS receipt_filename,
+          ud.filename AS receipt_filename,
           CASE WHEN ud.source_path IS NOT NULL AND ud.source_path <> ''
             THEN '/api/dispatch/documents/source?path=' || replace(ud.source_path, ' ', '%20')
             ELSE NULL
           END AS receipt_source_url
         FROM user_documents ud
         WHERE ud.trip_number = f.trip_number
-          AND ud.user_id::text = COALESCE(f.user_id::text, ud.user_id::text)
           AND (
             lower(COALESCE(ud.description, '')) LIKE '%fuel%'
             OR lower(COALESCE(ud.description, '')) LIKE '%receipt%'
-            OR lower(COALESCE(ud.original_filename, '')) LIKE '%fuel%'
-            OR lower(COALESCE(ud.original_filename, '')) LIKE '%receipt%'
+            OR lower(COALESCE(ud.filename, '')) LIKE '%fuel%'
+            OR lower(COALESCE(ud.filename, '')) LIKE '%receipt%'
           )
         ORDER BY ud.uploaded_at DESC, ud.id DESC
         LIMIT 1

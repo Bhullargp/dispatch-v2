@@ -55,6 +55,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
   const [prevReimbNames, setPrevReimbNames] = useState<string[]>([]);
   const [tripPdfs, setTripPdfs] = useState<any[]>([]);
   const [showPdfMenu, setShowPdfMenu] = useState(false);
+  const [openingReceiptEnvelope, setOpeningReceiptEnvelope] = useState(false);
 
   useEffect(() => { setMounted(true); }, []);
 
@@ -609,7 +610,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                 </div>
               )}
             </div>
-            <div className="flex gap-2 h-full">
+            <div className="flex gap-2 h-full flex-wrap justify-end">
               <div className="relative">
                 {tripPdfs.length === 1 ? (
                   <a
@@ -664,6 +665,36 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                 className="bg-red-700 hover:bg-red-600 text-white text-[10px] font-black uppercase px-4 py-3 rounded-xl border border-red-600 transition-all flex items-center gap-2"
               >
                 📋 Trip Envelope
+              </a>
+              <button
+                onClick={async () => {
+                  try {
+                    setOpeningReceiptEnvelope(true);
+                    const res = await fetch(`/api/dispatch/envelope/${encodeURIComponent(currentTrip.trip_number)}/merge-pdfs`);
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(data?.error || 'Could not load receipt links');
+                    const urls = Array.isArray(data.receiptUrls) ? data.receiptUrls : [];
+                    if (!urls.length) throw new Error('No fuel receipts linked to this trip yet');
+                    urls.forEach((url: string) => window.open(url, '_blank', 'noopener,noreferrer'));
+                    setActionSuccess(`Opened ${urls.length} fuel receipt${urls.length === 1 ? '' : 's'}`);
+                  } catch (err: any) {
+                    setActionError(err?.message || 'Could not open receipt envelope');
+                  } finally {
+                    setOpeningReceiptEnvelope(false);
+                  }
+                }}
+                disabled={openingReceiptEnvelope}
+                className="bg-amber-700 hover:bg-amber-600 disabled:opacity-60 text-white text-[10px] font-black uppercase px-4 py-3 rounded-xl border border-amber-600 transition-all flex items-center gap-2"
+              >
+                🧾 {openingReceiptEnvelope ? 'Loading...' : 'Fuel Receipts'}
+              </button>
+              <a
+                href={`/api/dispatch/envelope/${encodeURIComponent(currentTrip.trip_number)}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="bg-zinc-900 hover:bg-zinc-800 text-[10px] font-black uppercase px-4 py-3 rounded-xl border border-zinc-800 transition-all flex items-center gap-2"
+              >
+                📦 Envelope Data
               </a>
             </div>
         </div>
@@ -1327,7 +1358,8 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                     <th className="text-right pb-2 pr-4">Litres</th>
                     <th className="text-right pb-2 pr-4">Price/Unit</th>
                     <th className="text-right pb-2 pr-4">Total</th>
-                    <th className="text-right pb-2">Odometer</th>
+                    <th className="text-right pb-2 pr-4">Odometer</th>
+                    <th className="text-right pb-2">Receipt</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1353,7 +1385,21 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                       <td className="py-2 pr-4 text-right text-yellow-400 font-black">
                         {f.amount_usd ? `$${parseFloat(f.amount_usd).toFixed(2)}` : '—'}
                       </td>
-                      <td className="py-2 text-right text-zinc-500">{f.odometer ? Number(f.odometer).toLocaleString() : '—'}</td>
+                      <td className="py-2 pr-4 text-right text-zinc-500">{f.odometer ? Number(f.odometer).toLocaleString() : '—'}</td>
+                      <td className="py-2 text-right">
+                        {f.receiptUrl ? (
+                          <a
+                            href={f.receiptUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-amber-400 hover:text-amber-300 font-black"
+                          >
+                            View
+                          </a>
+                        ) : (
+                          <span className="text-zinc-700">—</span>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
