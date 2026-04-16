@@ -12,6 +12,8 @@ const MINIMAX_API_URL = 'https://api.minimax.chat/v1/chat/completions';
 const ZAI_API_URL = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
 const ZAI_MODEL = 'glm-4.5-air';
 
+import { DISPATCH_APP_RULES, ITINERARY_LLM_RULES } from '@/lib/app-rules';
+
 // Runtime LLM config — reads from DB (admin_settings), falls back to env vars
 interface LlmConfig {
   primary: 'claude' | 'zai' | 'regex';
@@ -239,6 +241,10 @@ export function parseDriverItinerary(text: string): ParsedTrip {
 // ── LLM-based extraction using Z.AI ──────────────────────────────────────────
 
 const LLM_SYSTEM_PROMPT = `You are a dispatch itinerary parser for a Canadian trucking company (DM Transport, Ontario). Extract structured trip data from driver itinerary text.
+
+${DISPATCH_APP_RULES}
+
+${ITINERARY_LLM_RULES}
 
 ═══ FIELD EXTRACTION RULES ═══
 

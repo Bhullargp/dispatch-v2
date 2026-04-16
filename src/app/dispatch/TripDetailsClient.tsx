@@ -152,6 +152,44 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
     } catch { return dateStr; }
   };
 
+  const getStopNumber = (index: number) => index + 1;
+  const getStopDisplay = (stop: any, index: number) => {
+    const parts = stop?.location?.split(',').map((p: string) => p.trim()) || [];
+    let last = parts[parts.length - 1] || '';
+    last = last.replace(/\s+[A-Z]\d[A-Z]\s*\d[A-Z]\d/i, '').replace(/\s+\d{5}(-\d{4})?/i, '').trim();
+    const cityState = parts.length >= 2 ? parts[parts.length - 2] + ', ' + last : (stop?.location || 'Unknown stop');
+    return `#${getStopNumber(index)} ${cityState}`;
+  };
+
+  const persistExtras = async (nextExtras: any[]) => {
+    setCurrentExtras(nextExtras);
+    try {
+      await fetch('/api/dispatch/extra', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          trip_number: currentTrip.trip_number,
+          extras: nextExtras,
+        })
+      });
+    } catch (err) {
+      console.error('Failed to save payables:', err);
+    }
+  };
+
+  const updateExtraLink = async (extraIndex: number, linkedStopId: string) => {
+    const nextExtras = [...currentExtras];
+    const stopIndex = currentStops.findIndex((s: any) => String(s.id) === String(linkedStopId));
+    nextExtras[extraIndex] = {
+      ...nextExtras[extraIndex],
+      linked_stop_id: linkedStopId ? Number(linkedStopId) : null,
+      linked_stop_number: linkedStopId && stopIndex >= 0 ? getStopNumber(stopIndex) : null,
+    };
+    await persistExtras(nextExtras);
+    setActionSuccess('Payable linked to stop');
+    setTimeout(() => setActionSuccess(null), 2000);
+  };
+
   const updateField = async (field: string, value: any) => {
     setIsSaving(true);
     setActionError(null);
@@ -266,28 +304,14 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
 
     let nextExtras = [...currentExtras];
     if (delta > 0) {
-      const newItem = { type: typeName, amount: payable?.rate || 0, quantity: 1 };
+      const newItem = { type: typeName, amount: payable?.rate || 0, quantity: 1, linked_stop_id: null, linked_stop_number: null };
       nextExtras = [...currentExtras, newItem];
     } else if (delta < 0 && existing.length > 0) {
       const index = currentExtras.findLastIndex(e => e.type === typeName);
       nextExtras.splice(index, 1);
     }
 
-    setCurrentExtras(nextExtras);
-
-    // Auto-save to backend
-    try {
-      await fetch('/api/dispatch/extra', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          trip_number: currentTrip.trip_number,
-          extras: nextExtras
-        })
-      });
-    } catch (err) {
-      console.error('Failed to save payables:', err);
-    }
+    await persistExtras(nextExtras);
   };
 
   const calculatePayableTotal = (payable: any) => {
@@ -358,7 +382,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
   const startOdo = currentTrip.start_odometer;
   const endOdo = currentTrip.end_odometer;
   const totalKilos = (startOdo !== null && endOdo !== null) ? (endOdo - startOdo) : null;
-  const isMileageIncomplete = !currentStops[currentStops.length - 1]?.location?.includes('Caledon, ON');
+  const isMileageIncomplete = currentTrip.status !== 'Completed' && currentTrip.status !== 'Cancelled' && !currentStops[currentStops.length - 1]?.location?.includes('Caledon, ON');
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 p-4 md:p-8 font-sans selection:bg-emerald-500/30">
@@ -683,13 +707,8 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                 onClick={async () => {
                   try {
                     setOpeningReceiptEnvelope(true);
-                    const res = await fetch(`/api/dispatch/envelope/${encodeURIComponent(currentTrip.trip_number)}/merge-pdfs`);
-                    const data = await res.json().catch(() => ({}));
-                    if (!res.ok) throw new Error(data?.error || 'Could not load receipts');
-                    const urls = Array.isArray(data.receiptUrls) ? data.receiptUrls : [];
-                    if (!urls.length) throw new Error('No fuel receipts linked to this trip yet');
-                    window.open(urls[0], '_blank', 'noopener,noreferrer');
-                    setActionSuccess(`Opening fuel receipt (${urls.length} found)`);
+                    window.open(`/api/dispatch/envelope/${encodeURIComponent(currentTrip.trip_number)}/merge-pdfs`, '_blank', 'noopener,noreferrer');
+                    setActionSuccess('Opening merged fuel receipts');
                   } catch (err: any) {
                     setActionError(err?.message || 'Could not open receipts');
                   } finally {
@@ -1032,7 +1051,10 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                   const qty = currentExtras.filter(e => e.type === p.name).length;
                   return showAllPayables || qty > 0;
                 }).map(payable => {
-                  const qty = currentExtras.filter(e => e.type === payable.name).length;
+                  const payableExtras = currentExtras
+                    .map((e, idx) => ({ ...e, _index: idx }))
+                    .filter(e => e.type === payable.name);
+                  const qty = payableExtras.length;
                   const total = calculatePayableTotal(payable);
                   const isZero = parseFloat(total) === 0;
                   return (
@@ -1043,7 +1065,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                            <span className={`text-sm font-mono font-black ${isZero ? 'text-zinc-500' : 'text-green-500'}`}>${total}</span>
                         </div>
                       </div>
-                      <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center justify-between gap-2 mb-3">
                          <div className="flex items-center gap-1.5">
                             <button onClick={() => updatePayableQty(payable.name, -1)} className="w-9 h-9 bg-zinc-800 hover:bg-red-900 rounded-xl flex items-center justify-center text-sm transition-all font-black border border-zinc-700">-</button>
                             <span className="text-sm font-mono font-black w-10 text-center">{qty}</span>
@@ -1062,23 +1084,34 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                               onBlur={async (e) => {
                                 const val = parseFloat(e.target.value) || 0;
                                 const otherExtras = currentExtras.filter(ex => ex.type !== payable.name);
-                                const nextExtras = [...otherExtras, { type: payable.name, amount: val, quantity: 1 }];
-                                setCurrentExtras(nextExtras);
-                                try {
-                                  await fetch('/api/dispatch/extra', {
-                                    method: 'PUT',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({
-                                      trip_number: currentTrip.trip_number,
-                                      extras: nextExtras
-                                    })
-                                  });
-                                } catch (err) { console.error(err); }
+                                const nextExtras = [...otherExtras, { type: payable.name, amount: val, quantity: 1, linked_stop_id: null, linked_stop_number: null }];
+                                await persistExtras(nextExtras);
                               }}
                               className="w-24 bg-zinc-900 border border-zinc-800 rounded-xl p-2 text-sm font-mono text-green-500 text-right outline-none focus:border-emerald-500 shadow-inner"
                             />
                          )}
                       </div>
+                      {payableExtras.length > 0 && (
+                        <div className="space-y-2 pt-3 border-t border-zinc-900/70">
+                          {payableExtras.map((entry, entryIdx) => (
+                            <div key={`${payable.name}-${entry._index}`} className="flex items-center gap-2">
+                              <span className="text-[10px] font-black text-zinc-500 w-8">#{entryIdx + 1}</span>
+                              <select
+                                value={entry.linked_stop_id || ''}
+                                onChange={(e) => updateExtraLink(entry._index, e.target.value)}
+                                className="flex-1 bg-zinc-900 border border-zinc-800 rounded-xl p-2 text-[10px] font-black text-zinc-300 focus:border-emerald-500 outline-none"
+                              >
+                                <option value="">Unlinked stop</option>
+                                {currentStops.map((stop: any, stopIndex: number) => (
+                                  <option key={stop.id || stopIndex} value={stop.id || ''}>
+                                    {getStopDisplay(stop, stopIndex)}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -1292,8 +1325,10 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                 {currentStops.map((stop: any, i) => (
                   <div key={stop.id || i} className="flex gap-6 relative group/stop">
                     <div className="flex flex-col items-center">
-                      <div className={`w-2.5 h-2.5 rounded-full z-10 transition-transform group-hover/stop:scale-125 ${i === 0 ? 'bg-emerald-500 shadow-[0_0_12px_rgba(52,211,153,0.6)]' : i === currentStops.length - 1 ? 'bg-green-500 shadow-[0_0_12px_rgba(34,197,94,0.6)]' : 'bg-zinc-700'}`} />
-                      {i !== currentStops.length - 1 && <div className="w-px h-full bg-zinc-800 absolute top-2.5" />}
+                      <div className="w-7 h-7 rounded-full z-10 border border-emerald-500/30 bg-zinc-950 text-emerald-400 text-[10px] font-black flex items-center justify-center transition-transform group-hover/stop:scale-105">
+                        {getStopNumber(i)}
+                      </div>
+                      {i !== currentStops.length - 1 && <div className="w-px h-full bg-zinc-800 absolute top-7" />}
                     </div>
                     <div className="-mt-1.5 flex-grow">
                       <div className="flex justify-between items-start">
@@ -1328,10 +1363,20 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                         last = last.replace(/\s+[A-Z]\d[A-Z]\s*\d[A-Z]\d/i, '').replace(/\s+\d{5}(-\d{4})?/i, '').trim();
                         const cityState = parts.length >= 2 ? parts[parts.length - 2] + ', ' + last : stop.location;
                         const address = parts.length >= 3 ? parts.slice(0, parts.length - 2).join(', ') : '';
+                        const linkedExtras = currentExtras.filter((e: any) => Number(e.linked_stop_id) === Number(stop.id) || Number(e.linked_stop_number) === getStopNumber(i));
                         return (
                           <>
                             {address && <p className="text-[9px] text-zinc-500 leading-tight mb-0.5">{address}</p>}
                             <p className="text-md font-black text-amber-300 leading-tight tracking-tight underline underline-offset-2 decoration-amber-500/40">{cityState} <span className="text-[9px] font-black text-amber-500 no-underline normal-case">{stop.stop_type ? `(${stop.stop_type?.toUpperCase()})` : ''}{stop.miles_from_last ? ` • ${stop.miles_from_last} mi` : ''}</span></p>
+                            {linkedExtras.length > 0 && (
+                              <div className="flex flex-wrap gap-1.5 mt-2">
+                                {linkedExtras.map((e: any, x: number) => (
+                                  <span key={`${e.type}-${x}`} className="px-2 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-[9px] font-black uppercase text-emerald-400">
+                                    {e.type}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
                           </>
                         );
                       })()}

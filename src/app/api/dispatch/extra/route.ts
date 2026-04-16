@@ -4,20 +4,26 @@ import { ensureDispatchAuthSchemaAndSeed } from '@/lib/dispatch-auth';
 import { ensureTripOwnership, requireAccess } from '@/lib/ownership';
 import pool from '@/lib/db';
 
+async function ensureExtraPayLinkColumns() {
+  try { await db().run('ALTER TABLE extra_pay ADD COLUMN IF NOT EXISTS linked_stop_id INTEGER'); } catch {}
+  try { await db().run('ALTER TABLE extra_pay ADD COLUMN IF NOT EXISTS linked_stop_number INTEGER'); } catch {}
+}
+
 export async function POST(request: Request) {
   try {
     await ensureDispatchAuthSchemaAndSeed();
     const { access, response } = requireAccess(request);
     if (response || !access) return response;
 
+    await ensureExtraPayLinkColumns();
     const body = await request.json();
-    const { trip_number, type, amount, quantity } = body;
+    const { trip_number, type, amount, quantity, linked_stop_id, linked_stop_number } = body;
 
     if (!(await ensureTripOwnership(access, trip_number))) return NextResponse.json({ error: 'Trip not found' }, { status: 404 });
 
     const result = await db().run(
-      'INSERT INTO extra_pay (trip_number, type, amount, quantity, user_id) VALUES ($1, $2, $3, $4, $5)',
-      [trip_number, type, amount || 0, quantity || 1, access.adminMode ? null : access.session.userId]
+      'INSERT INTO extra_pay (trip_number, type, amount, quantity, user_id, linked_stop_id, linked_stop_number) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+      [trip_number, type, amount || 0, quantity || 1, access.adminMode ? null : access.session.userId, linked_stop_id || null, linked_stop_number || null]
     );
 
     return NextResponse.json({ success: true, id: result.changes });
@@ -48,6 +54,7 @@ export async function PUT(request: Request) {
     const { access, response } = requireAccess(request);
     if (response || !access) return response;
 
+    await ensureExtraPayLinkColumns();
     const body = await request.json();
     const { trip_number, extras } = body;
 
@@ -58,8 +65,8 @@ export async function PUT(request: Request) {
       await client.query('BEGIN');
       await client.query('DELETE FROM extra_pay WHERE trip_number = $1 AND ($2 OR user_id = $3)', [trip_number, access.adminMode ? true : false, access.session.userId]);
       for (const e of extras) {
-        await client.query('INSERT INTO extra_pay (trip_number, type, amount, quantity, user_id) VALUES ($1, $2, $3, $4, $5)',
-          [trip_number, e.type, e.amount, e.quantity, access.adminMode ? null : access.session.userId]);
+        await client.query('INSERT INTO extra_pay (trip_number, type, amount, quantity, user_id, linked_stop_id, linked_stop_number) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+          [trip_number, e.type, e.amount, e.quantity, access.adminMode ? null : access.session.userId, e.linked_stop_id || null, e.linked_stop_number || null]);
       }
       await client.query('COMMIT');
     } catch (err) {

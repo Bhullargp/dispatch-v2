@@ -77,17 +77,39 @@ function cityProvince(loc: string) {
 }
 
 // Detect trailer attachment timeline from stop descriptions
-function buildTrailerMap(trip: any, stops: any[]): Map<number, string> {
-  const map = new Map<number, string>();
+function buildTrailerMap(trip: any, stops: any[]): Map<string, string> {
+  const map = new Map<string, string>();
   let current = '';
+  const defaultTrailer = String(trip.trailer_number || trip.trailer || trip.trailer_2 || '').toUpperCase();
   for (let i = 0; i < stops.length; i++) {
     const s = stops[i];
+    const stype = String(s?.stop_type || '').toUpperCase();
     const desc = String(s?.description || '');
     const m = desc.match(/trailer\s+([A-Z0-9]+)/i);
-    if (m) current = m[1].toUpperCase();
-    map.set(i, current);
+    if (m) {
+      current = m[1].toUpperCase();
+    } else if (!current && stype === 'HOOK' && defaultTrailer) {
+      current = defaultTrailer;
+    }
+    const key = String(s?.id ?? `${s?.stop_order ?? i}:${s?.location ?? ''}:${stype}`);
+    map.set(key, current);
   }
   return map;
+}
+
+function tripMarkerForExtraType(type: string | null | undefined) {
+  const t = String(type || '').trim().toUpperCase();
+  if (!t) return '';
+  if (t === 'EXTRA DELIVERY') return '+1 EXTRA D/L';
+  if (t === 'EXTRA PICKUP') return '+1 EXTRA P/U';
+  if (t === 'SELF PICKUP') return '+1 SELF P/U';
+  if (t === 'SELF DELIVERY') return '+1 SELF D/L';
+  if (t === 'TRAILER SWITCH') return '+1 SWITCH';
+  if (t === 'LAYOVER') return '+1 LAYOVER';
+  if (t === 'WAITING TIME') return '+1 WAIT';
+  if (t === 'TARPING') return '+1 TARP';
+  if (t === 'UNTARPING') return '+1 UNTARP';
+  return '+1';
 }
 
 // ─── PDF Document ─────────────────────────────────────────────────────────────
@@ -239,8 +261,7 @@ function TripEnvelope({ trip, stops, fuel, extraPay, expenses, driverName }: {
         ...(() => {
           const rows: any[] = [];
           let lastTrailer = '';
-          let deliveryCount = 0;
-          let pickupCount = 0;
+          const stopNumberById = new Map(stops.map((s: any, idx: number) => [String(s.id), idx + 1]));
           filteredStops.forEach((s: any, i: number) => {
             if (!s) {
               rows.push(React.createElement(View, { key: `empty-${i}`, style: S.tRow },
@@ -252,21 +273,18 @@ function TripEnvelope({ trip, stops, fuel, extraPay, expenses, driverName }: {
               ));
               return;
             }
-            const tNum = trailerMap.get(i) || lastTrailer;
-            if (tNum) lastTrailer = tNum;
             const stype = (s?.stop_type || '').toUpperCase();
+            const stopKey = String(s?.id ?? `${s?.stop_order ?? i}:${s?.location ?? ''}:${stype}`);
+            const tNum = trailerMap.get(stopKey) || lastTrailer;
+            if (tNum) lastTrailer = tNum;
             const eventDisplay = stype.replace(/_/g, ' ');
             const showTrailer = stype !== 'ACQUIRE' && stype !== 'RELEASE' ? tNum : '';
-            let tripCol = '';
-            if (stype === 'DELIVERY') {
-              deliveryCount += 1;
-              if (deliveryCount > 1) tripCol = '+1';
-            } else if (stype === 'PICKUP') {
-              pickupCount += 1;
-              if (pickupCount > 1) tripCol = '+1';
-            } else if (stype === 'HOOK' && i > 0 && String(filteredStops[i - 1]?.stop_type || '').toUpperCase() === 'DROP') {
-              tripCol = '+1';
-            }
+            const stopNumber = stopNumberById.get(String(s.id)) || null;
+            const linkedExtras = extraPay.filter((e: any) =>
+              (stopNumber && Number(e.linked_stop_number) === Number(stopNumber)) ||
+              (s.id && Number(e.linked_stop_id) === Number(s.id))
+            );
+            const tripCol = linkedExtras.map((e: any) => tripMarkerForExtraType(e.type)).filter(Boolean).join('\n');
 
             rows.push(React.createElement(View, { key: s.id || i, style: S.tRow },
               React.createElement(Text, { style: [S.tCell, { flex: 0.7, fontFamily: showTrailer ? 'Helvetica-Bold' : 'Helvetica' }] },

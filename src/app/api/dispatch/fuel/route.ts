@@ -144,7 +144,9 @@ export async function GET(request: Request) {
       );
     }
 
-    // Attach receipt URL for each fuel entry (from documents table)
+    // Attach the matching receipt URL for each fuel entry.
+    // IMPORTANT APP RULE: this must stay per-entry, not per-trip. Date alone is not sufficient
+    // when multiple fuel-ups happen on the same day. Prefer stronger matching signals over weak fallbacks.
     const enriched = await Promise.all(fuel.map(async (entry: any) => {
       const receiptRow = await db().get(
         `SELECT
@@ -156,7 +158,25 @@ export async function GET(request: Request) {
         FROM user_documents
         WHERE trip_number = $1
           AND (lower(description) LIKE '%fuel%' OR lower(description) LIKE '%receipt%' OR lower(filename) LIKE '%fuel%' OR lower(filename) LIKE '%receipt%')
-        ORDER BY uploaded_at DESC
+          AND (
+            filename ILIKE $2 OR
+            COALESCE(description, '') ILIKE $2 OR
+            COALESCE(source_path, '') ILIKE $2
+          )
+        ORDER BY uploaded_at DESC, id DESC
+        LIMIT 1`,
+        [entry.trip_number || 'UNLINKED', `%${entry.date || ''}%`]
+      ) || await db().get(
+        `SELECT
+          CASE WHEN source_path IS NOT NULL AND source_path <> ''
+            THEN '/api/dispatch/documents/source?path=' || REPLACE(source_path, ' ', '%20')
+            ELSE '/api/dispatch/documents/download/' || REPLACE(s3_key, '/', '%2F') || '?redirect=true'
+          END AS receipt_url,
+          filename AS receipt_filename
+        FROM user_documents
+        WHERE trip_number = $1
+          AND (lower(description) LIKE '%fuel%' OR lower(description) LIKE '%receipt%' OR lower(filename) LIKE '%fuel%' OR lower(filename) LIKE '%receipt%')
+        ORDER BY uploaded_at DESC, id DESC
         LIMIT 1`,
         [entry.trip_number || 'UNLINKED']
       );
