@@ -263,7 +263,7 @@ export default function TripSheet({ initialTrips, isAdmin = false }: { initialTr
             disabled={uploadingPdf}
             className="text-[10px] font-black uppercase tracking-widest bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60 px-4 md:px-6 py-3 rounded-xl border border-emerald-600 transition-all shadow-[0_0_20px_rgba(16,185,129,0.2)]"
           >
-            {uploadingPdf ? 'Uploading…' : '📄 Upload PDF'}
+            {uploadingPdf ? 'Uploading…' : '📄 Upload Itinerary'}
           </button>
         </div>
       </header>
@@ -271,15 +271,15 @@ export default function TripSheet({ initialTrips, isAdmin = false }: { initialTr
       <main className="max-w-7xl mx-auto space-y-4">
         <div className="md:hidden bg-zinc-900/40 border border-zinc-800 rounded-2xl p-4 flex items-center justify-between gap-3">
           <div>
-            <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Driver Itinerary PDF</p>
-            <p className="text-[11px] text-zinc-500">Upload and auto-create/merge trip</p>
+            <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Driver Itinerary Document</p>
+            <p className="text-[11px] text-zinc-500">Upload a PDF or image to auto-create/merge trip</p>
           </div>
           <button
             onClick={() => fileInputRef.current?.click()}
             disabled={uploadingPdf}
             className="bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60 text-[10px] font-black uppercase px-4 py-2.5 rounded-xl border border-emerald-600"
           >
-            {uploadingPdf ? 'Uploading…' : 'Upload PDF'}
+            {uploadingPdf ? 'Uploading…' : 'Upload Document'}
           </button>
         </div>
 

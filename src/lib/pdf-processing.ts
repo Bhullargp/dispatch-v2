@@ -1,10 +1,11 @@
 import { mkdtemp, writeFile, readFile, rm, readdir } from 'fs/promises';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { extname, join } from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import Anthropic from '@anthropic-ai/sdk';
 import pool, { db } from '@/lib/db';
+import { getDocumentUploadMimeType } from '@/lib/upload-file-types';
 
 const execFileAsync = promisify(execFile);
 
@@ -168,6 +169,36 @@ export async function extractTextFromPdf(buffer: Buffer): Promise<string> {
     await rm(tmp, { recursive: true, force: true });
   }
   return buffer.toString('utf8');
+}
+
+export async function extractTextFromImage(buffer: Buffer, filename: string): Promise<string> {
+  const tmp = await mkdtemp(join(tmpdir(), 'dispatch-image-'));
+  const extension = extname(filename || '').toLowerCase() || '.jpg';
+  const input = join(tmp, `input${extension}`);
+  const normalized = join(tmp, 'input.png');
+  const outputBase = join(tmp, 'output');
+
+  try {
+    await writeFile(input, buffer);
+
+    let ocrInput = input;
+    try {
+      await execFileAsync('sips', ['-s', 'format', 'png', input, '--out', normalized]);
+      ocrInput = normalized;
+    } catch {
+      // Fall back to the original image when conversion is unavailable for this format.
+    }
+
+    await execFileAsync('tesseract', [ocrInput, outputBase]);
+    const text = await readFile(`${outputBase}.txt`, 'utf8');
+    if (text.trim()) return text;
+  } catch {
+    // fallback below
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+
+  return '';
 }
 
 export function parseDriverItinerary(text: string): ParsedTrip {
@@ -689,6 +720,7 @@ function isRetryableUploadError(message: string): boolean {
     m.includes('invalid pdf') ||
     m.includes('trip number') ||
     m.includes('document format') ||
+    m.includes('itinerary document') ||
     m.includes('only pdf files are supported')
   );
 }
@@ -789,8 +821,14 @@ export async function processClaimedUploadJob(job: UploadJob) {
     const cleanStoredPath = String(job.stored_path || '').replace(/^\/+/, '');
     const absPath = join(process.cwd(), 'public', cleanStoredPath);
     const buffer = await readFile(absPath);
-
-    const rawText = await extractTextFromPdf(buffer);
+    const mimeType = getDocumentUploadMimeType({
+      name: job.original_filename || cleanStoredPath,
+      type: (job as UploadJob & { mime_type?: string | null }).mime_type || '',
+    });
+    const isPdfUpload = mimeType === 'application/pdf';
+    const rawText = isPdfUpload
+      ? await extractTextFromPdf(buffer)
+      : await extractTextFromImage(buffer, job.original_filename || cleanStoredPath);
 
     // Load runtime LLM config from DB (admin can change at any time)
     const cfg = await getLlmConfig();
@@ -825,7 +863,7 @@ export async function processClaimedUploadJob(job: UploadJob) {
 
     parsed = undefined as any;
 
-    if (cfg.openrouterApiKey) {
+    if (cfg.openrouterApiKey && isPdfUpload) {
       try {
         parsed = await tryOpenRouterVision();
       } catch (err: any) {
@@ -847,11 +885,11 @@ export async function processClaimedUploadJob(job: UploadJob) {
     if (!parsed) parsed = parseDriverItinerary(rawText);
 
     if (!parsed.hasDetectedTripNumber) {
-      throw new Error('Could not detect trip number in PDF. Please verify the document format.');
+      throw new Error('Could not detect trip number in the itinerary document. Please verify the document format.');
     }
 
     if (!parsed.tripNumber || !/^T\d{4,}/i.test(parsed.tripNumber)) {
-      throw new Error('Parsed trip number is invalid. Please upload a valid itinerary PDF.');
+      throw new Error('Parsed trip number is invalid. Please upload a valid itinerary document.');
     }
 
     const client = await pool.connect();
