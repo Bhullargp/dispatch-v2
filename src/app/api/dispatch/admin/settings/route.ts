@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { ensureDispatchAuthSchemaAndSeed, hashSecret } from '@/lib/dispatch-auth';
+import { ensureDispatchAuthSchemaAndSeed } from '@/lib/dispatch-auth';
 import { requireAccess } from '@/lib/ownership';
 
 // Keys that hold sensitive values — mask them in GET responses

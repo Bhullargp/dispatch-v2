@@ -1,6 +1,15 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+
+type CustomProvider = {
+  id: string;
+  name: string;
+  provider: 'openrouter' | 'openrouter-vision' | 'minimax' | 'zai';
+  model: string;
+  api_key: string;
+  enabled: boolean;
+};
 
 type LlmSettings = {
   llm_primary: string;
@@ -10,33 +19,58 @@ type LlmSettings = {
   llm_openrouter_api_key: string;
   llm_anthropic_api_key: string;
   llm_zai_api_key: string;
+  llm_custom_providers: CustomProvider[];
   llm_minimax_configured: string;
   llm_openrouter_configured: string;
   llm_anthropic_configured: string;
   llm_zai_configured: string;
 };
 
-const PROVIDER_LABELS: Record<string, { label: string; color: string; desc: string }> = {
+const BUILTIN_PROVIDER_LABELS: Record<string, { label: string; color: string; desc: string }> = {
   minimax: { label: 'Minimax M2.7', color: 'text-purple-400', desc: 'Primary model, independent app default' },
-  claude:  { label: 'Claude (Anthropic)', color: 'text-amber-400', desc: 'Best accuracy, vision support' },
-  zai:     { label: 'Z.AI (GLM)', color: 'text-blue-400', desc: 'Alternative LLM' },
-  regex:   { label: 'Regex Only', color: 'text-zinc-400', desc: 'No AI, rule-based parsing only' },
+  claude: { label: 'Claude (Anthropic)', color: 'text-amber-400', desc: 'Best accuracy, vision support' },
+  zai: { label: 'Z.AI (GLM)', color: 'text-blue-400', desc: 'Alternative LLM' },
+  'openrouter-vision': { label: 'OpenRouter Vision', color: 'text-fuchsia-400', desc: 'PDF/image extraction via vision model' },
+  regex: { label: 'Regex Only', color: 'text-zinc-400', desc: 'No AI, rule-based parsing only' },
 };
+
+const CUSTOM_PROVIDER_OPTIONS: Array<{ value: CustomProvider['provider']; label: string }> = [
+  { value: 'openrouter', label: 'OpenRouter (text model)' },
+  { value: 'openrouter-vision', label: 'OpenRouter Vision (PDF/images)' },
+  { value: 'minimax', label: 'Minimax' },
+  { value: 'zai', label: 'Z.AI (GLM)' },
+];
+
+function createCustomProvider(): CustomProvider {
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return {
+    id,
+    name: 'Custom Provider',
+    provider: 'openrouter',
+    model: '',
+    api_key: '',
+    enabled: true,
+  };
+}
 
 export default function AdminLlmSettings() {
   const [settings, setSettings] = useState<LlmSettings | null>(null);
-  const [form, setForm] = useState<Partial<LlmSettings>>({});
+  const [form, setForm] = useState<Partial<LlmSettings>>({ llm_custom_providers: [] });
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<{ ok: boolean; msg: string } | null>(null);
   const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     fetch('/api/dispatch/admin/settings')
-      .then(r => r.json())
-      .then(d => {
+      .then((r) => r.json())
+      .then((d) => {
         if (d.settings) {
-          setSettings(d.settings);
-          setForm(d.settings);
+          const withProviders = {
+            ...d.settings,
+            llm_custom_providers: Array.isArray(d.settings.llm_custom_providers) ? d.settings.llm_custom_providers : [],
+          } as LlmSettings;
+          setSettings(withProviders);
+          setForm(withProviders);
         }
       });
   }, []);
@@ -53,9 +87,15 @@ export default function AdminLlmSettings() {
       const d = await res.json();
       if (d.success) {
         setStatus({ ok: true, msg: 'Settings saved.' });
-        // Reload to get fresh masked values
-        const fresh = await fetch('/api/dispatch/admin/settings').then(r => r.json());
-        if (fresh.settings) { setSettings(fresh.settings); setForm(fresh.settings); }
+        const fresh = await fetch('/api/dispatch/admin/settings').then((r) => r.json());
+        if (fresh.settings) {
+          const withProviders = {
+            ...fresh.settings,
+            llm_custom_providers: Array.isArray(fresh.settings.llm_custom_providers) ? fresh.settings.llm_custom_providers : [],
+          } as LlmSettings;
+          setSettings(withProviders);
+          setForm(withProviders);
+        }
       } else {
         setStatus({ ok: false, msg: d.error || 'Save failed.' });
       }
@@ -71,40 +111,106 @@ export default function AdminLlmSettings() {
     return settings[`llm_${provider}_configured` as keyof LlmSettings] === 'true';
   };
 
+  const customProviders = useMemo(() => {
+    return Array.isArray(form.llm_custom_providers) ? form.llm_custom_providers : [];
+  }, [form.llm_custom_providers]);
+
+  const updateCustomProvider = (id: string, patch: Partial<CustomProvider>) => {
+    setForm((f) => ({
+      ...f,
+      llm_custom_providers: (Array.isArray(f.llm_custom_providers) ? f.llm_custom_providers : []).map((entry) =>
+        entry.id === id ? { ...entry, ...patch } : entry
+      ),
+    }));
+  };
+
+  const removeCustomProvider = (id: string) => {
+    setForm((f) => ({
+      ...f,
+      llm_custom_providers: (Array.isArray(f.llm_custom_providers) ? f.llm_custom_providers : []).filter((entry) => entry.id !== id),
+      llm_primary: f.llm_primary === `custom:${id}` ? 'minimax' : f.llm_primary,
+    }));
+  };
+
+  const addCustomProvider = () => {
+    setForm((f) => ({
+      ...f,
+      llm_custom_providers: [...(Array.isArray(f.llm_custom_providers) ? f.llm_custom_providers : []), createCustomProvider()],
+    }));
+  };
+
   if (!settings) {
     return <div className="text-zinc-500 text-sm animate-pulse">Loading LLM settings…</div>;
   }
 
   const primary = form.llm_primary || 'minimax';
 
+  const primaryOptions = [
+    ...Object.entries(BUILTIN_PROVIDER_LABELS).map(([key, info]) => ({
+      key,
+      label: info.label,
+      color: info.color,
+      desc: info.desc,
+      configured:
+        key === 'regex'
+          ? true
+          : key === 'openrouter-vision'
+            ? isConfigured('openrouter')
+            : isConfigured(key === 'claude' ? 'anthropic' : key),
+    })),
+    ...customProviders.map((entry) => ({
+      key: `custom:${entry.id}`,
+      label: entry.name || `Custom ${entry.provider}`,
+      color: entry.enabled ? 'text-cyan-300' : 'text-zinc-500',
+      desc: `${entry.provider}${entry.model ? ` · ${entry.model}` : ''}`,
+      configured: Boolean(entry.api_key && !entry.api_key.includes('••')) || (entry.api_key || '').includes('••'),
+    })),
+  ];
+
+  const previewOrder = [
+    primary,
+    'minimax',
+    'claude',
+    'zai',
+    'openrouter-vision',
+    ...customProviders.filter((c) => c.enabled).map((c) => `custom:${c.id}`),
+    'regex',
+  ].filter((value, index, arr) => value && arr.indexOf(value) === index);
+
+  const resolvePreviewLabel = (key: string) => {
+    if (BUILTIN_PROVIDER_LABELS[key]) return BUILTIN_PROVIDER_LABELS[key].label;
+    if (key.startsWith('custom:')) {
+      const id = key.slice('custom:'.length);
+      const entry = customProviders.find((c) => c.id === id);
+      return entry ? (entry.name || `Custom ${entry.provider}`) : 'Custom';
+    }
+    return key;
+  };
+
   return (
     <div className="space-y-6">
-      {/* Primary Model Selector */}
       <div>
         <p className="text-xs uppercase font-black tracking-widest text-zinc-500 mb-3">Primary Extraction Model</p>
-        <p className="text-xs text-zinc-600 mb-4">This model runs first for text-based extraction. OpenRouter Vision handles document PDF understanding separately, including scanned/image-based files.</p>
+        <p className="text-xs text-zinc-600 mb-4">All providers are now in one selector, including OpenRouter Vision and any custom entries.</p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {Object.entries(PROVIDER_LABELS).map(([key, info]) => {
-            const active = primary === key;
-            const configured = key === 'regex' ? true : isConfigured(key === 'claude' ? 'anthropic' : key);
+          {primaryOptions.map((info) => {
+            const active = primary === info.key;
             return (
               <button
-                key={key}
-                onClick={() => setForm(f => ({ ...f, llm_primary: key }))}
+                key={info.key}
+                onClick={() => setForm((f) => ({ ...f, llm_primary: info.key }))}
                 className={`relative p-4 rounded-2xl border text-left transition-all ${
                   active
                     ? 'border-emerald-500/60 bg-emerald-500/10 shadow-lg shadow-emerald-500/10'
                     : 'border-zinc-700/50 bg-zinc-900/30 hover:border-zinc-600'
                 }`}
               >
-                {active && (
-                  <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-emerald-400 shadow shadow-emerald-400/60" />
-                )}
+                {active && <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-emerald-400 shadow shadow-emerald-400/60" />}
                 <p className={`text-sm font-black ${active ? 'text-white' : info.color}`}>{info.label}</p>
                 <p className="text-[10px] text-zinc-500 mt-1">{info.desc}</p>
-                {key !== 'regex' && (
-                  <p className={`text-[10px] mt-2 font-bold ${configured ? 'text-emerald-500' : 'text-red-500/70'}`}>
-                    {configured ? '● Key set' : '○ No key'}
+                {info.key !== 'regex' && (
+                  <p className={`text-[10px] mt-2 font-bold ${info.configured ? 'text-emerald-500' : 'text-red-500/70'}`}>
+                    {info.configured ? '● Key set' : '○ No key'}
                   </p>
                 )}
               </button>
@@ -113,12 +219,10 @@ export default function AdminLlmSettings() {
         </div>
       </div>
 
-      {/* API Key Fields */}
       <div className="space-y-4">
         <p className="text-xs uppercase font-black tracking-widest text-zinc-500">API Keys</p>
-        <p className="text-xs text-zinc-600">Keys are stored securely. Leave unchanged to keep the existing key.</p>
+        <p className="text-xs text-zinc-600">Keys are stored securely. Leave masked values unchanged to keep existing keys.</p>
 
-        {/* Minimax */}
         <div className="bg-zinc-900/30 border border-zinc-800 rounded-2xl p-4 space-y-3">
           <div className="flex items-center justify-between">
             <div>
@@ -133,17 +237,14 @@ export default function AdminLlmSettings() {
             <label className="text-[10px] text-zinc-500 uppercase mb-1 block">API Key</label>
             <div className="flex gap-2">
               <input
-                type={showKeys['minimax'] ? 'text' : 'password'}
+                type={showKeys.minimax ? 'text' : 'password'}
                 value={form.llm_minimax_api_key || ''}
-                onChange={e => setForm(f => ({ ...f, llm_minimax_api_key: e.target.value }))}
+                onChange={(e) => setForm((f) => ({ ...f, llm_minimax_api_key: e.target.value }))}
                 placeholder="Paste new Minimax API key…"
                 className="flex-1 bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-sm font-mono text-zinc-300 focus:outline-none focus:border-purple-500/60"
               />
-              <button
-                onClick={() => setShowKeys(s => ({ ...s, minimax: !s.minimax }))}
-                className="px-3 py-2 text-xs text-zinc-500 hover:text-zinc-300 bg-zinc-900 border border-zinc-700 rounded-xl"
-              >
-                {showKeys['minimax'] ? 'Hide' : 'Show'}
+              <button onClick={() => setShowKeys((s) => ({ ...s, minimax: !s.minimax }))} className="px-3 py-2 text-xs text-zinc-500 hover:text-zinc-300 bg-zinc-900 border border-zinc-700 rounded-xl">
+                {showKeys.minimax ? 'Hide' : 'Show'}
               </button>
             </div>
           </div>
@@ -152,19 +253,18 @@ export default function AdminLlmSettings() {
             <input
               type="text"
               value={form.llm_minimax_model || ''}
-              onChange={e => setForm(f => ({ ...f, llm_minimax_model: e.target.value }))}
+              onChange={(e) => setForm((f) => ({ ...f, llm_minimax_model: e.target.value }))}
               placeholder="MiniMax-M2.7"
               className="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-sm font-mono text-zinc-300 focus:outline-none focus:border-purple-500/60"
             />
           </div>
         </div>
 
-        {/* OpenRouter Vision */}
         <div className="bg-zinc-900/30 border border-zinc-800 rounded-2xl p-4 space-y-3">
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-black text-fuchsia-400">OpenRouter Vision</p>
-              <p className="text-[10px] text-zinc-500">Document PDF understanding and scanned/image extraction only, not general app logic</p>
+              <p className="text-[10px] text-zinc-500">Used for PDF/image understanding with vision models</p>
             </div>
             <span className={`text-[10px] font-bold px-2 py-1 rounded-full ${isConfigured('openrouter') ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>
               {isConfigured('openrouter') ? 'Configured' : 'Not set'}
@@ -174,17 +274,14 @@ export default function AdminLlmSettings() {
             <label className="text-[10px] text-zinc-500 uppercase mb-1 block">API Key</label>
             <div className="flex gap-2">
               <input
-                type={showKeys['openrouter'] ? 'text' : 'password'}
+                type={showKeys.openrouter ? 'text' : 'password'}
                 value={form.llm_openrouter_api_key || ''}
-                onChange={e => setForm(f => ({ ...f, llm_openrouter_api_key: e.target.value }))}
+                onChange={(e) => setForm((f) => ({ ...f, llm_openrouter_api_key: e.target.value }))}
                 placeholder="Paste OpenRouter API key (sk-or-...)"
                 className="flex-1 bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-sm font-mono text-zinc-300 focus:outline-none focus:border-fuchsia-500/60"
               />
-              <button
-                onClick={() => setShowKeys(s => ({ ...s, openrouter: !s.openrouter }))}
-                className="px-3 py-2 text-xs text-zinc-500 hover:text-zinc-300 bg-zinc-900 border border-zinc-700 rounded-xl"
-              >
-                {showKeys['openrouter'] ? 'Hide' : 'Show'}
+              <button onClick={() => setShowKeys((s) => ({ ...s, openrouter: !s.openrouter }))} className="px-3 py-2 text-xs text-zinc-500 hover:text-zinc-300 bg-zinc-900 border border-zinc-700 rounded-xl">
+                {showKeys.openrouter ? 'Hide' : 'Show'}
               </button>
             </div>
           </div>
@@ -193,19 +290,18 @@ export default function AdminLlmSettings() {
             <input
               type="text"
               value={form.llm_openrouter_vision_model || ''}
-              onChange={e => setForm(f => ({ ...f, llm_openrouter_vision_model: e.target.value }))}
+              onChange={(e) => setForm((f) => ({ ...f, llm_openrouter_vision_model: e.target.value }))}
               placeholder="qwen/qwen3-vl-32b-instruct"
               className="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-sm font-mono text-zinc-300 focus:outline-none focus:border-fuchsia-500/60"
             />
           </div>
         </div>
 
-        {/* Anthropic / Claude */}
         <div className="bg-zinc-900/30 border border-zinc-800 rounded-2xl p-4 space-y-3">
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-black text-amber-400">Claude (Anthropic)</p>
-              <p className="text-[10px] text-zinc-500">api.anthropic.com — highest accuracy, reads PDF directly</p>
+              <p className="text-[10px] text-zinc-500">api.anthropic.com</p>
             </div>
             <span className={`text-[10px] font-bold px-2 py-1 rounded-full ${isConfigured('anthropic') ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>
               {isConfigured('anthropic') ? 'Configured' : 'Not set'}
@@ -213,27 +309,23 @@ export default function AdminLlmSettings() {
           </div>
           <div className="flex gap-2">
             <input
-              type={showKeys['claude'] ? 'text' : 'password'}
+              type={showKeys.claude ? 'text' : 'password'}
               value={form.llm_anthropic_api_key || ''}
-              onChange={e => setForm(f => ({ ...f, llm_anthropic_api_key: e.target.value }))}
+              onChange={(e) => setForm((f) => ({ ...f, llm_anthropic_api_key: e.target.value }))}
               placeholder="Paste new Anthropic API key (sk-ant-…)"
               className="flex-1 bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-sm font-mono text-zinc-300 focus:outline-none focus:border-amber-500/60"
             />
-            <button
-              onClick={() => setShowKeys(s => ({ ...s, claude: !s.claude }))}
-              className="px-3 py-2 text-xs text-zinc-500 hover:text-zinc-300 bg-zinc-900 border border-zinc-700 rounded-xl"
-            >
-              {showKeys['claude'] ? 'Hide' : 'Show'}
+            <button onClick={() => setShowKeys((s) => ({ ...s, claude: !s.claude }))} className="px-3 py-2 text-xs text-zinc-500 hover:text-zinc-300 bg-zinc-900 border border-zinc-700 rounded-xl">
+              {showKeys.claude ? 'Hide' : 'Show'}
             </button>
           </div>
         </div>
 
-        {/* Z.AI */}
         <div className="bg-zinc-900/30 border border-zinc-800 rounded-2xl p-4 space-y-3">
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-black text-blue-400">Z.AI (GLM)</p>
-              <p className="text-[10px] text-zinc-500">open.bigmodel.cn — alternative LLM (glm-4.5-air)</p>
+              <p className="text-[10px] text-zinc-500">open.bigmodel.cn</p>
             </div>
             <span className={`text-[10px] font-bold px-2 py-1 rounded-full ${isConfigured('zai') ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>
               {isConfigured('zai') ? 'Configured' : 'Not set'}
@@ -241,23 +333,95 @@ export default function AdminLlmSettings() {
           </div>
           <div className="flex gap-2">
             <input
-              type={showKeys['zai'] ? 'text' : 'password'}
+              type={showKeys.zai ? 'text' : 'password'}
               value={form.llm_zai_api_key || ''}
-              onChange={e => setForm(f => ({ ...f, llm_zai_api_key: e.target.value }))}
+              onChange={(e) => setForm((f) => ({ ...f, llm_zai_api_key: e.target.value }))}
               placeholder="Paste new Z.AI API key…"
               className="flex-1 bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-sm font-mono text-zinc-300 focus:outline-none focus:border-blue-500/60"
             />
-            <button
-              onClick={() => setShowKeys(s => ({ ...s, zai: !s.zai }))}
-              className="px-3 py-2 text-xs text-zinc-500 hover:text-zinc-300 bg-zinc-900 border border-zinc-700 rounded-xl"
-            >
-              {showKeys['zai'] ? 'Hide' : 'Show'}
+            <button onClick={() => setShowKeys((s) => ({ ...s, zai: !s.zai }))} className="px-3 py-2 text-xs text-zinc-500 hover:text-zinc-300 bg-zinc-900 border border-zinc-700 rounded-xl">
+              {showKeys.zai ? 'Hide' : 'Show'}
             </button>
           </div>
         </div>
+
+        <div className="bg-zinc-900/30 border border-zinc-800 rounded-2xl p-4 space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-black text-cyan-300">Custom Providers</p>
+              <p className="text-[10px] text-zinc-500">Add extra provider/model combos with their own API keys.</p>
+            </div>
+            <button onClick={addCustomProvider} className="px-3 py-2 text-xs rounded-xl border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10">
+              + Add Provider
+            </button>
+          </div>
+
+          {customProviders.length === 0 && (
+            <p className="text-xs text-zinc-500">No custom providers yet.</p>
+          )}
+
+          {customProviders.map((entry) => (
+            <div key={entry.id} className="border border-zinc-700/60 rounded-xl p-3 space-y-3 bg-zinc-950/50">
+              <div className="flex items-center justify-between gap-2">
+                <input
+                  type="text"
+                  value={entry.name}
+                  onChange={(e) => updateCustomProvider(entry.id, { name: e.target.value })}
+                  placeholder="Display name"
+                  className="flex-1 bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300"
+                />
+                <label className="text-xs text-zinc-400 flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={entry.enabled}
+                    onChange={(e) => updateCustomProvider(entry.id, { enabled: e.target.checked })}
+                  />
+                  Enabled
+                </label>
+                <button onClick={() => removeCustomProvider(entry.id)} className="px-2 py-1 text-xs rounded-lg border border-red-500/40 text-red-300 hover:bg-red-500/10">
+                  Remove
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                <select
+                  value={entry.provider}
+                  onChange={(e) => updateCustomProvider(entry.id, { provider: e.target.value as CustomProvider['provider'] })}
+                  className="bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300"
+                >
+                  {CUSTOM_PROVIDER_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+                <input
+                  type="text"
+                  value={entry.model}
+                  onChange={(e) => updateCustomProvider(entry.id, { model: e.target.value })}
+                  placeholder="Model name"
+                  className="bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-2 text-sm font-mono text-zinc-300"
+                />
+              </div>
+
+              <div className="flex gap-2">
+                <input
+                  type={showKeys[`custom-${entry.id}`] ? 'text' : 'password'}
+                  value={entry.api_key || ''}
+                  onChange={(e) => updateCustomProvider(entry.id, { api_key: e.target.value })}
+                  placeholder="API key"
+                  className="flex-1 bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-2 text-sm font-mono text-zinc-300"
+                />
+                <button
+                  onClick={() => setShowKeys((s) => ({ ...s, [`custom-${entry.id}`]: !s[`custom-${entry.id}`] }))}
+                  className="px-3 py-2 text-xs text-zinc-500 hover:text-zinc-300 bg-zinc-900 border border-zinc-700 rounded-lg"
+                >
+                  {showKeys[`custom-${entry.id}`] ? 'Hide' : 'Show'}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
 
-      {/* Save Button */}
       <div className="flex items-center gap-4">
         <button
           onClick={save}
@@ -266,36 +430,23 @@ export default function AdminLlmSettings() {
         >
           {saving ? 'Saving…' : 'Save Settings'}
         </button>
-        {status && (
-          <p className={`text-sm font-bold ${status.ok ? 'text-emerald-400' : 'text-red-400'}`}>
-            {status.ok ? '✓' : '✗'} {status.msg}
-          </p>
-        )}
+        {status && <p className={`text-sm font-bold ${status.ok ? 'text-emerald-400' : 'text-red-400'}`}>{status.ok ? '✓' : '✗'} {status.msg}</p>}
       </div>
 
-      {/* Extraction Order Preview */}
       <div className="bg-zinc-900/20 border border-zinc-700/30 rounded-2xl p-4">
-        <p className="text-[10px] uppercase font-black tracking-widest text-zinc-600 mb-2">Extraction Order When Processing PDFs</p>
+        <p className="text-[10px] uppercase font-black tracking-widest text-zinc-600 mb-2">Extraction Order</p>
         <div className="flex items-center gap-2 flex-wrap">
-          {['minimax', 'claude', 'zai']
-            .sort((a, b) => (a === (primary === 'regex' ? 'minimax' : primary) ? -1 : b === (primary === 'regex' ? 'minimax' : primary) ? 1 : 0))
-            .map((p, i) => {
-              const label = PROVIDER_LABELS[p].label;
-              const isPrimary = i === 0 && primary !== 'regex';
-              return (
-                <React.Fragment key={p}>
-                  {i > 0 && <span className="text-zinc-700 text-xs">→ fallback</span>}
-                  <span className={`text-xs font-bold px-2 py-1 rounded-lg ${isPrimary ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-zinc-800 text-zinc-400'}`}>
-                    {isPrimary ? '★ ' : ''}{label}
-                  </span>
-                </React.Fragment>
-              );
-            })}
-          {primary === 'regex' && (
-            <span className="text-xs font-bold px-2 py-1 rounded-lg bg-zinc-700 text-zinc-300">Regex Only (no LLM)</span>
-          )}
-          <span className="text-zinc-700 text-xs">→ fallback</span>
-          <span className="text-xs font-bold px-2 py-1 rounded-lg bg-zinc-800 text-zinc-500">Regex</span>
+          {previewOrder.map((method, i) => {
+            const isPrimary = i === 0;
+            return (
+              <React.Fragment key={method}>
+                {i > 0 && <span className="text-zinc-700 text-xs">→ fallback</span>}
+                <span className={`text-xs font-bold px-2 py-1 rounded-lg ${isPrimary ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-zinc-800 text-zinc-400'}`}>
+                  {isPrimary ? '★ ' : ''}{resolvePreviewLabel(method)}
+                </span>
+              </React.Fragment>
+            );
+          })}
         </div>
       </div>
     </div>

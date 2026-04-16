@@ -18,13 +18,56 @@ import { DISPATCH_APP_RULES, ITINERARY_LLM_RULES } from '@/lib/app-rules';
 
 // Runtime LLM config — reads from DB (admin_settings), falls back to env vars
 export interface LlmConfig {
-  primary: 'minimax' | 'claude' | 'zai' | 'regex';
+  primary: string;
   minimaxApiKey: string;
   minimaxModel: string;
   openrouterApiKey: string;
   openrouterVisionModel: string;
   anthropicApiKey: string;
   zaiApiKey: string;
+  customProviders: CustomLlmProvider[];
+}
+
+export type CustomLlmProvider = {
+  id: string;
+  name: string;
+  provider: 'openrouter' | 'openrouter-vision' | 'minimax' | 'zai';
+  model: string;
+  api_key: string;
+  enabled: boolean;
+};
+
+function parseCustomProviders(value: unknown): CustomLlmProvider[] {
+  let parsed: unknown = [];
+  if (typeof value === 'string') {
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      parsed = [];
+    }
+  } else if (Array.isArray(value)) {
+    parsed = value;
+  }
+
+  if (!Array.isArray(parsed)) return [];
+
+  return parsed
+    .map((entry) => {
+      const item = (entry || {}) as Record<string, unknown>;
+      const provider = String(item.provider || '').trim() as CustomLlmProvider['provider'];
+      if (!['openrouter', 'openrouter-vision', 'minimax', 'zai'].includes(provider)) return null;
+      const id = String(item.id || '').trim();
+      if (!id) return null;
+      return {
+        id,
+        name: String(item.name || '').trim() || `Custom ${provider}`,
+        provider,
+        model: String(item.model || '').trim(),
+        api_key: String(item.api_key || ''),
+        enabled: item.enabled === false ? false : true,
+      } satisfies CustomLlmProvider;
+    })
+    .filter(Boolean) as CustomLlmProvider[];
 }
 
 export async function getLlmConfig(): Promise<LlmConfig> {
@@ -35,13 +78,14 @@ export async function getLlmConfig(): Promise<LlmConfig> {
     ) as Array<{ key: string; value: string }>;
     const s: Record<string, string> = Object.fromEntries(rows.map(r => [r.key, r.value]));
     return {
-      primary:         (s.llm_primary as LlmConfig['primary']) || 'minimax',
+      primary:         s.llm_primary || 'minimax',
       minimaxApiKey:   s.llm_minimax_api_key         || process.env.MINIMAX_API_KEY          || '',
       minimaxModel:    s.llm_minimax_model           || process.env.MINIMAX_MODEL            || 'MiniMax-M2.7',
       openrouterApiKey:s.llm_openrouter_api_key      || process.env.OPENROUTER_API_KEY       || '',
       openrouterVisionModel: s.llm_openrouter_vision_model || process.env.OPENROUTER_VISION_MODEL || 'qwen/qwen3-vl-32b-instruct',
       anthropicApiKey: s.llm_anthropic_api_key       || process.env.ANTHROPIC_API_KEY        || '',
       zaiApiKey:       s.llm_zai_api_key             || process.env.ZAI_API_KEY              || '',
+      customProviders: parseCustomProviders(s.llm_custom_providers || '[]'),
     };
   } catch {
     return {
@@ -52,6 +96,7 @@ export async function getLlmConfig(): Promise<LlmConfig> {
       openrouterVisionModel: process.env.OPENROUTER_VISION_MODEL || 'qwen/qwen3-vl-32b-instruct',
       anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
       zaiApiKey: process.env.ZAI_API_KEY || '',
+      customProviders: [],
     };
   }
 }
@@ -570,6 +615,46 @@ export async function extractWithOpenRouterVision(pdfBuffer: Buffer, apiKey?: st
   return parseModelJson(text, 'OpenRouter vision');
 }
 
+export async function extractWithOpenRouterText(text: string, apiKey: string, model: string): Promise<LlmExtractResult> {
+  const truncated = text.length > 10000 ? text.slice(0, 10000) : text;
+
+  const response = await fetch(OPENROUTER_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+      'HTTP-Referer': 'http://localhost:3000',
+      'X-Title': 'Dispatch',
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: 'system', content: LLM_SYSTEM_PROMPT },
+        { role: 'user', content: `Parse this driver itinerary:\n\n${truncated}` },
+      ],
+      temperature: 0.05,
+      max_tokens: 4096,
+    }),
+  });
+
+  if (!response.ok) {
+    const errBody = await response.text().catch(() => '');
+    throw new Error(`OpenRouter API error ${response.status}: ${errBody.slice(0, 200)}`);
+  }
+
+  const data = await response.json();
+  const content = data?.choices?.[0]?.message?.content;
+  const normalized = Array.isArray(content)
+    ? content.map((part: any) => typeof part?.text === 'string' ? part.text : '').join('\n')
+    : content;
+
+  if (!normalized || typeof normalized !== 'string') {
+    throw new Error('Empty response from OpenRouter model');
+  }
+
+  return parseModelJson(normalized, 'OpenRouter');
+}
+
 export function llmResultToParsedTrip(llm: LlmExtractResult, rawText: string): ParsedTrip {
   const stops: ParsedStop[] = (llm.stops || []).map((s, i) => ({
     stop_type: s.type?.toUpperCase() || 'PICKUP',
@@ -835,7 +920,7 @@ export async function processClaimedUploadJob(job: UploadJob) {
 
     let parsed: ParsedTrip;
 
-    // Ordered extraction chain based on admin's primary model selection
+    // Ordered extraction chain based on admin's primary model/provider selection
     const tryMinimax = async () => {
       if (!cfg.minimaxApiKey) throw new Error('Minimax API key not configured');
       const llmResult = await extractWithMinimax(rawText, cfg.minimaxApiKey, cfg.minimaxModel);
@@ -851,25 +936,34 @@ export async function processClaimedUploadJob(job: UploadJob) {
       const llmResult = await extractWithOpenRouterVision(buffer, cfg.openrouterApiKey, cfg.openrouterVisionModel);
       return llmResultToParsedTrip(llmResult, rawText);
     };
+    const tryOpenRouterText = async (apiKey: string, model: string) => {
+      if (!apiKey) throw new Error('OpenRouter API key not configured');
+      if (!model) throw new Error('OpenRouter model not configured');
+      const llmResult = await extractWithOpenRouterText(rawText, apiKey, model);
+      return llmResultToParsedTrip(llmResult, rawText);
+    };
     const tryZai = async () => {
       if (!cfg.zaiApiKey) throw new Error('Z.AI API key not configured');
       const llmResult = await extractWithLlm(rawText, cfg.zaiApiKey);
       return llmResultToParsedTrip(llmResult, rawText);
     };
 
-    // Build ordered list: primary first, then fallbacks
-    const allMethods = ['minimax', 'claude', 'zai'] as const;
-    const ordered = [cfg.primary, ...allMethods.filter(m => m !== cfg.primary)];
+    const customMethods = cfg.customProviders
+      .filter(entry => entry.enabled)
+      .map(entry => `custom:${entry.id}`);
+
+    // Build ordered list: primary first, then built-in fallbacks, then enabled custom providers
+    const ordered = [
+      cfg.primary,
+      'minimax',
+      'claude',
+      'zai',
+      'openrouter-vision',
+      ...customMethods,
+      'regex',
+    ].filter((value, index, list) => value && list.indexOf(value) === index);
 
     parsed = undefined as any;
-
-    if (cfg.openrouterApiKey && isPdfUpload) {
-      try {
-        parsed = await tryOpenRouterVision();
-      } catch (err: any) {
-        console.warn(`[pdf] openrouter-vision failed: ${err.message}`);
-      }
-    }
 
     for (const method of ordered) {
       if (parsed) break;
@@ -878,6 +972,29 @@ export async function processClaimedUploadJob(job: UploadJob) {
         if (method === 'minimax') parsed = await tryMinimax();
         else if (method === 'claude') parsed = await tryClaude();
         else if (method === 'zai') parsed = await tryZai();
+        else if (method === 'openrouter-vision') {
+          if (!isPdfUpload) continue;
+          parsed = await tryOpenRouterVision();
+        }
+        else if (typeof method === 'string' && method.startsWith('custom:')) {
+          const id = method.slice('custom:'.length);
+          const entry = cfg.customProviders.find(p => p.id === id && p.enabled);
+          if (!entry) continue;
+          if (entry.provider === 'openrouter') parsed = await tryOpenRouterText(entry.api_key, entry.model);
+          else if (entry.provider === 'openrouter-vision') {
+            if (!isPdfUpload) continue;
+            const llmResult = await extractWithOpenRouterVision(buffer, entry.api_key, entry.model || cfg.openrouterVisionModel);
+            parsed = llmResultToParsedTrip(llmResult, rawText);
+          }
+          else if (entry.provider === 'minimax') {
+            const llmResult = await extractWithMinimax(rawText, entry.api_key, entry.model || cfg.minimaxModel);
+            parsed = llmResultToParsedTrip(llmResult, rawText);
+          }
+          else if (entry.provider === 'zai') {
+            const llmResult = await extractWithLlm(rawText, entry.api_key);
+            parsed = llmResultToParsedTrip(llmResult, rawText);
+          }
+        }
       } catch (err: any) {
         console.warn(`[pdf] ${method} failed: ${err.message}`);
       }

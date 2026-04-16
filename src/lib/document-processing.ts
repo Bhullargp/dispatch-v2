@@ -286,7 +286,7 @@ type SmartIntakeLlmResult = {
   extracted_data?: Record<string, unknown> | null;
 };
 
-export type ModelTestProvider = 'auto' | 'minimax' | 'claude' | 'zai' | 'openrouter' | 'regex';
+export type ModelTestProvider = 'auto' | 'minimax' | 'claude' | 'zai' | 'openrouter' | 'openrouter-vision' | 'regex';
 
 type ModelTestOptions = {
   provider?: ModelTestProvider;
@@ -371,7 +371,7 @@ async function classifyAndExtractWithLlm(
 
   const attempts = selectedProvider === 'auto'
     ? [cfg.primary, 'minimax', 'claude', 'zai'].filter((value, index, list) => list.indexOf(value) === index)
-    : [selectedProvider];
+    : [selectedProvider === 'openrouter-vision' ? 'openrouter' : selectedProvider];
 
   for (const method of attempts) {
     try {
@@ -398,17 +398,12 @@ async function extractItineraryDraft(
   let parsed: ParsedTrip | null = null;
   const isPdf = fileType === 'application/pdf';
 
-  const shouldTryOpenRouter = selectedProvider === 'auto' || selectedProvider === 'openrouter';
-  if (shouldTryOpenRouter && cfg.openrouterApiKey && isPdf && buffer) {
-    try {
-      parsed = llmResultToParsedTrip(await extractWithOpenRouterVision(buffer, cfg.openrouterApiKey, selectedModel || cfg.openrouterVisionModel), rawText);
-    } catch {
-      parsed = null;
-    }
-  }
+  const customMethods = cfg.customProviders
+    .filter(entry => entry.enabled)
+    .map(entry => `custom:${entry.id}`);
 
   const ordered = selectedProvider === 'auto'
-    ? [cfg.primary, 'minimax', 'claude', 'zai', 'regex'].filter((value, index, list) => list.indexOf(value) === index)
+    ? [cfg.primary, 'minimax', 'claude', 'zai', 'openrouter-vision', ...customMethods, 'regex'].filter((value, index, list) => value && list.indexOf(value) === index)
     : [selectedProvider];
 
   for (const method of ordered) {
@@ -417,6 +412,26 @@ async function extractItineraryDraft(
       if (method === 'minimax' && cfg.minimaxApiKey) parsed = llmResultToParsedTrip(await extractWithMinimax(rawText, cfg.minimaxApiKey, selectedModel || cfg.minimaxModel), rawText);
       else if (method === 'claude' && cfg.anthropicApiKey && buffer && isPdf) parsed = llmResultToParsedTrip(await extractWithClaude(buffer, cfg.anthropicApiKey), rawText);
       else if (method === 'zai' && cfg.zaiApiKey) parsed = llmResultToParsedTrip(await extractWithLlm(rawText, cfg.zaiApiKey), rawText);
+      else if ((method === 'openrouter' || method === 'openrouter-vision') && buffer && isPdf && cfg.openrouterApiKey) {
+        parsed = llmResultToParsedTrip(await extractWithOpenRouterVision(buffer, cfg.openrouterApiKey, selectedModel || cfg.openrouterVisionModel), rawText);
+      }
+      else if (method === 'openrouter' && cfg.openrouterApiKey && (selectedModel || '').trim()) {
+        parsed = llmResultToParsedTrip(await extractWithOpenRouterText(rawText, cfg.openrouterApiKey, selectedModel.trim()), rawText);
+      }
+      else if (typeof method === 'string' && method.startsWith('custom:')) {
+        const id = method.slice('custom:'.length);
+        const entry = cfg.customProviders.find(p => p.id === id && p.enabled);
+        if (!entry) continue;
+        if (entry.provider === 'openrouter' && entry.api_key && entry.model) {
+          parsed = llmResultToParsedTrip(await extractWithOpenRouterText(rawText, entry.api_key, entry.model), rawText);
+        } else if (entry.provider === 'openrouter-vision' && buffer && isPdf && entry.api_key) {
+          parsed = llmResultToParsedTrip(await extractWithOpenRouterVision(buffer, entry.api_key, entry.model || cfg.openrouterVisionModel), rawText);
+        } else if (entry.provider === 'minimax' && entry.api_key) {
+          parsed = llmResultToParsedTrip(await extractWithMinimax(rawText, entry.api_key, entry.model || cfg.minimaxModel), rawText);
+        } else if (entry.provider === 'zai' && entry.api_key) {
+          parsed = llmResultToParsedTrip(await extractWithLlm(rawText, entry.api_key), rawText);
+        }
+      }
       else if (method === 'regex') parsed = parseDriverItinerary(rawText);
     } catch {
       continue;
