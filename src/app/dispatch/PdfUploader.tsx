@@ -428,169 +428,169 @@ export default function PdfUploader({
 
       <Dialog open={!!reviewDraft} onOpenChange={(open) => !open && setReviewDraft(null)}>
         {reviewDraft && (
-          <DialogContent className="max-w-6xl border-zinc-800 bg-zinc-950 text-white p-0 overflow-hidden">
-            <DialogHeader className="border-b border-zinc-800 px-6 py-5 text-left">
-              <DialogTitle className="text-xl font-black">Review smart intake</DialogTitle>
-              <DialogDescription className="text-zinc-400">
-                Confirm whether this upload should create a trip or save a receipt, fix any extracted fields, then submit without leaving the dashboard.
-              </DialogDescription>
-            </DialogHeader>
+          <DialogContent className="w-[min(96vw,1280px)] max-w-none border-zinc-800 bg-zinc-950 p-0 text-white shadow-2xl">
+            <div className="flex h-[min(92vh,900px)] min-h-[620px] flex-col overflow-hidden max-sm:h-[94vh] max-sm:min-h-0">
+              <DialogHeader className="border-b border-zinc-800 px-5 py-4 text-left sm:px-6 sm:py-5">
+                <DialogTitle className="text-xl font-black sm:text-2xl">Review smart intake</DialogTitle>
+                <DialogDescription className="text-sm leading-relaxed text-zinc-400">
+                  Confirm whether this upload should create a trip or save a receipt, fix any extracted fields, then submit without leaving the dashboard.
+                </DialogDescription>
+              </DialogHeader>
 
-            <div className="grid max-h-[80vh] gap-0 lg:grid-cols-[1.1fr_0.9fr]">
-              <div className="border-b border-zinc-800 bg-black/30 p-4 lg:border-b-0 lg:border-r lg:p-5 overflow-auto">
-                <div className="flex flex-wrap items-center gap-2 mb-4">
-                  <span className="rounded-full border border-zinc-700 px-3 py-1 text-[10px] font-black uppercase tracking-[0.25em] text-zinc-300">
-                    {getTypeDetails(activeType).label}
-                  </span>
-                  <span className="rounded-full border border-zinc-700 px-3 py-1 text-[10px] font-black uppercase tracking-[0.25em] text-zinc-400">
-                    {friendlyStatus(reviewDraft.status)}
-                  </span>
-                  {reviewDraft.missing_fields?.map((field) => (
-                    <span key={field} className="rounded-full border border-amber-700/50 bg-amber-950/30 px-3 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-amber-200">
-                      Missing {formatFieldLabel(field)}
+              <div className="grid flex-1 min-h-0 gap-0 xl:grid-cols-[1.15fr_0.85fr]">
+                <div className="flex min-h-0 flex-col border-b border-zinc-800 bg-black/30 p-4 sm:p-5 xl:border-b-0 xl:border-r xl:p-6">
+                  <div className="mb-4 flex flex-wrap items-center gap-2">
+                    <span className="rounded-full border border-zinc-700 px-3 py-1 text-[10px] font-black uppercase tracking-[0.24em] text-zinc-300">
+                      {getTypeDetails(activeType).label}
                     </span>
-                  ))}
-                </div>
-
-                <div className="rounded-2xl border border-zinc-800 bg-zinc-950/80 overflow-hidden min-h-[22rem]">
-                  {(() => {
-                    const previewUrl = reviewDraft.sourceUrl || reviewDraft.url;
-                    const previewKind = getPreviewKind(reviewDraft);
-                    if (!previewUrl) {
-                      return <div className="p-6 text-sm text-zinc-500">No preview available for this document yet.</div>;
-                    }
-                    if (previewKind === 'image') {
-                      return <img src={previewUrl} alt={reviewDraft.original_filename} className="w-full h-full object-contain bg-black max-h-[58vh]" />;
-                    }
-                    if (previewKind === 'pdf') {
-                      return <iframe src={previewUrl} title={reviewDraft.original_filename} className="w-full h-[58vh] bg-black" />;
-                    }
-                    return (
-                      <div className="p-6 text-sm text-zinc-400 space-y-3">
-                        <p>Preview is not embedded for this file type.</p>
-                        <a href={previewUrl} target="_blank" rel="noopener noreferrer" className="inline-flex rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-2 text-xs font-black uppercase text-white">
-                          Open file
-                        </a>
-                      </div>
-                    );
-                  })()}
-                </div>
-              </div>
-
-              <div className="p-5 overflow-auto">
-                <div className="space-y-4 pb-2">
-                  <div className="rounded-2xl border border-zinc-800 bg-black/20 p-4">
-                    <p className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Document</p>
-                    <p className="mt-2 text-sm font-black text-white break-all">{reviewDraft.original_filename}</p>
-                    <p className="mt-1 text-xs text-zinc-400">{getTypeDetails(activeType).helper}</p>
+                    <span className="rounded-full border border-zinc-700 px-3 py-1 text-[10px] font-black uppercase tracking-[0.24em] text-zinc-400">
+                      {friendlyStatus(reviewDraft.status)}
+                    </span>
+                    {reviewDraft.missing_fields?.map((field) => (
+                      <span key={field} className="rounded-full border border-amber-700/50 bg-amber-950/30 px-3 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-amber-200">
+                        Missing {formatFieldLabel(field)}
+                      </span>
+                    ))}
                   </div>
 
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <label className="space-y-1 md:col-span-2">
-                      <span className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">Document type</span>
-                      <select
-                        value={TYPE_OPTIONS.some((option) => option.value === activeType) ? activeType : 'other'}
-                        onChange={(event) => updateDraftField('document_type', event.target.value)}
-                        className="w-full bg-black/40 border border-zinc-800 rounded-xl px-3 py-3 text-sm font-mono outline-none focus:border-emerald-500"
-                      >
-                        {TYPE_OPTIONS.map((option) => (
-                          <option key={option.value} value={option.value}>{option.label}</option>
-                        ))}
-                      </select>
-                    </label>
-
-                    {requiresTripAssignment && (
-                      <label className="space-y-1 md:col-span-2">
-                        <span className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">Save receipt into trip</span>
-                        <select
-                          value={assignedTripNumber}
-                          onChange={(event) => setAssignedTripNumber(event.target.value)}
-                          className="w-full bg-black/40 border border-zinc-800 rounded-xl px-3 py-3 text-sm font-mono outline-none focus:border-emerald-500"
-                        >
-                          <option value="">Select trip</option>
-                          {orderedTrips.map((trip) => (
-                            <option key={trip.trip_number} value={trip.trip_number}>{formatTripOption(trip)}</option>
-                          ))}
-                        </select>
-                      </label>
-                    )}
-
-                    {reviewFields.map((field) => {
-                      const value = activeValues[field.key] ?? '';
-                      const className = 'w-full bg-black/40 border border-zinc-800 rounded-xl p-3 text-sm font-mono outline-none focus:border-emerald-500';
-                      const wrapperClass = field.fullWidth ? 'space-y-1 md:col-span-2' : 'space-y-1';
-
-                      if (field.type === 'textarea') {
-                        return (
-                          <label key={field.key} className={wrapperClass}>
-                            <span className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">{field.label}</span>
-                            <textarea
-                              value={value}
-                              placeholder={field.placeholder}
-                              onChange={(event) => updateDraftField(field.key, event.target.value)}
-                              rows={4}
-                              className={`${className} resize-y min-h-24`}
-                            />
-                          </label>
-                        );
+                  <div className="min-h-[280px] flex-1 overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950/80">
+                    {(() => {
+                      const previewUrl = reviewDraft.sourceUrl || reviewDraft.url;
+                      const previewKind = getPreviewKind(reviewDraft);
+                      if (!previewUrl) {
+                        return <div className="p-6 text-sm text-zinc-500">No preview available for this document yet.</div>;
                       }
-
+                      if (previewKind === 'image') {
+                        return <img src={previewUrl} alt={reviewDraft.original_filename} className="h-full w-full bg-black object-contain" />;
+                      }
+                      if (previewKind === 'pdf') {
+                        return <iframe src={previewUrl} title={reviewDraft.original_filename} className="h-full min-h-[320px] w-full bg-black" />;
+                      }
                       return (
-                        <label key={field.key} className={wrapperClass}>
-                          <span className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">{field.label}</span>
-                          <input
-                            type={field.type || 'text'}
-                            step={field.step}
-                            value={value}
-                            placeholder={field.placeholder}
-                            onChange={(event) => updateDraftField(field.key, event.target.value)}
-                            className={className}
-                          />
-                        </label>
+                        <div className="space-y-3 p-6 text-sm text-zinc-400">
+                          <p>Preview is not embedded for this file type.</p>
+                          <a href={previewUrl} target="_blank" rel="noopener noreferrer" className="inline-flex rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-2 text-xs font-black uppercase text-white">
+                            Open file
+                          </a>
+                        </div>
                       );
-                    })}
+                    })()}
+                  </div>
+                </div>
+
+                <div className="flex min-h-0 flex-col">
+                  <div className="flex-1 overflow-auto px-4 py-4 sm:px-5 sm:py-5 xl:px-6 xl:py-6">
+                    <div className="space-y-4 pb-2">
+                      <div className="rounded-2xl border border-zinc-800 bg-black/20 p-4">
+                        <p className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Document</p>
+                        <p className="mt-2 break-all text-sm font-black text-white sm:text-base">{reviewDraft.original_filename}</p>
+                        <p className="mt-1 text-xs text-zinc-400 sm:text-sm">{getTypeDetails(activeType).helper}</p>
+                      </div>
+
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <label className="space-y-1 md:col-span-2">
+                          <span className="text-[11px] uppercase tracking-[0.24em] text-zinc-500">Document type</span>
+                          <select
+                            value={TYPE_OPTIONS.some((option) => option.value === activeType) ? activeType : 'other'}
+                            onChange={(event) => updateDraftField('document_type', event.target.value)}
+                            className="w-full rounded-xl border border-zinc-800 bg-black/40 px-3 py-3 text-sm font-mono outline-none focus:border-emerald-500"
+                          >
+                            {TYPE_OPTIONS.map((option) => (
+                              <option key={option.value} value={option.value}>{option.label}</option>
+                            ))}
+                          </select>
+                        </label>
+
+                        {requiresTripAssignment && (
+                          <label className="space-y-1 md:col-span-2">
+                            <span className="text-[11px] uppercase tracking-[0.24em] text-zinc-500">Save receipt into trip</span>
+                            <select
+                              value={assignedTripNumber}
+                              onChange={(event) => setAssignedTripNumber(event.target.value)}
+                              className="w-full rounded-xl border border-zinc-800 bg-black/40 px-3 py-3 text-sm font-mono outline-none focus:border-emerald-500"
+                            >
+                              <option value="">Select trip</option>
+                              {orderedTrips.map((trip) => (
+                                <option key={trip.trip_number} value={trip.trip_number}>{formatTripOption(trip)}</option>
+                              ))}
+                            </select>
+                          </label>
+                        )}
+
+                        {reviewFields.map((field) => {
+                          const value = activeValues[field.key] ?? '';
+                          const className = 'w-full rounded-xl border border-zinc-800 bg-black/40 p-3 text-sm font-mono outline-none focus:border-emerald-500';
+                          const wrapperClass = field.fullWidth ? 'space-y-1 md:col-span-2' : 'space-y-1';
+
+                          if (field.type === 'textarea') {
+                            return (
+                              <label key={field.key} className={wrapperClass}>
+                                <span className="text-[11px] uppercase tracking-[0.24em] text-zinc-500">{field.label}</span>
+                                <textarea
+                                  value={value}
+                                  placeholder={field.placeholder}
+                                  onChange={(event) => updateDraftField(field.key, event.target.value)}
+                                  rows={4}
+                                  className={`${className} min-h-24 resize-y`}
+                                />
+                              </label>
+                            );
+                          }
+
+                          return (
+                            <label key={field.key} className={wrapperClass}>
+                              <span className="text-[11px] uppercase tracking-[0.24em] text-zinc-500">{field.label}</span>
+                              <input
+                                type={field.type || 'text'}
+                                step={field.step}
+                                value={value}
+                                placeholder={field.placeholder}
+                                onChange={(event) => updateDraftField(field.key, event.target.value)}
+                                className={className}
+                              />
+                            </label>
+                          );
+                        })}
+                      </div>
+
+                      {extraFieldKeys.length > 0 && (
+                        <div className="space-y-3 rounded-2xl border border-zinc-800 bg-black/20 p-4">
+                          <p className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Extra extracted fields</p>
+                          <div className="grid gap-3 md:grid-cols-2">
+                            {extraFieldKeys.map((key) => (
+                              <label key={key} className="space-y-1">
+                                <span className="text-[11px] uppercase tracking-[0.24em] text-zinc-500">{formatFieldLabel(key)}</span>
+                                <input
+                                  value={activeValues[key] ?? ''}
+                                  onChange={(event) => updateDraftField(key, event.target.value)}
+                                  className="w-full rounded-xl border border-zinc-800 bg-black/40 p-3 text-sm font-mono outline-none focus:border-emerald-500"
+                                />
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {reviewDraft.error_message && (
+                        <div className="rounded-2xl border border-red-700/40 bg-red-950/20 p-4 text-xs text-red-300">
+                          {reviewDraft.error_message}
+                        </div>
+                      )}
+                    </div>
                   </div>
 
-                  {extraFieldKeys.length > 0 && (
-                    <div className="rounded-2xl border border-zinc-800 bg-black/20 p-4 space-y-3">
-                      <p className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Extra extracted fields</p>
-                      <div className="grid gap-3 md:grid-cols-2">
-                        {extraFieldKeys.map((key) => (
-                          <label key={key} className="space-y-1">
-                            <span className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">{formatFieldLabel(key)}</span>
-                            <input
-                              value={activeValues[key] ?? ''}
-                              onChange={(event) => updateDraftField(key, event.target.value)}
-                              className="w-full bg-black/40 border border-zinc-800 rounded-xl p-3 text-sm font-mono outline-none focus:border-emerald-500"
-                            />
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {reviewDraft.error_message && (
-                    <div className="rounded-2xl border border-red-700/40 bg-red-950/20 p-4 text-xs text-red-300">
-                      {reviewDraft.error_message}
-                    </div>
-                  )}
-
-                  <div className="flex flex-col-reverse gap-3 border-t border-zinc-800 pt-4 sm:flex-row sm:items-center sm:justify-between">
-                    <p className="text-xs text-zinc-500">
-                      This single intake keeps Boss in one flow, whether the upload becomes a new trip or a reviewed receipt tied to an existing trip.
-                    </p>
-
-                    <div className="flex gap-2 sm:shrink-0">
+                  <div className="sticky bottom-0 border-t border-zinc-800 bg-zinc-950/95 px-4 py-3 backdrop-blur sm:px-5 sm:py-4 xl:px-6">
+                    <div className="flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-end">
                       <button
                         onClick={() => setReviewDraft(null)}
-                        className="rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-3 text-[10px] font-black uppercase text-zinc-200 transition-all hover:bg-zinc-800"
+                        className="w-full rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-3 text-xs font-black uppercase tracking-[0.2em] text-zinc-200 transition-all hover:bg-zinc-800 sm:w-auto"
                       >
                         Close
                       </button>
                       <button
                         onClick={saveDraft}
                         disabled={status === 'saving'}
-                        className="rounded-xl border border-emerald-600 bg-emerald-700 px-4 py-3 text-[10px] font-black uppercase text-white transition-all hover:bg-emerald-600 disabled:opacity-60"
+                        className="w-full rounded-xl border border-emerald-600 bg-emerald-700 px-4 py-3 text-xs font-black uppercase tracking-[0.2em] text-white transition-all hover:bg-emerald-600 disabled:opacity-60 sm:w-auto"
                       >
                         {status === 'saving'
                           ? 'Saving...'
