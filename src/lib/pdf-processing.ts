@@ -8,7 +8,7 @@ import pool, { db } from '@/lib/db';
 
 const execFileAsync = promisify(execFile);
 
-const MINIMAX_API_URL = 'https://api.minimax.chat/v1/chat/completions';
+const MINIMAX_API_URL = 'https://api.minimax.io/v1/text/chatcompletion_v2';
 const ZAI_API_URL = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
 const ZAI_MODEL = 'glm-4.5-air';
 
@@ -308,6 +308,31 @@ Return ONLY valid JSON, no markdown, no explanation:
   "dispatcher_name": "string or null"
 }`;
 
+function parseModelJson(content: string, label: string): LlmExtractResult {
+  const cleaned = content
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/^```(?:json)?\s*\n?/i, '')
+    .replace(/\n?```\s*$/i, '')
+    .trim();
+
+  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+  const candidate = (jsonMatch?.[0] || cleaned).trim();
+
+  let parsed: LlmExtractResult;
+  try {
+    parsed = JSON.parse(candidate);
+  } catch {
+    throw new Error(`${label} returned invalid JSON: ${candidate.slice(0, 200)}`);
+  }
+
+  if (!parsed.trip_number || !/^T\d{4,}$/i.test(parsed.trip_number.trim())) {
+    throw new Error(`${label} extracted invalid trip number: ${parsed.trip_number}`);
+  }
+
+  parsed.trip_number = parsed.trip_number.toUpperCase().trim();
+  return parsed;
+}
+
 export async function extractWithLlm(text: string, apiKey?: string): Promise<LlmExtractResult> {
   const key = apiKey || ZAI_API_KEY;
   if (!key) {
@@ -344,21 +369,7 @@ export async function extractWithLlm(text: string, apiKey?: string): Promise<Llm
     throw new Error('Empty response from LLM');
   }
 
-  const cleaned = content.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
-
-  let parsed: LlmExtractResult;
-  try {
-    parsed = JSON.parse(cleaned);
-  } catch {
-    throw new Error(`LLM returned invalid JSON: ${cleaned.slice(0, 200)}`);
-  }
-
-  if (!parsed.trip_number || !/^T\d{4,}$/i.test(parsed.trip_number.trim())) {
-    throw new Error(`LLM extracted invalid trip number: ${parsed.trip_number}`);
-  }
-
-  parsed.trip_number = parsed.trip_number.toUpperCase().trim();
-  return parsed;
+  return parseModelJson(content, 'LLM');
 }
 
 export async function extractWithMinimax(text: string, apiKey?: string, model?: string): Promise<LlmExtractResult> {
@@ -398,21 +409,7 @@ export async function extractWithMinimax(text: string, apiKey?: string, model?: 
     throw new Error('Empty response from Minimax');
   }
 
-  const cleaned = content.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
-
-  let parsed: LlmExtractResult;
-  try {
-    parsed = JSON.parse(cleaned);
-  } catch {
-    throw new Error(`Minimax returned invalid JSON: ${cleaned.slice(0, 200)}`);
-  }
-
-  if (!parsed.trip_number || !/^T\d{4,}$/i.test(parsed.trip_number.trim())) {
-    throw new Error(`Minimax extracted invalid trip number: ${parsed.trip_number}`);
-  }
-
-  parsed.trip_number = parsed.trip_number.toUpperCase().trim();
-  return parsed;
+  return parseModelJson(content, 'Minimax');
 }
 
 export async function extractWithClaude(pdfBuffer: Buffer, apiKey?: string): Promise<LlmExtractResult> {
@@ -455,24 +452,7 @@ export async function extractWithClaude(pdfBuffer: Buffer, apiKey?: string): Pro
     throw new Error('Unexpected response type from Claude');
   }
 
-  const cleaned = content.text
-    .replace(/^```(?:json)?\s*\n?/i, '')
-    .replace(/\n?```\s*$/i, '')
-    .trim();
-
-  let parsed: LlmExtractResult;
-  try {
-    parsed = JSON.parse(cleaned);
-  } catch {
-    throw new Error(`Claude returned invalid JSON: ${cleaned.slice(0, 200)}`);
-  }
-
-  if (!parsed.trip_number || !/^T\d{4,}$/i.test(parsed.trip_number.trim())) {
-    throw new Error(`Claude extracted invalid trip number: ${parsed.trip_number}`);
-  }
-
-  parsed.trip_number = parsed.trip_number.toUpperCase().trim();
-  return parsed;
+  return parseModelJson(content.text, 'Claude');
 }
 
 export function llmResultToParsedTrip(llm: LlmExtractResult, rawText: string): ParsedTrip {
