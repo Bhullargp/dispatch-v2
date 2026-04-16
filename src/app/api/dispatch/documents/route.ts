@@ -1,10 +1,11 @@
+import { stat } from 'fs/promises';
 import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { ensureDispatchAuthSchemaAndSeed } from '@/lib/dispatch-auth';
+import { getDocumentSourceFileType, ensureUserDocumentsTable, resolveDocumentSourcePath } from '@/lib/dispatch-documents';
+import { createDocumentProcessingDraftFromUpload } from '@/lib/document-processing';
 import { requireAccess } from '@/lib/ownership';
 import { uploadFileToR2, deleteFileFromR2, listUserFiles, isR2Configured } from '@/lib/r2-storage';
-import { ensureUserDocumentsTable } from '@/lib/dispatch-documents';
-import { createDocumentProcessingDraftFromUpload } from '@/lib/document-processing';
 
 // GET - List user's documents
 export async function GET(req: Request) {
@@ -35,18 +36,18 @@ export async function POST(req: Request) {
     const { access, response } = requireAccess(req);
     if (response || !access) return response;
 
-    if (!isR2Configured()) {
-      return NextResponse.json(
-        { error: 'Document storage is not configured. Please set R2 environment variables.' },
-        { status: 503 }
-      );
-    }
-
     const formData = await req.formData();
     const file = formData.get('file') as File | null;
     const description = formData.get('description') as string | null;
     const tripNumber = formData.get('tripNumber') as string | null;
     const sourcePath = formData.get('sourcePath') as string | null;
+
+    if (file && !isR2Configured()) {
+      return NextResponse.json(
+        { error: 'Document storage is not configured. Please set R2 environment variables.' },
+        { status: 503 }
+      );
+    }
 
     if (!file && !sourcePath) {
       return NextResponse.json({ error: 'Missing file' }, { status: 400 });
@@ -105,13 +106,24 @@ export async function POST(req: Request) {
         fileSize: file.size,
       };
     } else if (sourcePath) {
+      const resolvedSourcePath = resolveDocumentSourcePath(sourcePath);
+      const originalFilename = resolvedSourcePath.split('/').pop() || 'receipt';
+      const fileType = getDocumentSourceFileType(resolvedSourcePath);
+      if (fileType === 'application/octet-stream') {
+        return NextResponse.json(
+          { error: 'Invalid file type. Only PDF and images (JPEG, PNG, WebP, HEIC) are supported.' },
+          { status: 400 }
+        );
+      }
+
+      const fileStats = await stat(resolvedSourcePath).catch(() => null);
       storedFile = {
-        key: sourcePath,
-        url: sourcePath,
-        originalFilename: sourcePath.split('/').pop() || 'receipt',
-        fileType: 'image/jpeg',
-        fileSize: 0,
-        sourcePath,
+        key: resolvedSourcePath,
+        url: resolvedSourcePath,
+        originalFilename,
+        fileType,
+        fileSize: fileStats?.size || 0,
+        sourcePath: resolvedSourcePath,
       };
     }
 
@@ -141,6 +153,7 @@ export async function POST(req: Request) {
         description,
         fileType: storedFile?.fileType || file?.type || 'application/octet-stream',
         buffer: uploadedBuffer,
+        sourcePath: storedFile?.sourcePath || null,
       }).catch(() => null);
     }
 

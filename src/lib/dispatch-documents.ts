@@ -1,4 +1,6 @@
+import path from 'path';
 import { db } from '@/lib/db';
+import { getDocumentUploadMimeType } from '@/lib/upload-file-types';
 
 export type TripDocument = {
   id: number;
@@ -16,6 +18,21 @@ export type TripDocument = {
   url: string | null;
   sourceUrl: string | null;
 };
+
+export const RECEIPTS_DIR = path.resolve(process.cwd(), 'receipts');
+
+export function resolveDocumentSourcePath(sourcePath: string) {
+  const resolvedPath = path.resolve(String(sourcePath || ''));
+  const receiptsPrefix = `${RECEIPTS_DIR}${path.sep}`;
+  if (resolvedPath !== RECEIPTS_DIR && !resolvedPath.startsWith(receiptsPrefix)) {
+    throw new Error('Access denied');
+  }
+  return resolvedPath;
+}
+
+export function getDocumentSourceFileType(sourcePath: string) {
+  return getDocumentUploadMimeType({ name: sourcePath }) || 'application/octet-stream';
+}
 
 export async function ensureUserDocumentsTable() {
   await db().run(`

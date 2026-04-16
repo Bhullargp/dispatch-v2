@@ -1,5 +1,6 @@
+import { readFile } from 'fs/promises';
 import { db } from '@/lib/db';
-import { buildDocumentDownloadUrl, buildSourcePathUrl, ensureUserDocumentsTable } from '@/lib/dispatch-documents';
+import { buildDocumentDownloadUrl, buildSourcePathUrl, ensureUserDocumentsTable, getDocumentSourceFileType, resolveDocumentSourcePath } from '@/lib/dispatch-documents';
 import Anthropic from '@anthropic-ai/sdk';
 import {
   extractTextFromImage,
@@ -410,6 +411,33 @@ function getMissingFields(type: DocumentDraftType, data: DocumentDraftData) {
   return [];
 }
 
+async function loadDocumentBinary(params: {
+  buffer?: Buffer | null;
+  sourcePath?: string | null;
+  filename: string;
+  fileType?: string | null;
+}) {
+  if (params.buffer) {
+    return {
+      buffer: params.buffer,
+      fileType: params.fileType || getDocumentSourceFileType(params.filename),
+    };
+  }
+
+  if (!params.sourcePath) {
+    return {
+      buffer: null,
+      fileType: params.fileType || getDocumentSourceFileType(params.filename),
+    };
+  }
+
+  const resolvedPath = resolveDocumentSourcePath(params.sourcePath);
+  return {
+    buffer: await readFile(resolvedPath),
+    fileType: params.fileType || getDocumentSourceFileType(resolvedPath),
+  };
+}
+
 async function extractDocumentText(buffer: Buffer, fileType: string) {
   if (fileType === 'application/pdf') {
     return extractTextFromPdf(buffer);
@@ -466,12 +494,20 @@ export async function createDocumentProcessingDraftFromUpload(params: {
   tripNumber?: string | null;
   filename: string;
   description?: string | null;
-  fileType: string;
+  fileType?: string | null;
   buffer?: Buffer | null;
+  sourcePath?: string | null;
 }) {
   await ensureDocumentProcessingTables();
 
-  const rawText = params.buffer ? await extractDocumentText(params.buffer, params.fileType) : '';
+  const { buffer, fileType } = await loadDocumentBinary({
+    buffer: params.buffer,
+    sourcePath: params.sourcePath,
+    filename: params.filename,
+    fileType: params.fileType,
+  });
+
+  const rawText = buffer ? await extractDocumentText(buffer, fileType) : '';
   const llmResult = rawText.trim()
     ? await classifyAndExtractWithLlm(rawText, params.filename, params.description).catch(() => null)
     : null;
@@ -479,7 +515,7 @@ export async function createDocumentProcessingDraftFromUpload(params: {
 
   let extractedData: DocumentDraftData = {};
   if (documentType === 'itinerary') {
-    extractedData = await extractItineraryDraft(params.buffer, params.fileType, rawText);
+    extractedData = await extractItineraryDraft(buffer, fileType, rawText);
   } else if (documentType === 'fuel') {
     extractedData = { ...parseFuelDraft(rawText, params.filename), ...(llmResult?.extracted_data || {}) };
   } else if (documentType === 'toll') {
