@@ -40,7 +40,7 @@ export default function PdfUploader({ onTripCreated }: { onTripCreated?: () => v
       const form = new FormData();
       form.append('file', file);
 
-      setMessage('Extracting trip data...');
+      setMessage('Extracting trip sheet data...');
       setStatus('extracting');
 
       const res = await fetch('/api/dispatch/upload', { method: 'POST', body: form });
@@ -127,7 +127,7 @@ export default function PdfUploader({ onTripCreated }: { onTripCreated?: () => v
             <div>
               <p className="text-xs font-black uppercase tracking-widest text-emerald-400">
                 {status === 'uploading' && 'Uploading document...'}
-                {status === 'extracting' && 'Extracting trip data...'}
+                {status === 'extracting' && 'Extracting trip sheet data...'}
                 {status === 'saving' && 'Saving trip...'}
               </p>
               <p className="text-[10px] text-zinc-500 mt-1">AI-powered extraction in progress</p>
@@ -141,7 +141,7 @@ export default function PdfUploader({ onTripCreated }: { onTripCreated?: () => v
                 Drop PDF or image here or click to upload
               </p>
               <p className="text-[10px] text-zinc-600 mt-1">
-                Driver itineraries and document images supported
+                Use this for trip sheets or itinerary images. Upload receipts inside a trip.
               </p>
             </div>
           </div>
