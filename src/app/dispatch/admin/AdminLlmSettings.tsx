@@ -6,9 +6,12 @@ type LlmSettings = {
   llm_primary: string;
   llm_minimax_model: string;
   llm_minimax_api_key: string;
+  llm_openrouter_vision_model: string;
+  llm_openrouter_api_key: string;
   llm_anthropic_api_key: string;
   llm_zai_api_key: string;
   llm_minimax_configured: string;
+  llm_openrouter_configured: string;
   llm_anthropic_configured: string;
   llm_zai_configured: string;
 };
@@ -79,7 +82,7 @@ export default function AdminLlmSettings() {
       {/* Primary Model Selector */}
       <div>
         <p className="text-xs uppercase font-black tracking-widest text-zinc-500 mb-3">Primary Extraction Model</p>
-        <p className="text-xs text-zinc-600 mb-4">This model runs first. If it fails, the others auto-retry as fallbacks.</p>
+        <p className="text-xs text-zinc-600 mb-4">This model runs first for text-based itinerary parsing. Scanned/image documents can separately use OpenRouter Vision.</p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {Object.entries(PROVIDER_LABELS).map(([key, info]) => {
             const active = primary === key;
@@ -120,7 +123,7 @@ export default function AdminLlmSettings() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-black text-purple-400">Minimax M2.7</p>
-              <p className="text-[10px] text-zinc-500">api.minimax.chat, independent Dispatch default</p>
+              <p className="text-[10px] text-zinc-500">api.minimax.io, independent Dispatch default</p>
             </div>
             <span className={`text-[10px] font-bold px-2 py-1 rounded-full ${isConfigured('minimax') ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>
               {isConfigured('minimax') ? 'Configured' : 'Not set'}
@@ -152,6 +155,47 @@ export default function AdminLlmSettings() {
               onChange={e => setForm(f => ({ ...f, llm_minimax_model: e.target.value }))}
               placeholder="MiniMax-M2.7"
               className="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-sm font-mono text-zinc-300 focus:outline-none focus:border-purple-500/60"
+            />
+          </div>
+        </div>
+
+        {/* OpenRouter Vision */}
+        <div className="bg-zinc-900/30 border border-zinc-800 rounded-2xl p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-black text-fuchsia-400">OpenRouter Vision</p>
+              <p className="text-[10px] text-zinc-500">Scanned/image document extraction only, not general app logic</p>
+            </div>
+            <span className={`text-[10px] font-bold px-2 py-1 rounded-full ${isConfigured('openrouter') ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>
+              {isConfigured('openrouter') ? 'Configured' : 'Not set'}
+            </span>
+          </div>
+          <div>
+            <label className="text-[10px] text-zinc-500 uppercase mb-1 block">API Key</label>
+            <div className="flex gap-2">
+              <input
+                type={showKeys['openrouter'] ? 'text' : 'password'}
+                value={form.llm_openrouter_api_key || ''}
+                onChange={e => setForm(f => ({ ...f, llm_openrouter_api_key: e.target.value }))}
+                placeholder="Paste OpenRouter API key (sk-or-...)"
+                className="flex-1 bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-sm font-mono text-zinc-300 focus:outline-none focus:border-fuchsia-500/60"
+              />
+              <button
+                onClick={() => setShowKeys(s => ({ ...s, openrouter: !s.openrouter }))}
+                className="px-3 py-2 text-xs text-zinc-500 hover:text-zinc-300 bg-zinc-900 border border-zinc-700 rounded-xl"
+              >
+                {showKeys['openrouter'] ? 'Hide' : 'Show'}
+              </button>
+            </div>
+          </div>
+          <div>
+            <label className="text-[10px] text-zinc-500 uppercase mb-1 block">Vision Model</label>
+            <input
+              type="text"
+              value={form.llm_openrouter_vision_model || ''}
+              onChange={e => setForm(f => ({ ...f, llm_openrouter_vision_model: e.target.value }))}
+              placeholder="qwen/qwen3-vl-32b-instruct"
+              className="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-sm font-mono text-zinc-300 focus:outline-none focus:border-fuchsia-500/60"
             />
           </div>
         </div>
