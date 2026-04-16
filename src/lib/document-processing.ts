@@ -18,9 +18,15 @@ import {
   type ParsedStop,
   type ParsedTrip,
 } from '@/lib/pdf-processing';
+import {
+  classifyDocumentWithValidation,
+  inferDocumentType,
+  normalizeDocumentType,
+  type DocumentDraftType,
+  type SmartIntakeLlmResult,
+} from '@/lib/document-classifier';
 
-export type DocumentDraftType = 'itinerary' | 'fuel' | 'toll' | 'reimbursement' | 'other' | 'receipt' | 'unknown';
-export type DocumentDraftStatus = 'processing' | 'needs_review' | 'ready' | 'saved' | 'error';
+export type DocumentDraftStatus = 'processing' | 'needs_review' | 'ready' | 'saved' | 'error' | 'ambiguous';
 
 export type DocumentDraftData = {
   date?: string | null;
@@ -89,6 +95,27 @@ function safeParseJson<T>(value: unknown, fallback: T): T {
 
 function toNumber(value: unknown) {
   if (value === null || value === undefined || value === '') return null;
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+
+    const parsedMoney = parseMoneyCandidate(trimmed);
+    if (parsedMoney !== null) return parsedMoney;
+
+    const normalized = trimmed
+      .replace(/[,\s](?=\d{3}(?:\D|$))/g, '')
+      .replace(/[^0-9.+-]/g, '');
+
+    if (!normalized || normalized === '.' || normalized === '+' || normalized === '-') return null;
+
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
@@ -106,37 +133,118 @@ function toIsoDate(year: number, month: number, day: number) {
   return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }
 
+function normalizeOcrNumerals(value: string) {
+  return value
+    .replace(/[Oo](?=\d)/g, '0')
+    .replace(/(?<=\d)[Oo]/g, '0')
+    .replace(/[Il|](?=\d)/g, '1')
+    .replace(/(?<=\d)[Il|]/g, '1')
+    .replace(/[Ss](?=\d)/g, '5')
+    .replace(/(?<=\d)[Ss]/g, '5');
+}
+
+function parseMoneyCandidate(raw: string) {
+  const normalizedRaw = normalizeOcrNumerals(raw)
+    .replace(/\s*[:;]\s*(?=\d{2}(?:\D|$))/g, '.')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!normalizedRaw) return null;
+
+  const decimalLike = /[.,:]\s*\d{2,3}(?:\D|$)/.test(normalizedRaw);
+  let token = normalizedRaw
+    .replace(/[^0-9.,\s-]/g, '')
+    .replace(/\s+/g, '')
+    .replace(/:(?=\d{2}(?:\D|$))/g, '.');
+
+  if (!token) return null;
+
+  if (token.includes(',') && token.includes('.')) {
+    const lastComma = token.lastIndexOf(',');
+    const lastDot = token.lastIndexOf('.');
+    const decimalSeparator = lastComma > lastDot ? ',' : '.';
+    const thousandsSeparator = decimalSeparator === '.' ? ',' : '.';
+    token = token.split(thousandsSeparator).join('');
+    if (decimalSeparator === ',') token = token.replace(',', '.');
+  } else if (token.includes(',')) {
+    if (/,\d{2,3}$/.test(token) && decimalLike) token = token.replace(',', '.');
+    else token = token.replace(/,/g, '');
+  }
+
+  token = token.replace(/(?!^)-/g, '');
+  if (!token || token === '.' || token === '-' || token === '-.') return null;
+
+  const parsed = Number(token);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  if (parsed > 100000) return null;
+  return parsed;
+}
+
 function parseDate(text: string) {
-  const numeric = text.match(/\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})\b/);
+  const normalized = normalizeOcrNumerals(text)
+    .replace(/(\d)\s*[\/.\-]\s*(\d)/g, '$1/$2')
+    .replace(/\s+/g, ' ');
+
+  const iso = normalized.match(/\b(20\d{2})[\/\-.](\d{1,2})[\/\-.](\d{1,2})\b/);
+  if (iso) {
+    return toIsoDate(Number(iso[1]), Number(iso[2]), Number(iso[3]));
+  }
+
+  const numeric = normalized.match(/\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})\b/);
   if (numeric) {
     const month = Number(numeric[1]);
     const day = Number(numeric[2]);
     const year = Number(numeric[3].length === 2 ? `20${numeric[3]}` : numeric[3]);
-    return toIsoDate(year, month, day);
+    const parsed = toIsoDate(year, month, day);
+    if (parsed) return parsed;
   }
 
-  const named = text.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2})(?:,)?\s+(\d{4})\b/i);
+  const named = normalized.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(\d{1,2})(?:,)?\s+(\d{2,4})\b/i);
   if (!named) return null;
 
   const months: Record<string, number> = {
     jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
     jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
   };
-  return toIsoDate(Number(named[3]), months[named[1].slice(0, 3).toLowerCase()] || 1, Number(named[2]));
+  const year = Number(named[3].length === 2 ? `20${named[3]}` : named[3]);
+  return toIsoDate(year, months[named[1].slice(0, 3).toLowerCase()] || 1, Number(named[2]));
 }
 
 function pickAmount(text: string) {
-  const labeled = [...text.matchAll(/(?:total|amount|grand total|sale|net)\s*[: ]\s*\$?\s*([0-9]+(?:\.[0-9]{2})?)/gi)]
-    .map((match) => Number(match[1]))
-    .filter((value) => Number.isFinite(value));
-  if (labeled.length > 0) return Math.max(...labeled);
+  const normalized = normalizeOcrNumerals(text)
+    .replace(/\s+/g, ' ')
+    .trim();
 
-  const currencyLike = [...text.matchAll(/\$\s*([0-9]+(?:\.[0-9]{2})?)/g)]
-    .map((match) => Number(match[1]))
-    .filter((value) => Number.isFinite(value) && value > 0);
-  if (currencyLike.length > 0) return Math.max(...currencyLike);
+  const numberPattern = /((?:USD|CAD|C\$|\$)\s*)?([0-9][0-9\s,.:;]{0,20}[0-9])/gi;
+  const candidates: Array<{ value: number; score: number }> = [];
 
-  return null;
+  for (const match of normalized.matchAll(numberPattern)) {
+    const numeric = parseMoneyCandidate(match[2]);
+    if (numeric === null) continue;
+
+    const start = Math.max(0, (match.index || 0) - 30);
+    const end = Math.min(normalized.length, (match.index || 0) + match[0].length + 30);
+    const context = normalized.slice(start, end).toLowerCase();
+
+    let score = 0;
+    if (/grand\s*total|total\s*(?:due|paid)?|amount\s*(?:due|paid)?|sale\s*total|net\s*amount|balance\s*due/.test(context)) score += 7;
+    else if (/\btotal\b|\bamount\b|\bdue\b|\bpaid\b/.test(context)) score += 4;
+    if (match[1] || /\b(?:usd|cad|c\$)\b|\$/.test(context)) score += 2;
+    if (/([.,:]\s*\d{2,3})(?:\D|$)/.test(match[2])) score += 2;
+    if (/price\s*(?:\/|per)?\s*(?:unit|gal|gallon|l|liter|litre)|\bppu\b|\/(?:gal|gallon|l|liter|litre)|\bodometer\b|\bgallons?\b|\bliters?\b|\blitres?\b|\bqty\b|\bquantity\b|\btax\s*rate\b/.test(context)) score -= 4;
+
+    candidates.push({ value: numeric, score });
+  }
+
+  if (candidates.length === 0) return null;
+
+  const bestScore = Math.max(...candidates.map((candidate) => candidate.score));
+  if (bestScore < 1) return null;
+
+  return candidates
+    .filter((candidate) => candidate.score === bestScore)
+    .map((candidate) => candidate.value)
+    .sort((a, b) => b - a)[0] || null;
 }
 
 function pickLocation(text: string, fallbackName: string) {
@@ -164,34 +272,22 @@ function sanitizeJsonResponse(content: string) {
     .trim();
 }
 
-function normalizeDocumentType(type: DocumentDraftType | string | null | undefined): DocumentDraftType {
-  if (type === 'dispatch_itinerary' || type === 'itinerary') return 'itinerary';
-  if (type === 'fuel_receipt') return 'fuel';
-  if (type === 'toll_receipt') return 'toll';
-  if (type === 'receipt') return 'other';
-  if (type === 'fuel' || type === 'toll' || type === 'reimbursement' || type === 'other' || type === 'unknown') return type;
-  return 'unknown';
-}
-
-const ITINERARY_EVENT_PATTERN = /\b(?:pickup|deliver|drop|hook|acquire|release|border crossing)\b/gi;
-const ITINERARY_CONTEXT_PATTERN = /\b(?:trip|itinerary|dispatch|driver|load|consignee|shipper|trailer|tractor|bol|pickup #|delivery #)\b/gi;
-const FUEL_SIGNAL_PATTERN = /\b(fuel|diesel|def|pump|gallons?|gal\b|liters?|litres?|odometer|price\s*(?:\/|per)?\s*(?:unit|gal|gallon|l|liter|litre)|ppu)\b/gi;
-const TOLL_SIGNAL_PATTERN = /\b(toll|ezpass|plate|bridge|407)\b/i;
-
 const TYPE_ALLOWED_FIELDS: Record<DocumentDraftType, string[]> = {
   itinerary: [
     'trip_number', 'start_date', 'end_date', 'total_miles', 'route', 'driver_name', 'lead_driver',
     'co_driver', 'truck_number', 'trailer_number', 'stops', 'raw_text', 'notes',
+    'classification_confidence', 'classification_rationale', 'classification_stage',
   ],
   fuel: [
     'date', 'location', 'gallons', 'liters', 'def_gallons', 'def_liters', 'def_amount_usd', 'def_price_per_unit',
     'price_per_unit', 'amount_usd', 'odometer', 'fuel_type', 'currency', 'name', 'category', 'notes', 'raw_text',
+    'classification_confidence', 'classification_rationale', 'classification_stage',
   ],
-  toll: ['date', 'location', 'amount_usd', 'currency', 'name', 'category', 'notes', 'raw_text'],
-  reimbursement: ['date', 'location', 'amount_usd', 'currency', 'name', 'category', 'notes', 'raw_text'],
-  other: ['date', 'location', 'amount_usd', 'currency', 'name', 'category', 'notes', 'raw_text'],
-  receipt: ['date', 'location', 'amount_usd', 'currency', 'name', 'category', 'notes', 'raw_text'],
-  unknown: ['raw_text', 'notes'],
+  toll: ['date', 'location', 'amount_usd', 'currency', 'name', 'category', 'notes', 'raw_text', 'classification_confidence', 'classification_rationale', 'classification_stage'],
+  reimbursement: ['date', 'location', 'amount_usd', 'currency', 'name', 'category', 'notes', 'raw_text', 'classification_confidence', 'classification_rationale', 'classification_stage'],
+  other: ['date', 'location', 'amount_usd', 'currency', 'name', 'category', 'notes', 'raw_text', 'classification_confidence', 'classification_rationale', 'classification_stage'],
+  receipt: ['date', 'location', 'amount_usd', 'currency', 'name', 'category', 'notes', 'raw_text', 'classification_confidence', 'classification_rationale', 'classification_stage'],
+  unknown: ['raw_text', 'notes', 'classification_confidence', 'classification_rationale', 'classification_stage'],
 };
 
 function isMeaningfulValue(value: unknown): boolean {
@@ -238,70 +334,6 @@ function normalizeByType(type: DocumentDraftType, data: DocumentDraftData): Docu
   }
 
   return normalized;
-}
-
-function hasItineraryStructure(haystack: string) {
-  if (/trip itinerary|driver trip itinerary|dispatch itinerary/.test(haystack)) return true;
-
-  const eventCount = haystack.match(ITINERARY_EVENT_PATTERN)?.length || 0;
-  const hasTripNumber = /\bt\d{4,}\b/.test(haystack);
-  const hasItineraryContext = (haystack.match(ITINERARY_CONTEXT_PATTERN)?.length || 0) >= 1;
-
-  if (hasTripNumber && eventCount >= 1) return true;
-  if (eventCount >= 2 && hasItineraryContext) return true;
-
-  return false;
-}
-
-function fuelSignalScore(haystack: string) {
-  return haystack.match(FUEL_SIGNAL_PATTERN)?.length || 0;
-}
-
-function shouldBiasToFuel(filename: string, description?: string | null, rawText?: string | null, llmExtractedData?: Record<string, unknown> | null) {
-  const haystack = `${filename} ${description || ''} ${rawText || ''}`.toLowerCase();
-  const itinerary = hasItineraryStructure(haystack);
-  const score = fuelSignalScore(haystack);
-  const hasFuelFieldHints = Boolean(llmExtractedData && (
-    isMeaningfulValue(llmExtractedData.gallons) ||
-    isMeaningfulValue(llmExtractedData.liters) ||
-    isMeaningfulValue(llmExtractedData.price_per_unit) ||
-    isMeaningfulValue(llmExtractedData.odometer) ||
-    isMeaningfulValue(llmExtractedData.def_gallons) ||
-    isMeaningfulValue(llmExtractedData.def_liters)
-  ));
-
-  return !itinerary && (score >= 2 || (score >= 1 && hasFuelFieldHints));
-}
-
-function resolveDocumentType(params: {
-  filename: string;
-  description?: string | null;
-  rawText?: string | null;
-  llmType?: string | null;
-  llmExtractedData?: Record<string, unknown> | null;
-}) {
-  const inferred = inferDocumentType(params.filename, params.description, params.rawText);
-  const llm = normalizeDocumentType(params.llmType);
-  let resolved = llm !== 'unknown' ? llm : inferred;
-
-  if (shouldBiasToFuel(params.filename, params.description, params.rawText, params.llmExtractedData)) {
-    if (resolved === 'unknown' || resolved === 'itinerary' || resolved === 'other' || resolved === 'receipt') {
-      resolved = 'fuel';
-    }
-  }
-
-  return resolved;
-}
-
-function inferDocumentType(filename: string, description?: string | null, rawText?: string | null): DocumentDraftType {
-  const haystack = `${filename} ${description || ''} ${rawText || ''}`.toLowerCase();
-  if (hasItineraryStructure(haystack)) return 'itinerary';
-  if (TOLL_SIGNAL_PATTERN.test(haystack) && fuelSignalScore(haystack) === 0) return 'toll';
-  if (fuelSignalScore(haystack) >= 1) return 'fuel';
-  if (TOLL_SIGNAL_PATTERN.test(haystack)) return 'toll';
-  if (/reimb|reimbursement|expense/.test(haystack)) return 'reimbursement';
-  if (/receipt|parking|scale|lumper|repair|wash/.test(haystack)) return 'other';
-  return 'unknown';
 }
 
 function parseFuelDraft(text: string, fallbackName: string): DocumentDraftData {
@@ -434,11 +466,6 @@ function draftDataToParsedTrip(data: DocumentDraftData): ParsedTrip {
   };
 }
 
-type SmartIntakeLlmResult = {
-  document_type?: string | null;
-  extracted_data?: Record<string, unknown> | null;
-};
-
 export type ModelTestProvider = 'auto' | 'minimax' | 'claude' | 'zai' | 'openrouter' | 'openrouter-vision' | 'regex';
 
 type ModelTestOptions = {
@@ -519,7 +546,7 @@ async function classifyAndExtractWithLlm(
   const cfg = await getLlmConfig();
   const selectedProvider = options?.provider || 'auto';
   const selectedModel = (options?.model || '').trim();
-  const system = `You classify trucking dispatch uploads and extract structured data. Return JSON only with this exact shape:\n{\n  "document_type": "dispatch_itinerary" | "fuel_receipt" | "toll_receipt" | "reimbursement" | "other",\n  "extracted_data": { ... }\n}\n\nRules:\n- Use dispatch_itinerary only for trip itinerary / load itinerary documents.\n- Use fuel_receipt, toll_receipt, reimbursement, or other for receipts and expense documents.\n- For receipts, extract only fields you can support from the text: date, location, gallons, liters, def_gallons, def_liters, def_amount_usd, def_price_per_unit, price_per_unit, amount_usd, odometer, fuel_type, currency, name, category, notes.\n- Do not decide where to save the document. Only classify and extract.`;
+  const system = `You classify trucking dispatch uploads and extract structured data. Return JSON only with this exact shape:\n{\n  "document_type": "dispatch_itinerary" | "fuel_receipt" | "toll_receipt" | "reimbursement" | "other",\n  "confidence": 0.0-1.0,\n  "rationale": "short reason",\n  "extracted_data": { ... }\n}\n\nRules:\n- Use dispatch_itinerary only for trip itinerary / load itinerary documents.\n- Use fuel_receipt, toll_receipt, reimbursement, or other for receipts and expense documents.\n- Fuel must have strong evidence (for example gallons/liters, odometer, price per unit, diesel/DEF line items). Avoid fuel if only weak keywords appear.\n- For receipts, extract only fields you can support from the text: date, location, gallons, liters, def_gallons, def_liters, def_amount_usd, def_price_per_unit, price_per_unit, amount_usd, odometer, fuel_type, currency, name, category, notes.\n- Do not decide where to save the document. Only classify and extract.`;
   const prompt = `Filename: ${filename}\nDescription: ${description || ''}\n\nDocument text:\n${rawText.slice(0, 12000)}`;
 
   const attempts = selectedProvider === 'auto'
@@ -596,17 +623,35 @@ async function extractItineraryDraft(
 }
 
 function getMissingFields(type: DocumentDraftType, data: DocumentDraftData) {
-  if (type === 'itinerary') {
-    return ['trip_number'].filter((field) => !data[field as keyof DocumentDraftData]);
-  }
-  if (type === 'fuel') {
-    return ['date', 'amount_usd', 'odometer'].filter((field) => !data[field as keyof DocumentDraftData]);
-  }
-  if (type === 'toll' || type === 'reimbursement' || type === 'other' || type === 'receipt') {
-    return ['date', 'amount_usd', 'name'].filter((field) => !data[field as keyof DocumentDraftData]);
-  }
-  return [];
+  const REQUIRED_FIELDS_BY_TYPE: Partial<Record<DocumentDraftType, Array<keyof DocumentDraftData>>> = {
+    itinerary: ['trip_number'],
+    fuel: ['date', 'amount_usd'],
+    toll: ['date', 'amount_usd'],
+    reimbursement: ['date', 'amount_usd'],
+    other: ['date', 'amount_usd'],
+    receipt: ['date', 'amount_usd'],
+  };
+
+  const hasValue = (field: keyof DocumentDraftData) => {
+    const value = data[field];
+    if (value === null || value === undefined) return false;
+    if (typeof value === 'number') return Number.isFinite(value);
+    if (typeof value === 'string') return value.trim().length > 0;
+    return true;
+  };
+
+  const required = REQUIRED_FIELDS_BY_TYPE[type] || [];
+  return required.filter((field) => !hasValue(field)).map((field) => String(field));
 }
+
+export const SMART_INTAKE_TEST_HELPERS = {
+  toNumber,
+  parseDate,
+  pickAmount,
+  getMissingFields,
+  inferDocumentType,
+  classifyDocumentWithValidation,
+};
 
 async function loadDocumentBinary(params: {
   buffer?: Buffer | null;
@@ -678,13 +723,13 @@ export async function generateDocumentProcessingPreview(params: {
     ? await classifyAndExtractWithLlm(rawText, params.filename, params.description, params.options).catch(() => null)
     : null;
 
-  let documentType = resolveDocumentType({
+  const classification = classifyDocumentWithValidation({
     filename: params.filename,
     description: params.description,
     rawText,
-    llmType: llmResult?.document_type,
-    llmExtractedData: llmResult?.extracted_data || null,
+    llm: llmResult,
   });
+  let documentType = classification.documentType;
   let extractedData: DocumentDraftData = {};
 
   if (documentType === 'itinerary') {
@@ -696,14 +741,19 @@ export async function generateDocumentProcessingPreview(params: {
   }
 
   if (!extractedData.raw_text && rawText) extractedData.raw_text = rawText.slice(0, 12000);
+  extractedData.classification_confidence = classification.confidence;
+  extractedData.classification_rationale = classification.rationale;
+  extractedData.classification_stage = classification.stage;
   extractedData = normalizeByType(documentType, extractedData);
 
   const missingFields = getMissingFields(documentType, extractedData);
-  const status: DocumentDraftStatus = documentType === 'unknown'
-    ? 'needs_review'
-    : missingFields.length === 0
-      ? 'ready'
-      : 'needs_review';
+  const status: DocumentDraftStatus = classification.askUserToConfirm
+    ? 'ambiguous'
+    : documentType === 'unknown'
+      ? 'needs_review'
+      : missingFields.length === 0
+        ? 'ready'
+        : 'needs_review';
 
   return {
     mode: 'dry-run' as const,
@@ -717,6 +767,8 @@ export async function generateDocumentProcessingPreview(params: {
       model: (params.options?.model || '').trim() || null,
       detectedFileType: loaded.fileType,
       usedLlmClassification: Boolean(llmResult),
+      classificationConfidence: classification.confidence,
+      classificationStage: classification.stage,
     },
   };
 }
@@ -795,13 +847,13 @@ export async function createDocumentProcessingDraftFromUpload(params: {
     const llmResult = rawText.trim()
       ? await classifyAndExtractWithLlm(rawText, params.filename, params.description).catch(() => null)
       : null;
-    documentType = resolveDocumentType({
+    const classification = classifyDocumentWithValidation({
       filename: params.filename,
       description: params.description,
       rawText,
-      llmType: llmResult?.document_type,
-      llmExtractedData: llmResult?.extracted_data || null,
+      llm: llmResult,
     });
+    documentType = classification.documentType;
 
     if (documentType === 'itinerary') {
       extractedData = await extractItineraryDraft(loaded.buffer, loaded.fileType, rawText);
@@ -812,14 +864,19 @@ export async function createDocumentProcessingDraftFromUpload(params: {
     }
 
     if (!extractedData.raw_text && rawText) extractedData.raw_text = rawText.slice(0, 12000);
+    extractedData.classification_confidence = classification.confidence;
+    extractedData.classification_rationale = classification.rationale;
+    extractedData.classification_stage = classification.stage;
     extractedData = normalizeByType(documentType, extractedData);
 
     missingFields = getMissingFields(documentType, extractedData);
-    status = documentType === 'unknown'
-      ? 'needs_review'
-      : missingFields.length === 0
-        ? 'ready'
-        : 'needs_review';
+    status = classification.askUserToConfirm
+      ? 'ambiguous'
+      : documentType === 'unknown'
+        ? 'needs_review'
+        : missingFields.length === 0
+          ? 'ready'
+          : 'needs_review';
   } catch (error: any) {
     documentType = normalizeDocumentType(inferDocumentType(params.filename, params.description, null));
     status = 'error';

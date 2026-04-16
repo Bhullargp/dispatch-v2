@@ -16,7 +16,7 @@ import {
 } from '@/lib/upload-file-types';
 
 type UploadStatus = 'idle' | 'uploading' | 'saving' | 'done' | 'error';
-type DraftStatus = 'processing' | 'needs_review' | 'ready' | 'saved' | 'error';
+type DraftStatus = 'processing' | 'needs_review' | 'ready' | 'saved' | 'error' | 'ambiguous';
 type DraftType = 'itinerary' | 'fuel' | 'toll' | 'reimbursement' | 'other' | 'receipt' | 'unknown';
 
 type UploadDraft = {
@@ -35,6 +35,11 @@ type UploadDraft = {
   file_key?: string | null;
   url: string | null;
   sourceUrl: string | null;
+};
+
+type RetryNotice = {
+  tone: 'info' | 'success' | 'error';
+  text: string;
 };
 
 type FieldConfig = {
@@ -159,6 +164,7 @@ function formatFieldLabel(key: string) {
 
 function friendlyStatus(status: DraftStatus) {
   if (status === 'needs_review') return 'needs review';
+  if (status === 'ambiguous') return 'needs type confirmation';
   return status;
 }
 
@@ -180,6 +186,31 @@ function getReviewFields(type: DraftType): FieldConfig[] {
     ? type
     : 'other') as 'fuel' | 'toll' | 'reimbursement' | 'other';
   return [...BASE_RECEIPT_FIELDS, ...RECEIPT_FIELDS[normalizedType]];
+}
+
+const TYPE_ALLOWED_KEYS: Record<DraftType, string[]> = {
+  itinerary: [
+    'trip_number', 'start_date', 'end_date', 'total_miles', 'route', 'driver_name', 'lead_driver',
+    'co_driver', 'truck_number', 'trailer_number', 'stops', 'raw_text', 'notes',
+  ],
+  fuel: [
+    'date', 'location', 'gallons', 'liters', 'def_gallons', 'def_liters', 'def_amount_usd', 'def_price_per_unit',
+    'price_per_unit', 'amount_usd', 'odometer', 'fuel_type', 'currency', 'name', 'category', 'notes', 'raw_text',
+  ],
+  toll: ['date', 'location', 'amount_usd', 'currency', 'name', 'category', 'notes', 'raw_text'],
+  reimbursement: ['date', 'location', 'amount_usd', 'currency', 'name', 'category', 'notes', 'raw_text'],
+  other: ['date', 'location', 'amount_usd', 'currency', 'name', 'category', 'notes', 'raw_text'],
+  receipt: ['date', 'location', 'amount_usd', 'currency', 'name', 'category', 'notes', 'raw_text'],
+  unknown: ['raw_text', 'notes'],
+};
+
+function sanitizeByType(type: DraftType, values: Record<string, any>) {
+  const allowed = TYPE_ALLOWED_KEYS[type] || TYPE_ALLOWED_KEYS.unknown;
+  const next: Record<string, any> = {};
+  for (const key of allowed) {
+    if (key in values) next[key] = values[key];
+  }
+  return next;
 }
 
 function formatTripOption(trip: TripOption) {
@@ -287,6 +318,9 @@ export default function PdfUploader({
   const [draftEdits, setDraftEdits] = useState<Record<string, any>>({});
   const [assignedTripNumber, setAssignedTripNumber] = useState<string>('');
   const [retryingDraft, setRetryingDraft] = useState(false);
+  const [retrySource, setRetrySource] = useState<'manual' | 'process-again' | null>(null);
+  const [retryNotice, setRetryNotice] = useState<RetryNotice | null>(null);
+  const retryAbortRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const orderedTrips = useMemo(() => {
@@ -300,12 +334,29 @@ export default function PdfUploader({
 
   const activeType = ((draftEdits.document_type || reviewDraft?.document_type || 'other') as DraftType);
   const activeValues = reviewDraft
-    ? { ...(reviewDraft.extracted_data || {}), ...draftEdits }
+    ? sanitizeByType(activeType, { ...(reviewDraft.extracted_data || {}), ...draftEdits })
     : {};
   const reviewFields = getReviewFields(activeType);
   const requiresTripAssignment = !!reviewDraft && activeType !== 'itinerary';
   const showTypeSummary = activeType === 'fuel' || activeType === 'toll' || activeType === 'reimbursement' || activeType === 'other' || activeType === 'receipt';
   const typeSummary = buildTypeSummary(activeType, activeValues);
+  const showCorrectionPrompt = !!reviewDraft && reviewDraft.status === 'ambiguous';
+
+  const completeRetry = useCallback(() => {
+    if (retrySource === 'process-again') onProcessAgainComplete?.();
+    setRetrySource(null);
+  }, [onProcessAgainComplete, retrySource]);
+
+  const cancelActiveRetry = useCallback((notice?: RetryNotice) => {
+    if (retryAbortRef.current) {
+      retryAbortRef.current.abort();
+      retryAbortRef.current = null;
+    }
+    setRetryingDraft(false);
+    setStatus((current) => (current === 'saving' ? 'done' : current));
+    if (notice) setRetryNotice(notice);
+    completeRetry();
+  }, [completeRetry]);
 
   const updateDraftField = useCallback((field: string, value: any) => {
     setDraftEdits((current) => ({
@@ -317,6 +368,54 @@ export default function PdfUploader({
   const resetFileInput = () => {
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
+
+  const attemptAutoRoute = useCallback(async (nextDraft: UploadDraft) => {
+    if (nextDraft.status !== 'ready') return false;
+
+    const documentType = nextDraft.document_type;
+    const selectedTrip = documentType === 'itinerary'
+      ? null
+      : nextDraft.trip_number || orderedTrips[0]?.trip_number || null;
+
+    if (documentType !== 'itinerary' && !selectedTrip) return false;
+
+    setStatus('saving');
+    setMessage('Confident match detected, routing automatically...');
+    try {
+      const extractedData = sanitizeByType(documentType, { ...(nextDraft.extracted_data || {}) });
+      const res = await fetch('/api/dispatch/document-processing/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          draftId: nextDraft.id,
+          tripNumber: selectedTrip,
+          documentType,
+          extractedData,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Could not auto-route document');
+
+      const resolvedTripNumber = data?.tripNumber || selectedTrip || nextDraft.trip_number || null;
+      setTripNumber(resolvedTripNumber);
+      setReviewDraft(null);
+      setDraftEdits({});
+      setAssignedTripNumber('');
+      setStatus('done');
+      setMessage(buildSuccessMessage({
+        documentType,
+        linkedRecordType: data?.linkedRecordType,
+        linkedRecordId: data?.linkedRecordId,
+        tripNumber: resolvedTripNumber,
+      }));
+      onTripCreated?.();
+      return true;
+    } catch (error: any) {
+      setStatus('error');
+      setMessage(error?.message || 'Could not auto-route document');
+      return false;
+    }
+  }, [onTripCreated, orderedTrips]);
 
   const upload = useCallback(async (file: File) => {
     if (!isSupportedDocumentUpload(file)) {
@@ -340,11 +439,16 @@ export default function PdfUploader({
 
       if (data?.processingDraft) {
         const nextDraft = data.processingDraft as UploadDraft;
-        setReviewDraft(nextDraft);
-        setDraftEdits({ ...(nextDraft.extracted_data || {}), document_type: nextDraft.document_type });
-        setAssignedTripNumber(nextDraft.trip_number || orderedTrips[0]?.trip_number || '');
-        setStatus('done');
-        setMessage(`Uploaded ${file.name}. Review the extracted ${nextDraft.document_type === 'itinerary' ? 'trip' : 'receipt'} details below before confirming.`);
+        const autoRouted = await attemptAutoRoute(nextDraft);
+        if (!autoRouted) {
+          setReviewDraft(nextDraft);
+          setDraftEdits({ ...sanitizeByType(nextDraft.document_type, nextDraft.extracted_data || {}), document_type: nextDraft.document_type });
+          setAssignedTripNumber(nextDraft.trip_number || orderedTrips[0]?.trip_number || '');
+          setStatus('done');
+          setMessage(nextDraft.status === 'ambiguous'
+            ? 'Low confidence classification detected. Quick correction prompt opened.'
+            : `Uploaded ${file.name}. Review extracted ${nextDraft.document_type === 'itinerary' ? 'trip' : 'receipt'} details before confirming.`);
+        }
       } else {
         setStatus('done');
         setMessage('Upload accepted. Smart intake did not return a review draft yet.');
@@ -355,7 +459,7 @@ export default function PdfUploader({
     } finally {
       resetFileInput();
     }
-  }, [orderedTrips]);
+  }, [attemptAutoRoute, orderedTrips]);
 
   const saveDraft = useCallback(async () => {
     if (!reviewDraft) return;
@@ -375,7 +479,7 @@ export default function PdfUploader({
     setMessage(null);
 
     try {
-      const extractedData = { ...(reviewDraft.extracted_data || {}), ...draftEdits };
+      const extractedData = sanitizeByType(documentType, { ...(reviewDraft.extracted_data || {}), ...draftEdits });
       const res = await fetch('/api/dispatch/document-processing/confirm', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -410,83 +514,112 @@ export default function PdfUploader({
   const retryDraftProcessing = useCallback(async () => {
     if (!reviewDraft) return;
 
+    cancelActiveRetry();
+    const controller = new AbortController();
+    retryAbortRef.current = controller;
+    setRetrySource('manual');
     setRetryingDraft(true);
     setStatus('saving');
     setMessage('Retrying smart intake extraction from stored file...');
+    setRetryNotice({ tone: 'info', text: 'Retry is running. You can close this modal anytime.' });
+
     try {
       const res = await fetch('/api/dispatch/document-processing/retry', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ draftId: reviewDraft.id }),
+        signal: controller.signal,
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || 'Could not retry document processing');
 
       if (data?.draft) {
         const nextDraft = data.draft as UploadDraft;
-        setReviewDraft(nextDraft);
-        setDraftEdits({ ...(nextDraft.extracted_data || {}), document_type: nextDraft.document_type });
-        setAssignedTripNumber(nextDraft.trip_number || orderedTrips[0]?.trip_number || '');
+        const autoRouted = await attemptAutoRoute(nextDraft);
+        if (!autoRouted) {
+          setReviewDraft(nextDraft);
+          setDraftEdits({ ...sanitizeByType(nextDraft.document_type, nextDraft.extracted_data || {}), document_type: nextDraft.document_type });
+          setAssignedTripNumber(nextDraft.trip_number || orderedTrips[0]?.trip_number || '');
+          setStatus('done');
+          setMessage(nextDraft.status === 'ambiguous'
+            ? 'Retry complete. Low confidence classification needs a quick correction.'
+            : 'Retry complete. Review extracted details and confirm.');
+        }
       }
 
-      setStatus('done');
-      setMessage('Retry complete. Review extracted details and confirm.');
+      setRetryNotice({ tone: 'success', text: 'Retry finished.' });
     } catch (error: any) {
+      if (error?.name === 'AbortError') {
+        setRetryNotice({ tone: 'info', text: 'Retry cancelled.' });
+        return;
+      }
       setStatus('error');
       setMessage(error?.message || 'Could not retry document processing');
+      setRetryNotice({ tone: 'error', text: 'Retry failed.' });
     } finally {
+      if (retryAbortRef.current === controller) retryAbortRef.current = null;
       setRetryingDraft(false);
+      completeRetry();
     }
-  }, [orderedTrips, reviewDraft]);
+  }, [attemptAutoRoute, cancelActiveRetry, completeRetry, orderedTrips, reviewDraft]);
 
   React.useEffect(() => {
     if (!processAgainRequest?.draftId) return;
 
-    let cancelled = false;
+    const controller = new AbortController();
+    retryAbortRef.current = controller;
+    setRetrySource('process-again');
+    setRetryingDraft(true);
+    setStatus('saving');
+    setMessage('Retrying smart intake extraction from stored file...');
+    setRetryNotice({ tone: 'info', text: 'Process Again is running in background. You can close the modal.' });
 
     const run = async () => {
-      setRetryingDraft(true);
-      setStatus('saving');
-      setMessage('Retrying smart intake extraction from stored file...');
-
       try {
         const res = await fetch('/api/dispatch/document-processing/retry', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ draftId: processAgainRequest.draftId }),
+          signal: controller.signal,
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data?.error || 'Could not retry document processing');
 
-        if (!cancelled && data?.draft) {
+        if (data?.draft) {
           const nextDraft = data.draft as UploadDraft;
-          setReviewDraft(nextDraft);
-          setDraftEdits({ ...(nextDraft.extracted_data || {}), document_type: nextDraft.document_type });
-          setAssignedTripNumber(nextDraft.trip_number || orderedTrips[0]?.trip_number || '');
+          const autoRouted = await attemptAutoRoute(nextDraft);
+          if (!autoRouted) {
+            setReviewDraft(nextDraft);
+            setDraftEdits({ ...sanitizeByType(nextDraft.document_type, nextDraft.extracted_data || {}), document_type: nextDraft.document_type });
+            setAssignedTripNumber(nextDraft.trip_number || orderedTrips[0]?.trip_number || '');
+            setStatus('done');
+            setMessage(nextDraft.status === 'ambiguous'
+              ? 'Retry complete. Low confidence classification needs a quick correction.'
+              : 'Retry complete. Review extracted details and confirm.');
+          }
         }
 
-        if (!cancelled) {
-          setStatus('done');
-          setMessage('Retry complete. Review extracted details and confirm.');
-        }
+        setRetryNotice({ tone: 'success', text: 'Process Again completed.' });
       } catch (error: any) {
-        if (!cancelled) {
-          setStatus('error');
-          setMessage(error?.message || 'Could not retry document processing');
+        if (error?.name === 'AbortError') {
+          setRetryNotice({ tone: 'info', text: 'Process Again cancelled.' });
+          return;
         }
+        setStatus('error');
+        setMessage(error?.message || 'Could not retry document processing');
+        setRetryNotice({ tone: 'error', text: 'Process Again failed.' });
       } finally {
-        if (!cancelled) {
-          setRetryingDraft(false);
-          onProcessAgainComplete?.();
-        }
+        if (retryAbortRef.current === controller) retryAbortRef.current = null;
+        setRetryingDraft(false);
+        completeRetry();
       }
     };
 
     run();
     return () => {
-      cancelled = true;
+      controller.abort();
     };
-  }, [onProcessAgainComplete, orderedTrips, processAgainRequest?.draftId, processAgainRequest?.requestId]);
+  }, [attemptAutoRoute, completeRetry, orderedTrips, processAgainRequest?.draftId, processAgainRequest?.requestId]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -511,6 +644,14 @@ export default function PdfUploader({
 
   const isProcessing = status === 'uploading' || status === 'saving' || retryingDraft;
   const extraFieldKeys = Object.keys(activeValues).filter((key) => !reviewFields.some((field) => field.key === key) && key !== 'document_type');
+
+  const handleReviewDialogChange = (open: boolean) => {
+    if (open) return;
+    setReviewDraft(null);
+    if (retryingDraft) {
+      cancelActiveRetry({ tone: 'info', text: 'Processing cancelled. Re-run Process Again anytime.' });
+    }
+  };
 
   return (
     <div className="w-full space-y-3">
@@ -589,7 +730,28 @@ export default function PdfUploader({
         </div>
       )}
 
-      <Dialog open={!!reviewDraft} onOpenChange={(open) => !open && setReviewDraft(null)}>
+      {retryNotice && (
+        <div className={`rounded-xl border p-3 text-xs ${
+          retryNotice.tone === 'error'
+            ? 'border-red-700/40 bg-red-950/20 text-red-200'
+            : retryNotice.tone === 'success'
+              ? 'border-emerald-700/40 bg-emerald-950/20 text-emerald-200'
+              : 'border-zinc-700 bg-zinc-900/70 text-zinc-200'
+        }`}>
+          <div className="flex items-center justify-between gap-3">
+            <span>{retryNotice.text}</span>
+            <button
+              type="button"
+              onClick={() => setRetryNotice(null)}
+              className="rounded-md border border-zinc-600 px-2 py-1 text-[10px] font-black uppercase tracking-[0.15em] text-zinc-300 hover:bg-zinc-800"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
+      <Dialog open={!!reviewDraft} onOpenChange={handleReviewDialogChange}>
         {reviewDraft && (
           <DialogContent className="w-[min(96vw,1280px)] max-w-none border-zinc-800 bg-zinc-950 p-0 text-white shadow-2xl">
             <div className="flex h-[min(92vh,900px)] min-h-[620px] flex-col overflow-hidden max-sm:h-[94vh] max-sm:min-h-0">
@@ -691,18 +853,32 @@ export default function PdfUploader({
                       )}
 
                       <div className="grid gap-3 md:grid-cols-2">
-                        <label className="space-y-1 md:col-span-2">
-                          <span className="text-[11px] uppercase tracking-[0.24em] text-zinc-500">Document type</span>
-                          <select
-                            value={TYPE_OPTIONS.some((option) => option.value === activeType) ? activeType : 'other'}
-                            onChange={(event) => updateDraftField('document_type', event.target.value)}
-                            className="w-full rounded-xl border border-zinc-800 bg-black/40 px-3 py-3 text-sm font-mono outline-none focus:border-emerald-500"
-                          >
-                            {TYPE_OPTIONS.map((option) => (
-                              <option key={option.value} value={option.value}>{option.label}</option>
-                            ))}
-                          </select>
-                        </label>
+                        <div className="space-y-2 md:col-span-2">
+                          <span className="text-[11px] uppercase tracking-[0.24em] text-zinc-500">
+                            {showCorrectionPrompt ? 'Correction prompt' : 'Detected document type'}
+                          </span>
+
+                          {showCorrectionPrompt ? (
+                            <>
+                              <select
+                                value={TYPE_OPTIONS.some((option) => option.value === activeType) ? activeType : 'other'}
+                                onChange={(event) => updateDraftField('document_type', event.target.value)}
+                                className="w-full rounded-xl border border-amber-700/50 bg-amber-950/20 px-3 py-3 text-sm font-mono outline-none focus:border-amber-500"
+                              >
+                                {TYPE_OPTIONS.map((option) => (
+                                  <option key={option.value} value={option.value}>{option.label}</option>
+                                ))}
+                              </select>
+                              <p className="text-xs text-amber-200/80">
+                                Classifier confidence was low or conflicted with rules, so this quick correction is shown.
+                              </p>
+                            </>
+                          ) : (
+                            <div className="rounded-xl border border-zinc-800 bg-black/40 px-3 py-3 text-sm font-semibold text-zinc-200">
+                              {getTypeDetails(activeType).label}
+                            </div>
+                          )}
+                        </div>
 
                         {requiresTripAssignment && (
                           <label className="space-y-1 md:col-span-2">
@@ -795,7 +971,7 @@ export default function PdfUploader({
                   <div className="sticky bottom-0 border-t border-zinc-800 bg-zinc-950/95 px-4 py-3 backdrop-blur sm:px-5 sm:py-4 xl:px-6">
                     <div className="flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-end">
                       <button
-                        onClick={() => setReviewDraft(null)}
+                        onClick={() => handleReviewDialogChange(false)}
                         className="w-full rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-3 text-xs font-black uppercase tracking-[0.2em] text-zinc-200 transition-all hover:bg-zinc-800 sm:w-auto"
                       >
                         Close

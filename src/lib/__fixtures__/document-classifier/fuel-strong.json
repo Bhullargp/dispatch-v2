@@ -1,0 +1,23 @@
+{
+  "name": "strong fuel receipt",
+  "input": {
+    "filename": "pilot-receipt.jpg",
+    "description": "fuel stop",
+    "rawText": "PILOT TRAVEL CENTER\nDiesel #2\n58.23 GAL @ $4.129/GAL\nODOMETER 542881\nTOTAL $240.56"
+  },
+  "llm": {
+    "document_type": "fuel_receipt",
+    "confidence": 0.94,
+    "rationale": "Contains diesel gallons, unit price, and odometer",
+    "extracted_data": {
+      "gallons": 58.23,
+      "price_per_unit": 4.129,
+      "odometer": 542881
+    }
+  },
+  "expected": {
+    "documentType": "fuel",
+    "stage": "clear",
+    "askUserToConfirm": false
+  }
+}

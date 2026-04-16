@@ -1,0 +1,21 @@
+{
+  "name": "toll should beat weak fuel keyword",
+  "input": {
+    "filename": "receipt-fuel-card.png",
+    "description": "quick upload",
+    "rawText": "OHIO TURNPIKE\nTOLL RECEIPT\nEntry Plaza\nAmount Paid $37.50\nEZ PASS"
+  },
+  "llm": {
+    "document_type": "fuel_receipt",
+    "confidence": 0.78,
+    "rationale": "Receipt mentions card transaction",
+    "extracted_data": {
+      "amount_usd": 37.5
+    }
+  },
+  "expected": {
+    "documentType": "toll",
+    "stage": "clear",
+    "askUserToConfirm": false
+  }
+}

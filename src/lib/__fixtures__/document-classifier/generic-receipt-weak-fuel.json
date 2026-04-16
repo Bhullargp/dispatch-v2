@@ -1,0 +1,21 @@
+{
+  "name": "generic receipt with weak fuel keyword only",
+  "input": {
+    "filename": "receipt.jpg",
+    "description": "fuel maybe",
+    "rawText": "STORE RECEIPT\nSnacks and drinks\nSubtotal 18.40\nTax 1.60\nTotal 20.00"
+  },
+  "llm": {
+    "document_type": "fuel_receipt",
+    "confidence": 0.65,
+    "rationale": "User description included fuel",
+    "extracted_data": {
+      "amount_usd": 20
+    }
+  },
+  "expected": {
+    "documentType": "other",
+    "stage": "ambiguous",
+    "askUserToConfirm": true
+  }
+}

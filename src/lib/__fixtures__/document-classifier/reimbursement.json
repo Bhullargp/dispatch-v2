@@ -1,0 +1,22 @@
+{
+  "name": "reimbursement receipt",
+  "input": {
+    "filename": "hotel-expense.pdf",
+    "description": "out of pocket",
+    "rawText": "Holiday Inn\nExpense Report\nHotel reimbursement\nDate 03/02/2026\nTotal USD 129.44"
+  },
+  "llm": {
+    "document_type": "reimbursement",
+    "confidence": 0.87,
+    "rationale": "Explicit reimbursement and hotel expense",
+    "extracted_data": {
+      "amount_usd": 129.44,
+      "name": "Hotel"
+    }
+  },
+  "expected": {
+    "documentType": "reimbursement",
+    "stage": "clear",
+    "askUserToConfirm": false
+  }
+}

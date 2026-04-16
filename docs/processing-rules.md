@@ -22,6 +22,15 @@ This app should not rely on external chat memory to understand how DM Transport 
 - Preferred matching order: explicit linked fuel entry, then date + location, then odometer, then litres/gallons, then weaker fallback.
 - Target behavior is 1 fuel entry ↔ 1 receipt document.
 
+## Toll, expense, and reimbursement receipt rules
+- These workflows should follow the same app-owned matching logic as fuel receipts.
+- Never attach a toll, expense, or reimbursement receipt just because a trip is currently open or was edited most recently.
+- First match to the correct trip by date range.
+- Then use stronger signals when available, such as location, vendor, amount, odometer, vehicle/trailer context, litres/gallons, or explicit linkage.
+- Preserve the original receipt evidence and also store structured fields exactly as provided or extracted.
+- One trip can have many receipts across different categories, and each receipt should map to the correct entry or expense record when possible.
+- Re-uploads or corrected uploads should update linkage/fields instead of being blocked as duplicates.
+
 ## Envelope PDF rules
 - Exclude border crossings unless explicitly requested.
 - Trailer timeline follows actual hook/drop progression.

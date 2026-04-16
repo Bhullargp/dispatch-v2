@@ -9,7 +9,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 
-type DraftStatus = 'processing' | 'needs_review' | 'ready' | 'saved' | 'error';
+type DraftStatus = 'processing' | 'needs_review' | 'ready' | 'saved' | 'error' | 'ambiguous';
 type DraftType = 'itinerary' | 'fuel' | 'toll' | 'reimbursement' | 'other' | 'receipt' | 'unknown';
 
 type Draft = {
@@ -146,6 +146,7 @@ function statusTone(status: DraftStatus) {
 
 function friendlyStatus(status: DraftStatus) {
   if (status === 'needs_review') return 'needs review';
+  if (status === 'ambiguous') return 'needs type confirmation';
   return status;
 }
 
@@ -236,7 +237,7 @@ export default function TripDocumentProcessingPanel({
   const [savingId, setSavingId] = useState<number | null>(null);
   const [panelMessage, setPanelMessage] = useState<string | null>(null);
   const [panelError, setPanelError] = useState<string | null>(null);
-  const [selectedType, setSelectedType] = useState<DraftType>('fuel');
+  const [uploadTypeHint, setUploadTypeHint] = useState<'auto' | DraftType>('auto');
   const [draftEdits, setDraftEdits] = useState<Record<number, Record<string, any>>>({});
   const [reviewDraftId, setReviewDraftId] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -313,7 +314,12 @@ export default function TripDocumentProcessingPanel({
       const form = new FormData();
       form.append('file', file);
       form.append('tripNumber', tripNumber);
-      form.append('description', getTypeDetails(selectedType).label);
+      form.append(
+        'description',
+        uploadTypeHint === 'auto'
+          ? 'Smart intake upload'
+          : `Smart intake upload (manual type hint: ${getTypeDetails(uploadTypeHint).label})`
+      );
 
       const res = await fetch('/api/dispatch/documents', { method: 'POST', body: form });
       const data = await res.json();
@@ -328,7 +334,7 @@ export default function TripDocumentProcessingPanel({
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
-  }, [loadDrafts, selectedType, tripNumber]);
+  }, [loadDrafts, tripNumber, uploadTypeHint]);
 
   const updateDraftField = (draftId: number, field: string, value: any) => {
     setDraftEdits((current) => ({
@@ -388,10 +394,11 @@ export default function TripDocumentProcessingPanel({
 
         <div className="flex flex-wrap gap-2 items-center">
           <select
-            value={selectedType}
-            onChange={(event) => setSelectedType(event.target.value as DraftType)}
+            value={uploadTypeHint}
+            onChange={(event) => setUploadTypeHint(event.target.value as 'auto' | DraftType)}
             className="bg-black/40 border border-zinc-800 rounded-xl px-3 py-2 text-xs font-mono outline-none focus:border-emerald-500"
           >
+            <option value="auto">Auto-detect type (recommended)</option>
             {TYPE_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>{option.label}</option>
             ))}

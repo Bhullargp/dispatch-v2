@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "check:phase6": "node scripts/phase6-manual-checks.mjs"
+    "check:phase6": "node scripts/phase6-manual-checks.mjs",
+    "check:smart-intake": "npx --yes tsx scripts/smart-intake-deterministic-check.ts",
+    "test:classifier": "npx --yes tsx --test src/lib/document-classifier.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.86.1",

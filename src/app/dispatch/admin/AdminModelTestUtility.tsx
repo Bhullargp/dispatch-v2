@@ -21,6 +21,8 @@ type PreviewResponse = {
     model: string | null;
     detectedFileType: string;
     usedLlmClassification: boolean;
+    classificationConfidence?: number;
+    classificationStage?: 'clear' | 'ambiguous';
   };
 };
 
@@ -214,7 +216,21 @@ export default function AdminModelTestUtility() {
             <span className="px-2 py-1 rounded-lg bg-zinc-800 text-zinc-300">status: {preview.status}</span>
             <span className="px-2 py-1 rounded-lg bg-zinc-800 text-zinc-300">provider: {preview.meta.provider}</span>
             <span className="px-2 py-1 rounded-lg bg-zinc-800 text-zinc-300">mime: {preview.meta.detectedFileType}</span>
+            {typeof preview.meta.classificationConfidence === 'number' && (
+              <span className="px-2 py-1 rounded-lg bg-zinc-800 text-zinc-300">
+                confidence: {(preview.meta.classificationConfidence * 100).toFixed(0)}%
+              </span>
+            )}
+            {preview.meta.classificationStage && (
+              <span className={`px-2 py-1 rounded-lg ${preview.meta.classificationStage === 'ambiguous' ? 'bg-amber-900/40 text-amber-200' : 'bg-emerald-900/40 text-emerald-200'}`}>
+                stage: {preview.meta.classificationStage}
+              </span>
+            )}
           </div>
+
+          {preview.meta.classificationStage === 'ambiguous' && (
+            <p className="text-xs text-amber-300">Low-confidence/conflict classification, correction prompt should appear in upload review.</p>
+          )}
 
           {preview.missingFields.length > 0 && (
             <p className="text-xs text-amber-300">Missing fields: {preview.missingFields.join(', ')}</p>

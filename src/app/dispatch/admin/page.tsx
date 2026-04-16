@@ -78,6 +78,7 @@ export default async function AdminInspectionPage() {
     saved: 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30',
     ready: 'bg-cyan-500/15 text-cyan-400 border border-cyan-500/30',
     needs_review: 'bg-amber-500/15 text-amber-400 border border-amber-500/30',
+    ambiguous: 'bg-orange-500/15 text-orange-300 border border-orange-500/30',
     processing: 'bg-blue-500/15 text-blue-400 border border-blue-500/30',
     error: 'bg-red-500/15 text-red-400 border border-red-500/30',
   };
@@ -244,7 +245,11 @@ export default async function AdminInspectionPage() {
                   <td className="font-mono text-xs text-zinc-400">{job.document_type || 'unknown'}</td>
                   <td>
                     <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${docStatusColors[job.status] || 'bg-zinc-800 text-zinc-400'}`}>
-                      {job.status === 'needs_review' ? 'needs review' : job.status}
+                      {job.status === 'needs_review'
+                        ? 'needs review'
+                        : job.status === 'ambiguous'
+                          ? 'needs type confirmation'
+                          : job.status}
                     </span>
                   </td>
                   <td className="font-mono text-xs text-emerald-500">{job.trip_number || '—'}</td>
