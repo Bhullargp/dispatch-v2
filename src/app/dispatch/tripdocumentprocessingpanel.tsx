@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 type DraftStatus = 'processing' | 'needs_review' | 'ready' | 'saved' | 'error';
-type DraftType = 'fuel' | 'toll' | 'receipt' | 'unknown';
+type DraftType = 'fuel' | 'toll' | 'reimbursement' | 'other' | 'receipt' | 'unknown';
 
 type Draft = {
   id: number;
@@ -24,7 +24,8 @@ type Draft = {
 const TYPE_OPTIONS: Array<{ value: DraftType; label: string }> = [
   { value: 'fuel', label: 'Fuel receipt' },
   { value: 'toll', label: 'Toll receipt' },
-  { value: 'receipt', label: 'Other receipt' },
+  { value: 'reimbursement', label: 'Reimbursement receipt' },
+  { value: 'other', label: 'Other receipt' },
 ];
 
 function statusTone(status: DraftStatus) {
@@ -134,8 +135,8 @@ export default function TripDocumentProcessingPanel({
       if (!res.ok) throw new Error(data?.error || 'Could not save document');
 
       const successMessage = documentType === 'fuel'
-        ? 'Fuel entry created and receipt linked.'
-        : 'Expense created and receipt linked.';
+        ? `Fuel entry #${data?.linkedRecordId} created and receipt linked.`
+        : `Expense #${data?.linkedRecordId} created and receipt linked.`;
       setPanelMessage(successMessage);
       onSaved?.(successMessage);
       await loadDrafts();
@@ -206,7 +207,8 @@ export default function TripDocumentProcessingPanel({
         <div className="space-y-4">
           {drafts.map((draft) => {
             const values = { ...(draft.extracted_data || {}), ...(draftEdits[draft.id] || {}) };
-            const isFuel = (draftEdits[draft.id]?.document_type || draft.document_type) === 'fuel';
+            const currentType = (draftEdits[draft.id]?.document_type || draft.document_type) as DraftType;
+            const isFuel = currentType === 'fuel';
             const isSaved = draft.status === 'saved';
             const previewUrl = draft.sourceUrl || draft.url;
 
@@ -215,7 +217,7 @@ export default function TripDocumentProcessingPanel({
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                   <div className="space-y-2 min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-400">{draft.document_type}</span>
+                      <span className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-400">{currentType}</span>
                       <span className="text-[10px] font-black uppercase tracking-[0.3em]">{draft.status.replace('_', ' ')}</span>
                       {draft.missing_fields?.length > 0 && !isSaved && (
                         <span className="text-[10px] text-amber-300">Missing: {draft.missing_fields.join(', ')}</span>
@@ -231,7 +233,7 @@ export default function TripDocumentProcessingPanel({
 
                   <div className="flex items-center gap-2 shrink-0">
                     <select
-                      value={(draftEdits[draft.id]?.document_type || draft.document_type) as DraftType}
+                      value={currentType}
                       onChange={(event) => updateDraftField(draft.id, 'document_type', event.target.value)}
                       disabled={isSaved}
                       className="bg-black/40 border border-zinc-800 rounded-xl px-3 py-2 text-xs font-mono outline-none focus:border-emerald-500 disabled:opacity-70"
@@ -266,9 +268,9 @@ export default function TripDocumentProcessingPanel({
                   </label>
 
                   <label className="space-y-1 md:col-span-2">
-                    <span className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">{isFuel ? 'Location' : 'Name / location'}</span>
+                    <span className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">{isFuel ? 'Location' : 'Name'}</span>
                     <input
-                      value={values.location || values.name || ''}
+                      value={isFuel ? (values.location || '') : (values.name || '')}
                       onChange={(event) => updateDraftField(draft.id, isFuel ? 'location' : 'name', event.target.value)}
                       disabled={isSaved}
                       className="w-full bg-black/40 border border-zinc-800 rounded-xl p-3 text-sm font-mono outline-none focus:border-emerald-500 disabled:opacity-70"
@@ -334,15 +336,26 @@ export default function TripDocumentProcessingPanel({
                       </label>
                     </>
                   ) : (
-                    <label className="space-y-1 xl:col-span-3">
-                      <span className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">Notes</span>
-                      <input
-                        value={values.notes || ''}
-                        onChange={(event) => updateDraftField(draft.id, 'notes', event.target.value)}
-                        disabled={isSaved}
-                        className="w-full bg-black/40 border border-zinc-800 rounded-xl p-3 text-sm font-mono outline-none focus:border-emerald-500 disabled:opacity-70"
-                      />
-                    </label>
+                    <>
+                      <label className="space-y-1 xl:col-span-1">
+                        <span className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">Location</span>
+                        <input
+                          value={values.location || ''}
+                          onChange={(event) => updateDraftField(draft.id, 'location', event.target.value)}
+                          disabled={isSaved}
+                          className="w-full bg-black/40 border border-zinc-800 rounded-xl p-3 text-sm font-mono outline-none focus:border-emerald-500 disabled:opacity-70"
+                        />
+                      </label>
+                      <label className="space-y-1 xl:col-span-2">
+                        <span className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">Notes</span>
+                        <input
+                          value={values.notes || ''}
+                          onChange={(event) => updateDraftField(draft.id, 'notes', event.target.value)}
+                          disabled={isSaved}
+                          className="w-full bg-black/40 border border-zinc-800 rounded-xl p-3 text-sm font-mono outline-none focus:border-emerald-500 disabled:opacity-70"
+                        />
+                      </label>
+                    </>
                   )}
                 </div>
 
@@ -352,7 +365,7 @@ export default function TripDocumentProcessingPanel({
                     disabled={isSaved || savingId === draft.id}
                     className="bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60 text-white text-[10px] font-black uppercase px-4 py-3 rounded-xl border border-emerald-600 transition-all"
                   >
-                    {isSaved ? 'Saved' : savingId === draft.id ? 'Saving...' : isFuel ? 'Create fuel entry' : 'Create expense'}
+                    {isSaved ? 'Saved' : savingId === draft.id ? 'Saving...' : isFuel ? 'Create fuel entry' : currentType === 'reimbursement' ? 'Create reimbursement' : 'Create expense'}
                   </button>
                 </div>
               </div>

@@ -2,7 +2,7 @@ import { db } from '@/lib/db';
 import { buildDocumentDownloadUrl, buildSourcePathUrl, ensureUserDocumentsTable } from '@/lib/dispatch-documents';
 import { extractTextFromPdf } from '@/lib/pdf-processing';
 
-export type DocumentDraftType = 'fuel' | 'toll' | 'receipt' | 'unknown';
+export type DocumentDraftType = 'fuel' | 'toll' | 'reimbursement' | 'other' | 'receipt' | 'unknown';
 export type DocumentDraftStatus = 'processing' | 'needs_review' | 'ready' | 'saved' | 'error';
 
 export type DocumentDraftData = {
@@ -121,11 +121,18 @@ function pickLocation(text: string, fallbackName: string) {
   return candidate || fallbackName || null;
 }
 
+function normalizeDocumentType(type: DocumentDraftType | string | null | undefined): DocumentDraftType {
+  if (type === 'receipt') return 'other';
+  if (type === 'fuel' || type === 'toll' || type === 'reimbursement' || type === 'other' || type === 'unknown') return type;
+  return 'unknown';
+}
+
 function inferDocumentType(filename: string, description?: string | null): DocumentDraftType {
   const haystack = `${filename} ${description || ''}`.toLowerCase();
   if (/toll|ezpass|407|plate|bridge/.test(haystack)) return 'toll';
-  if (/fuel|diesel|def|receipt|pump/.test(haystack)) return 'fuel';
-  if (/expense|parking|receipt/.test(haystack)) return 'receipt';
+  if (/fuel|diesel|def|pump/.test(haystack)) return 'fuel';
+  if (/reimb|reimbursement|expense/.test(haystack)) return 'reimbursement';
+  if (/receipt|parking|scale|lumper|repair|wash/.test(haystack)) return 'other';
   return 'unknown';
 }
 
@@ -161,12 +168,23 @@ function parseTollDraft(text: string, fallbackName: string): DocumentDraftData {
   };
 }
 
-function parseReceiptDraft(text: string, fallbackName: string): DocumentDraftData {
+function parseReimbursementDraft(text: string, fallbackName: string): DocumentDraftData {
   return {
     date: parseDate(text),
     location: pickLocation(text, fallbackName),
     amount_usd: pickAmount(text),
-    name: fallbackName || 'Trip receipt',
+    name: fallbackName || 'Reimbursement receipt',
+    category: 'reimbursement',
+    notes: text ? text.slice(0, 1000) : null,
+  };
+}
+
+function parseOtherReceiptDraft(text: string, fallbackName: string): DocumentDraftData {
+  return {
+    date: parseDate(text),
+    location: pickLocation(text, fallbackName),
+    amount_usd: pickAmount(text),
+    name: fallbackName || 'Other receipt',
     category: 'misc',
     notes: text ? text.slice(0, 1000) : null,
   };
@@ -176,7 +194,7 @@ function getMissingFields(type: DocumentDraftType, data: DocumentDraftData) {
   if (type === 'fuel') {
     return ['date', 'amount_usd', 'odometer'].filter((field) => !data[field as keyof DocumentDraftData]);
   }
-  if (type === 'toll' || type === 'receipt') {
+  if (type === 'toll' || type === 'reimbursement' || type === 'other' || type === 'receipt') {
     return ['date', 'amount_usd', 'name'].filter((field) => !data[field as keyof DocumentDraftData]);
   }
   return [];
@@ -236,7 +254,7 @@ export async function createDocumentProcessingDraftFromUpload(params: {
 }) {
   await ensureDocumentProcessingTables();
 
-  const documentType = inferDocumentType(params.filename, params.description);
+  const documentType = normalizeDocumentType(inferDocumentType(params.filename, params.description));
   const rawText = params.buffer ? await extractDocumentText(params.buffer, params.fileType) : '';
 
   let extractedData: DocumentDraftData = {};
@@ -244,8 +262,10 @@ export async function createDocumentProcessingDraftFromUpload(params: {
     extractedData = parseFuelDraft(rawText, params.filename);
   } else if (documentType === 'toll') {
     extractedData = parseTollDraft(rawText, params.filename);
-  } else if (documentType === 'receipt') {
-    extractedData = parseReceiptDraft(rawText, params.filename);
+  } else if (documentType === 'reimbursement') {
+    extractedData = parseReimbursementDraft(rawText, params.filename);
+  } else if (documentType === 'other' || documentType === 'receipt') {
+    extractedData = parseOtherReceiptDraft(rawText, params.filename);
   }
 
   const missingFields = getMissingFields(documentType, extractedData);
@@ -311,6 +331,7 @@ export async function getDocumentProcessingDrafts(userId: string | number, tripN
 
   return rows.map((row) => ({
     ...row,
+    document_type: normalizeDocumentType(row.document_type),
     extracted_data: safeParseJson<DocumentDraftData>(row.extracted_data, {}),
     missing_fields: safeParseJson<string[]>(row.missing_fields, []),
     url: row.file_key ? buildDocumentDownloadUrl(row.file_key) : null,
@@ -337,7 +358,7 @@ export async function confirmDocumentProcessingDraft(params: {
 
   if (!draft) throw new Error('Document draft not found');
 
-  const documentType = params.documentType || draft.document_type;
+  const documentType = normalizeDocumentType(params.documentType || draft.document_type);
   const extractedData = {
     ...params.extractedData,
     gallons: toNumber(params.extractedData.gallons),
@@ -376,6 +397,8 @@ export async function confirmDocumentProcessingDraft(params: {
     );
 
     const fuelId = insert.rows?.[0]?.id;
+    if (!fuelId) throw new Error('Fuel entry was created without an id');
+
     await db().run(
       `UPDATE user_documents
        SET trip_number = COALESCE($1, trip_number),
@@ -385,7 +408,7 @@ export async function confirmDocumentProcessingDraft(params: {
        WHERE id = $4`,
       [
         params.tripNumber || draft.trip_number || null,
-        `fuel receipt ${extractedData.date || ''}`.trim(),
+        `fuel receipt • fuel #${fuelId}${extractedData.date ? ` • ${extractedData.date}` : ''}`,
         fuelId,
         draft.user_document_id,
       ]
@@ -415,14 +438,23 @@ export async function confirmDocumentProcessingDraft(params: {
     [
       params.userId,
       params.tripNumber || draft.trip_number || null,
-      extractedData.name || (documentType === 'toll' ? 'Toll receipt' : 'Trip receipt'),
+      extractedData.name || (documentType === 'toll'
+        ? 'Toll receipt'
+        : documentType === 'reimbursement'
+          ? 'Reimbursement receipt'
+          : 'Other receipt'),
       extractedData.amount_usd || null,
-      extractedData.category || (documentType === 'toll' ? 'toll' : 'misc'),
+      extractedData.category || (documentType === 'toll'
+        ? 'toll'
+        : documentType === 'reimbursement'
+          ? 'reimbursement'
+          : 'misc'),
       extractedData.notes || extractedData.location || null,
     ]
   );
 
   const expenseId = insert.rows?.[0]?.id;
+  if (!expenseId) throw new Error('Expense entry was created without an id');
   await db().run(
     `UPDATE user_documents
      SET trip_number = COALESCE($1, trip_number),
@@ -432,7 +464,11 @@ export async function confirmDocumentProcessingDraft(params: {
      WHERE id = $4`,
     [
       params.tripNumber || draft.trip_number || null,
-      documentType === 'toll' ? 'toll receipt' : 'trip receipt',
+      documentType === 'toll'
+        ? `toll receipt • expense #${expenseId}`
+        : documentType === 'reimbursement'
+          ? `reimbursement receipt • expense #${expenseId}`
+          : `other receipt • expense #${expenseId}`,
       expenseId,
       draft.user_document_id,
     ]
