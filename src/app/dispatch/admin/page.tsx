@@ -10,6 +10,7 @@ import UploadJobActions from './UploadJobActions';
 import RunUploadWorkerButton from './RunUploadWorkerButton';
 import AdminUserPasswordReset from './AdminUserPasswordReset';
 import AdminLlmSettings from './AdminLlmSettings';
+import AdminModelTestUtility from './AdminModelTestUtility';
 import { ensureDocumentProcessingTables } from '@/lib/document-processing';
 
 export default async function AdminInspectionPage() {
@@ -129,6 +130,9 @@ export default async function AdminInspectionPage() {
             </div>
           </div>
           <AdminLlmSettings />
+          <div className="mt-8 pt-6 border-t border-zinc-800/70">
+            <AdminModelTestUtility />
+          </div>
         </section>
 
         {/* Users */}

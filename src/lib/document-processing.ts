@@ -9,6 +9,7 @@ import {
   extractWithClaude,
   extractWithLlm,
   extractWithMinimax,
+  extractWithOpenRouterText,
   extractWithOpenRouterVision,
   getLlmConfig,
   llmResultToParsedTrip,
@@ -285,6 +286,13 @@ type SmartIntakeLlmResult = {
   extracted_data?: Record<string, unknown> | null;
 };
 
+export type ModelTestProvider = 'auto' | 'minimax' | 'claude' | 'zai' | 'openrouter' | 'regex';
+
+type ModelTestOptions = {
+  provider?: ModelTestProvider;
+  model?: string | null;
+};
+
 async function callAnthropicJson(system: string, prompt: string, apiKey: string) {
   const client = new Anthropic({ apiKey });
   const response = await client.messages.create({
@@ -349,16 +357,25 @@ async function callZaiJson(system: string, prompt: string, apiKey: string) {
   return JSON.parse(sanitizeJsonResponse(text)) as SmartIntakeLlmResult;
 }
 
-async function classifyAndExtractWithLlm(rawText: string, filename: string, description?: string | null) {
+async function classifyAndExtractWithLlm(
+  rawText: string,
+  filename: string,
+  description?: string | null,
+  options?: ModelTestOptions
+) {
   const cfg = await getLlmConfig();
+  const selectedProvider = options?.provider || 'auto';
+  const selectedModel = (options?.model || '').trim();
   const system = `You classify trucking dispatch uploads and extract structured data. Return JSON only with this exact shape:\n{\n  "document_type": "dispatch_itinerary" | "fuel_receipt" | "toll_receipt" | "reimbursement" | "other",\n  "extracted_data": { ... }\n}\n\nRules:\n- Use dispatch_itinerary only for trip itinerary / load itinerary documents.\n- Use fuel_receipt, toll_receipt, reimbursement, or other for receipts and expense documents.\n- For receipts, extract only fields you can support from the text: date, location, gallons, liters, price_per_unit, amount_usd, odometer, fuel_type, currency, name, category, notes.\n- Do not decide where to save the document. Only classify and extract.`;
   const prompt = `Filename: ${filename}\nDescription: ${description || ''}\n\nDocument text:\n${rawText.slice(0, 12000)}`;
 
-  const attempts = [cfg.primary, 'minimax', 'claude', 'zai'].filter((value, index, list) => list.indexOf(value) === index);
+  const attempts = selectedProvider === 'auto'
+    ? [cfg.primary, 'minimax', 'claude', 'zai'].filter((value, index, list) => list.indexOf(value) === index)
+    : [selectedProvider];
 
   for (const method of attempts) {
     try {
-      if (method === 'minimax' && cfg.minimaxApiKey) return await callMinimaxJson(system, prompt, cfg.minimaxApiKey, cfg.minimaxModel);
+      if (method === 'minimax' && cfg.minimaxApiKey) return await callMinimaxJson(system, prompt, cfg.minimaxApiKey, selectedModel || cfg.minimaxModel);
       if (method === 'claude' && cfg.anthropicApiKey) return await callAnthropicJson(system, prompt, cfg.anthropicApiKey);
       if (method === 'zai' && cfg.zaiApiKey) return await callZaiJson(system, prompt, cfg.zaiApiKey);
     } catch {
@@ -369,24 +386,35 @@ async function classifyAndExtractWithLlm(rawText: string, filename: string, desc
   return null;
 }
 
-async function extractItineraryDraft(buffer: Buffer | null | undefined, fileType: string, rawText: string): Promise<DocumentDraftData> {
+async function extractItineraryDraft(
+  buffer: Buffer | null | undefined,
+  fileType: string,
+  rawText: string,
+  options?: ModelTestOptions
+): Promise<DocumentDraftData> {
   const cfg = await getLlmConfig();
+  const selectedProvider = options?.provider || 'auto';
+  const selectedModel = (options?.model || '').trim();
   let parsed: ParsedTrip | null = null;
   const isPdf = fileType === 'application/pdf';
 
-  if (cfg.openrouterApiKey && isPdf && buffer) {
+  const shouldTryOpenRouter = selectedProvider === 'auto' || selectedProvider === 'openrouter';
+  if (shouldTryOpenRouter && cfg.openrouterApiKey && isPdf && buffer) {
     try {
-      parsed = llmResultToParsedTrip(await extractWithOpenRouterVision(buffer, cfg.openrouterApiKey, cfg.openrouterVisionModel), rawText);
+      parsed = llmResultToParsedTrip(await extractWithOpenRouterVision(buffer, cfg.openrouterApiKey, selectedModel || cfg.openrouterVisionModel), rawText);
     } catch {
       parsed = null;
     }
   }
 
-  const ordered = [cfg.primary, 'minimax', 'claude', 'zai', 'regex'].filter((value, index, list) => list.indexOf(value) === index);
+  const ordered = selectedProvider === 'auto'
+    ? [cfg.primary, 'minimax', 'claude', 'zai', 'regex'].filter((value, index, list) => list.indexOf(value) === index)
+    : [selectedProvider];
+
   for (const method of ordered) {
     if (parsed) break;
     try {
-      if (method === 'minimax' && cfg.minimaxApiKey) parsed = llmResultToParsedTrip(await extractWithMinimax(rawText, cfg.minimaxApiKey, cfg.minimaxModel), rawText);
+      if (method === 'minimax' && cfg.minimaxApiKey) parsed = llmResultToParsedTrip(await extractWithMinimax(rawText, cfg.minimaxApiKey, selectedModel || cfg.minimaxModel), rawText);
       else if (method === 'claude' && cfg.anthropicApiKey && buffer && isPdf) parsed = llmResultToParsedTrip(await extractWithClaude(buffer, cfg.anthropicApiKey), rawText);
       else if (method === 'zai' && cfg.zaiApiKey) parsed = llmResultToParsedTrip(await extractWithLlm(rawText, cfg.zaiApiKey), rawText);
       else if (method === 'regex') parsed = parseDriverItinerary(rawText);
@@ -461,6 +489,65 @@ async function extractDocumentText(buffer: Buffer, fileType: string) {
   }
 
   return '';
+}
+
+export async function generateDocumentProcessingPreview(params: {
+  filename: string;
+  fileType?: string | null;
+  description?: string | null;
+  buffer: Buffer;
+  options?: ModelTestOptions;
+}) {
+  const loaded = await loadDocumentBinary({
+    buffer: params.buffer,
+    filename: params.filename,
+    fileType: params.fileType,
+  });
+
+  const rawText = await extractDocumentText(loaded.buffer as Buffer, loaded.fileType).catch(() => '');
+
+  const llmResult = rawText.trim()
+    ? await classifyAndExtractWithLlm(rawText, params.filename, params.description, params.options).catch(() => null)
+    : null;
+
+  let documentType = normalizeDocumentType(llmResult?.document_type || inferDocumentType(params.filename, params.description, rawText));
+  let extractedData: DocumentDraftData = {};
+
+  if (documentType === 'itinerary') {
+    extractedData = await extractItineraryDraft(loaded.buffer, loaded.fileType, rawText, params.options);
+  } else if (documentType === 'fuel') {
+    extractedData = { ...parseFuelDraft(rawText, params.filename), ...(llmResult?.extracted_data || {}) };
+  } else if (documentType === 'toll') {
+    extractedData = { ...parseTollDraft(rawText, params.filename), ...(llmResult?.extracted_data || {}) };
+  } else if (documentType === 'reimbursement') {
+    extractedData = { ...parseReimbursementDraft(rawText, params.filename), ...(llmResult?.extracted_data || {}) };
+  } else if (documentType === 'other' || documentType === 'receipt') {
+    extractedData = { ...parseOtherReceiptDraft(rawText, params.filename), ...(llmResult?.extracted_data || {}) };
+  }
+
+  if (!extractedData.raw_text && rawText) extractedData.raw_text = rawText.slice(0, 12000);
+
+  const missingFields = getMissingFields(documentType, extractedData);
+  const status: DocumentDraftStatus = documentType === 'unknown'
+    ? 'needs_review'
+    : missingFields.length === 0
+      ? 'ready'
+      : 'needs_review';
+
+  return {
+    mode: 'dry-run' as const,
+    documentType,
+    status,
+    extractedData,
+    missingFields,
+    rawTextPreview: rawText.slice(0, 2000),
+    meta: {
+      provider: params.options?.provider || 'auto',
+      model: (params.options?.model || '').trim() || null,
+      detectedFileType: loaded.fileType,
+      usedLlmClassification: Boolean(llmResult),
+    },
+  };
 }
 
 export async function ensureDocumentProcessingTables() {
