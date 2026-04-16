@@ -13,6 +13,7 @@ type TripOption = {
 
 type DocumentRow = {
   id: number;
+  processing_draft_id: number | null;
   file_key: string | null;
   original_filename: string;
   file_type: string;
@@ -80,6 +81,8 @@ export default function DocumentsClient({
 }) {
   const [documents, setDocuments] = useState(initialDocuments);
   const [refreshing, setRefreshing] = useState(false);
+  const [processingDocumentId, setProcessingDocumentId] = useState<number | null>(null);
+  const [processAgainRequest, setProcessAgainRequest] = useState<{ draftId: number; requestId: number } | null>(null);
 
   const refreshDocuments = async () => {
     setRefreshing(true);
@@ -117,6 +120,11 @@ export default function DocumentsClient({
         <PdfUploader
           availableTrips={availableTrips}
           onTripCreated={refreshDocuments}
+          processAgainRequest={processAgainRequest}
+          onProcessAgainComplete={() => {
+            setProcessingDocumentId(null);
+            refreshDocuments();
+          }}
         />
       </section>
 
@@ -168,6 +176,21 @@ export default function DocumentsClient({
                   </div>
 
                   <div className="flex items-center gap-2 sm:justify-end">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!document.processing_draft_id) return;
+                        setProcessingDocumentId(document.id);
+                        setProcessAgainRequest({
+                          draftId: document.processing_draft_id,
+                          requestId: Date.now(),
+                        });
+                      }}
+                      disabled={!document.processing_draft_id || processingDocumentId === document.id}
+                      className="inline-flex items-center justify-center rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-[11px] font-black uppercase tracking-[0.2em] text-emerald-200 transition hover:bg-emerald-500/20 disabled:opacity-60"
+                    >
+                      {processingDocumentId === document.id ? 'Processing...' : 'Process Again'}
+                    </button>
                     {sourceHref && (
                       <a
                         href={sourceHref}

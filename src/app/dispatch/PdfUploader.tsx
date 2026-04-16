@@ -228,9 +228,13 @@ function buildBasicReceiptSummary(values: Record<string, any>) {
 export default function PdfUploader({
   onTripCreated,
   availableTrips = [],
+  processAgainRequest,
+  onProcessAgainComplete,
 }: {
   onTripCreated?: () => void;
   availableTrips?: TripOption[];
+  processAgainRequest?: { draftId: number; requestId: number } | null;
+  onProcessAgainComplete?: () => void;
 }) {
   const [status, setStatus] = useState<UploadStatus>('idle');
   const [message, setMessage] = useState<string | null>(null);
@@ -391,6 +395,55 @@ export default function PdfUploader({
       setRetryingDraft(false);
     }
   }, [orderedTrips, reviewDraft]);
+
+  React.useEffect(() => {
+    if (!processAgainRequest?.draftId) return;
+
+    let cancelled = false;
+
+    const run = async () => {
+      setRetryingDraft(true);
+      setStatus('saving');
+      setMessage('Retrying smart intake extraction from stored file...');
+
+      try {
+        const res = await fetch('/api/dispatch/document-processing/retry', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ draftId: processAgainRequest.draftId }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data?.error || 'Could not retry document processing');
+
+        if (!cancelled && data?.draft) {
+          const nextDraft = data.draft as UploadDraft;
+          setReviewDraft(nextDraft);
+          setDraftEdits({ ...(nextDraft.extracted_data || {}), document_type: nextDraft.document_type });
+          setAssignedTripNumber(nextDraft.trip_number || orderedTrips[0]?.trip_number || '');
+        }
+
+        if (!cancelled) {
+          setStatus('done');
+          setMessage('Retry complete. Review extracted details and confirm.');
+        }
+      } catch (error: any) {
+        if (!cancelled) {
+          setStatus('error');
+          setMessage(error?.message || 'Could not retry document processing');
+        }
+      } finally {
+        if (!cancelled) {
+          setRetryingDraft(false);
+          onProcessAgainComplete?.();
+        }
+      }
+    };
+
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [onProcessAgainComplete, orderedTrips, processAgainRequest?.draftId, processAgainRequest?.requestId]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();

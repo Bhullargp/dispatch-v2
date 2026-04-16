@@ -4,6 +4,7 @@ import { ensureDispatchAuthSchemaAndSeed } from '@/lib/dispatch-auth';
 import { requireAccess } from '@/lib/ownership';
 import { isR2Configured } from '@/lib/r2-storage';
 import { ensureUserDocumentsTable, getTripDocuments } from '@/lib/dispatch-documents';
+import { ensureDocumentProcessingTables } from '@/lib/document-processing';
 
 // GET - List user's documents with metadata
 export async function GET(req: Request) {
@@ -21,6 +22,7 @@ export async function GET(req: Request) {
 
     const database = db();
     await ensureUserDocumentsTable();
+    await ensureDocumentProcessingTables();
 
     const { searchParams } = new URL(req.url);
     const tripNumber = searchParams.get('tripNumber');
@@ -31,18 +33,22 @@ export async function GET(req: Request) {
     }
 
     const documents = await database.query(`
-      SELECT id,
-             s3_key AS file_key,
-             filename AS original_filename,
-             file_type,
-             file_size,
-             description,
-             trip_number,
-             source_path,
-             uploaded_at::text AS uploaded_at
-      FROM user_documents
-      WHERE user_id = $1
-      ORDER BY uploaded_at DESC, id DESC
+      SELECT u.id,
+             u.s3_key AS file_key,
+             u.filename AS original_filename,
+             u.file_type,
+             u.file_size,
+             u.description,
+             u.trip_number,
+             u.source_path,
+             u.uploaded_at::text AS uploaded_at,
+             d.id AS processing_draft_id
+      FROM user_documents u
+      LEFT JOIN document_processing_drafts d
+        ON d.user_document_id = u.id
+       AND d.user_id = u.user_id
+      WHERE u.user_id = $1
+      ORDER BY u.uploaded_at DESC, u.id DESC
     `, [access.session.userId]);
 
     return NextResponse.json({ documents });

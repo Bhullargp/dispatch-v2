@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation';
 import { db } from '@/lib/db';
 import { ensureDispatchAuthSchemaAndSeed } from '@/lib/dispatch-auth';
 import { ensureUserDocumentsTable } from '@/lib/dispatch-documents';
+import { ensureDocumentProcessingTables } from '@/lib/document-processing';
 import { getServerAccess, userScopedWhere } from '@/lib/ownership';
 import DocumentsClient from './DocumentsClient';
 
@@ -22,9 +23,10 @@ export default async function DocumentsPage({ searchParams }: { searchParams?: P
   }
 
   await ensureUserDocumentsTable();
+  await ensureDocumentProcessingTables();
 
   const tripScope = userScopedWhere(access, 'user_id');
-  const docScope = userScopedWhere(access, 'user_id');
+  const docScope = userScopedWhere(access, 'u.user_id');
 
   const [availableTrips, initialDocuments] = await Promise.all([
     database.query(`
@@ -37,18 +39,22 @@ export default async function DocumentsPage({ searchParams }: { searchParams?: P
       LIMIT 200
     `, tripScope.params),
     database.query(`
-      SELECT id,
-             s3_key AS file_key,
-             filename AS original_filename,
-             file_type,
-             file_size,
-             description,
-             trip_number,
-             source_path,
-             uploaded_at::text AS uploaded_at
-      FROM user_documents
+      SELECT u.id,
+             u.s3_key AS file_key,
+             u.filename AS original_filename,
+             u.file_type,
+             u.file_size,
+             u.description,
+             u.trip_number,
+             u.source_path,
+             u.uploaded_at::text AS uploaded_at,
+             d.id AS processing_draft_id
+      FROM user_documents u
+      LEFT JOIN document_processing_drafts d
+        ON d.user_document_id = u.id
+       AND d.user_id = u.user_id
       WHERE ${docScope.clause}
-      ORDER BY uploaded_at DESC, id DESC
+      ORDER BY u.uploaded_at DESC, u.id DESC
       LIMIT 50
     `, docScope.params),
   ]);
