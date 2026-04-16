@@ -10,9 +10,11 @@ import UploadJobActions from './UploadJobActions';
 import RunUploadWorkerButton from './RunUploadWorkerButton';
 import AdminUserPasswordReset from './AdminUserPasswordReset';
 import AdminLlmSettings from './AdminLlmSettings';
+import { ensureDocumentProcessingTables } from '@/lib/document-processing';
 
 export default async function AdminInspectionPage() {
   await ensureDispatchAuthSchemaAndSeed();
+  await ensureDocumentProcessingTables();
   const access = await getServerAccess();
   if (!access) redirect('/dispatch/login');
   if (access.mustChangePassword) redirect('/dispatch/login?forcePasswordChange=1');
@@ -42,6 +44,23 @@ export default async function AdminInspectionPage() {
     LIMIT 25
   `, []) as Array<any>;
 
+  const recentDocumentJobs = await db().query(`
+    SELECT d.id,
+           d.user_id,
+           u.filename AS original_filename,
+           d.document_type,
+           d.status,
+           d.trip_number,
+           d.linked_record_type,
+           d.linked_record_key,
+           d.error_message,
+           d.updated_at::text AS updated_at
+    FROM document_processing_drafts d
+    JOIN user_documents u ON u.id = d.user_document_id
+    ORDER BY d.updated_at DESC, d.id DESC
+    LIMIT 25
+  `, []) as Array<any>;
+
   const totalTrips = await db().get('SELECT COUNT(*) as c FROM trips', []) as { c: number };
   const totalUsers = await db().get('SELECT COUNT(*) as c FROM users', []) as { c: number };
   const pendingJobs = await db().get("SELECT COUNT(*) as c FROM upload_jobs WHERE status IN ('queued','processing')", []) as { c: number };
@@ -52,6 +71,14 @@ export default async function AdminInspectionPage() {
     cancelled: 'bg-zinc-700/30 text-zinc-500 border border-zinc-700/30',
     queued: 'bg-amber-500/15 text-amber-400 border border-amber-500/30',
     processing: 'bg-blue-500/15 text-blue-400 border border-blue-500/30',
+  };
+
+  const docStatusColors: Record<string, string> = {
+    saved: 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30',
+    ready: 'bg-cyan-500/15 text-cyan-400 border border-cyan-500/30',
+    needs_review: 'bg-amber-500/15 text-amber-400 border border-amber-500/30',
+    processing: 'bg-blue-500/15 text-blue-400 border border-blue-500/30',
+    error: 'bg-red-500/15 text-red-400 border border-red-500/30',
   };
 
   return (
@@ -178,6 +205,48 @@ export default async function AdminInspectionPage() {
                   <td className="font-mono text-xs text-emerald-500">{job.trip_number || '—'}</td>
                   <td className="max-w-[240px] truncate text-xs text-red-500/70">{job.error_message || '—'}</td>
                   <td><UploadJobActions id={job.id} status={job.status} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+
+        {/* Processed Document Jobs */}
+        <section className="bg-zinc-900/30 border border-zinc-800/60 rounded-3xl p-5 backdrop-blur-sm overflow-auto">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-7 h-7 rounded-lg bg-purple-500/20 border border-purple-500/30 flex items-center justify-center text-xs">🧾</div>
+            <p className="text-xs uppercase font-black tracking-widest text-zinc-400">Recent Document Processing Jobs</p>
+          </div>
+          <table className="w-full text-left text-sm">
+            <thead>
+              <tr className="text-[10px] uppercase tracking-wider text-zinc-600 border-b border-zinc-800">
+                <th className="pb-2 font-black">#</th>
+                <th className="pb-2 font-black">User</th>
+                <th className="pb-2 font-black">File</th>
+                <th className="pb-2 font-black">Type</th>
+                <th className="pb-2 font-black">Status</th>
+                <th className="pb-2 font-black">Trip</th>
+                <th className="pb-2 font-black">Linked</th>
+                <th className="pb-2 font-black">Error</th>
+                <th className="pb-2 font-black">Updated</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recentDocumentJobs.map((job) => (
+                <tr key={job.id} className="border-b border-zinc-800/50 hover:bg-zinc-800/20 transition-colors">
+                  <td className="py-2.5 font-mono text-zinc-500 text-xs">{job.id}</td>
+                  <td className="font-mono text-zinc-400 text-xs">{job.user_id}</td>
+                  <td className="max-w-[200px] truncate text-zinc-300 text-xs">{job.original_filename}</td>
+                  <td className="font-mono text-xs text-zinc-400">{job.document_type || 'unknown'}</td>
+                  <td>
+                    <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${docStatusColors[job.status] || 'bg-zinc-800 text-zinc-400'}`}>
+                      {job.status === 'needs_review' ? 'needs review' : job.status}
+                    </span>
+                  </td>
+                  <td className="font-mono text-xs text-emerald-500">{job.trip_number || '—'}</td>
+                  <td className="font-mono text-xs text-zinc-400">{job.linked_record_type ? `${job.linked_record_type}${job.linked_record_key ? `:${job.linked_record_key}` : ''}` : '—'}</td>
+                  <td className="max-w-[220px] truncate text-xs text-red-500/70">{job.error_message || '—'}</td>
+                  <td className="font-mono text-xs text-zinc-500">{job.updated_at ? new Date(job.updated_at).toLocaleString() : '—'}</td>
                 </tr>
               ))}
             </tbody>
