@@ -10,7 +10,7 @@ import {
 } from '@/components/ui/dialog';
 
 type DraftStatus = 'processing' | 'needs_review' | 'ready' | 'saved' | 'error';
-type DraftType = 'fuel' | 'toll' | 'reimbursement' | 'other' | 'receipt' | 'unknown';
+type DraftType = 'itinerary' | 'fuel' | 'toll' | 'reimbursement' | 'other' | 'receipt' | 'unknown';
 
 type Draft = {
   id: number;
@@ -38,6 +38,7 @@ type FieldConfig = {
 };
 
 const TYPE_OPTIONS: Array<{ value: DraftType; label: string; helper: string }> = [
+  { value: 'itinerary', label: 'Dispatch itinerary', helper: 'Driver trip itinerary PDFs, dispatch packets, and load sheets' },
   { value: 'fuel', label: 'Fuel receipt', helper: 'Pump slips, truck-stop invoices, diesel receipts' },
   { value: 'toll', label: 'Toll receipt', helper: 'Road tolls, bridge charges, weigh-station fees' },
   { value: 'reimbursement', label: 'Reimbursement receipt', helper: 'Driver reimbursement items and out-of-pocket spend' },
@@ -60,6 +61,18 @@ const FIELD_LABELS: Record<string, string> = {
   currency: 'Currency',
   category: 'Category',
   description: 'Description',
+  trip_number: 'Trip number',
+  start_date: 'Start date',
+  end_date: 'End date',
+  total_miles: 'Total miles',
+  route: 'Route',
+  driver_name: 'Driver name',
+  lead_driver: 'Lead driver',
+  co_driver: 'Co-driver',
+  truck_number: 'Truck #',
+  trailer_number: 'Trailer #',
+  stops: 'Stops',
+  raw_text: 'Raw text',
 };
 
 const BASE_FIELDS: FieldConfig[] = [
@@ -67,7 +80,20 @@ const BASE_FIELDS: FieldConfig[] = [
   { key: 'amount_usd', label: 'Amount (USD)', type: 'number', step: '0.01', placeholder: '0.00' },
 ];
 
-const TYPE_FIELDS: Record<'fuel' | 'toll' | 'reimbursement' | 'other', FieldConfig[]> = {
+const TYPE_FIELDS: Record<'itinerary' | 'fuel' | 'toll' | 'reimbursement' | 'other', FieldConfig[]> = {
+  itinerary: [
+    { key: 'trip_number', label: 'Trip number', placeholder: 'T12345' },
+    { key: 'start_date', label: 'Start date', type: 'date' },
+    { key: 'end_date', label: 'End date', type: 'date' },
+    { key: 'total_miles', label: 'Total miles', type: 'number', step: '1' },
+    { key: 'route', label: 'Route', placeholder: 'Caledon, ON → Laredo, TX', fullWidth: true },
+    { key: 'driver_name', label: 'Driver name', placeholder: 'Lead driver on the trip' },
+    { key: 'co_driver', label: 'Co-driver', placeholder: 'Optional co-driver' },
+    { key: 'truck_number', label: 'Truck #', placeholder: 'Truck unit' },
+    { key: 'trailer_number', label: 'Trailer #', placeholder: 'Trailer number' },
+    { key: 'notes', label: 'Notes', type: 'textarea', fullWidth: true, placeholder: 'Dispatch notes or extraction corrections' },
+    { key: 'stops', label: 'Stops (JSON)', type: 'textarea', fullWidth: true, placeholder: '[{"stop_type":"PICKUP","location":"..."}]' },
+  ],
   fuel: [
     { key: 'location', label: 'Location', placeholder: 'TA, Flying J, Petro, etc.', fullWidth: true },
     { key: 'gallons', label: 'Gallons', type: 'number', step: '0.001' },
@@ -106,10 +132,12 @@ function friendlyStatus(status: DraftStatus) {
 }
 
 function getTypeDetails(type: DraftType) {
-  return TYPE_OPTIONS.find((option) => option.value === type) || TYPE_OPTIONS[3];
+  return TYPE_OPTIONS.find((option) => option.value === type) || TYPE_OPTIONS[TYPE_OPTIONS.length - 1];
 }
 
 function getReviewFields(type: DraftType): FieldConfig[] {
+  if (type === 'itinerary') return TYPE_FIELDS.itinerary;
+
   const normalizedType = (type === 'fuel' || type === 'toll' || type === 'reimbursement' || type === 'other'
     ? type
     : 'other') as 'fuel' | 'toll' | 'reimbursement' | 'other';
@@ -184,6 +212,30 @@ export default function TripDocumentProcessingPanel({
     ? { ...(activeDraft.extracted_data || {}), ...(draftEdits[activeDraft.id] || {}) }
     : {};
 
+  const formatFieldValue = (value: any) => {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'string') return value;
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return String(value);
+    }
+  };
+
+  const prepareExtractedData = (draft: Draft) => {
+    const next = { ...(draft.extracted_data || {}), ...(draftEdits[draft.id] || {}) } as Record<string, any>;
+
+    if (typeof next.stops === 'string' && next.stops.trim()) {
+      try {
+        next.stops = JSON.parse(next.stops);
+      } catch {
+        throw new Error('Stops must be valid JSON before confirming the itinerary');
+      }
+    }
+
+    return next;
+  };
+
   const handleUpload = useCallback(async (file: File) => {
     setUploading(true);
     setPanelError(null);
@@ -224,7 +276,7 @@ export default function TripDocumentProcessingPanel({
     setPanelError(null);
     setPanelMessage(null);
     try {
-      const extractedData = { ...(draft.extracted_data || {}), ...(draftEdits[draft.id] || {}) };
+      const extractedData = prepareExtractedData(draft);
       const documentType = (draftEdits[draft.id]?.document_type || draft.document_type) as DraftType;
 
       const res = await fetch('/api/dispatch/document-processing/confirm', {
@@ -235,11 +287,13 @@ export default function TripDocumentProcessingPanel({
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || 'Could not save document');
 
-      const successMessage = documentType === 'fuel'
-        ? `Fuel entry #${data?.linkedRecordId} created and receipt linked.`
-        : documentType === 'reimbursement'
-          ? `Reimbursement #${data?.linkedRecordId} created and receipt linked.`
-          : `Expense #${data?.linkedRecordId} created and receipt linked.`;
+      const successMessage = documentType === 'itinerary'
+        ? `Trip ${data?.tripNumber || extractedData.trip_number || tripNumber} updated from itinerary and linked.`
+        : documentType === 'fuel'
+          ? `Fuel entry #${data?.linkedRecordId} created and receipt linked.`
+          : documentType === 'reimbursement'
+            ? `Reimbursement #${data?.linkedRecordId} created and receipt linked.`
+            : `Expense #${data?.linkedRecordId} created and receipt linked.`;
       setPanelMessage(successMessage);
       onSaved?.(successMessage);
       await loadDrafts();
@@ -302,7 +356,7 @@ export default function TripDocumentProcessingPanel({
         </div>
         <div className="rounded-2xl border border-zinc-800 bg-black/20 p-4 text-xs text-zinc-400">
           <p className="font-black text-zinc-200 uppercase tracking-[0.25em] text-[10px] mb-1">What this handles</p>
-          Smart review covers receipts now, with the same intake area ready for dispatch packets, PDFs, phone photos, and reimbursement support.
+          Smart review covers dispatch itineraries, receipts, PDFs, phone photos, and reimbursement support in one place.
         </div>
       </div>
 
@@ -322,7 +376,11 @@ export default function TripDocumentProcessingPanel({
             const values = { ...(draft.extracted_data || {}), ...(draftEdits[draft.id] || {}) };
             const currentType = (draftEdits[draft.id]?.document_type || draft.document_type) as DraftType;
             const isSaved = draft.status === 'saved';
-            const summaryName = currentType === 'fuel' ? values.location : values.name || values.location;
+            const summaryName = currentType === 'itinerary'
+              ? values.trip_number || values.route || values.driver_name
+              : currentType === 'fuel'
+                ? values.location
+                : values.name || values.location;
 
             return (
               <div key={draft.id} className={`rounded-2xl border p-4 ${statusTone(draft.status)}`}>
@@ -340,9 +398,15 @@ export default function TripDocumentProcessingPanel({
                     <p className="text-sm font-black text-white truncate">{draft.original_filename}</p>
                     <p className="text-xs text-zinc-400">
                       {summaryName || draft.description || getTypeDetails(currentType).helper}
-                      {values.amount_usd ? ` • $${values.amount_usd}` : ''}
-                      {values.date ? ` • ${values.date}` : ''}
-                      {draft.linked_record_type && draft.linked_record_id ? ` • linked to ${draft.linked_record_type} #${draft.linked_record_id}` : ''}
+                      {currentType === 'itinerary'
+                        ? values.start_date ? ` • ${values.start_date}` : ''
+                        : values.amount_usd ? ` • $${values.amount_usd}` : ''}
+                      {currentType === 'itinerary'
+                        ? values.driver_name ? ` • ${values.driver_name}` : ''
+                        : values.date ? ` • ${values.date}` : ''}
+                      {draft.linked_record_type && (draft.linked_record_id || draft.trip_number)
+                        ? ` • linked to ${draft.linked_record_type} ${draft.linked_record_id ? `#${draft.linked_record_id}` : draft.trip_number || ''}`
+                        : ''}
                     </p>
                     {draft.error_message && <p className="text-xs text-red-300">{draft.error_message}</p>}
                   </div>
@@ -456,7 +520,7 @@ export default function TripDocumentProcessingPanel({
                     </label>
 
                     {getReviewFields(activeType).map((field) => {
-                      const value = activeValues[field.key] ?? '';
+                      const value = formatFieldValue(activeValues[field.key]);
                       const className = `w-full bg-black/40 border border-zinc-800 rounded-xl p-3 text-sm font-mono outline-none focus:border-emerald-500 ${activeDraft.status === 'saved' ? 'opacity-70' : ''}`;
                       const wrapperClass = field.fullWidth ? 'space-y-1 md:col-span-2' : 'space-y-1';
 
@@ -503,7 +567,7 @@ export default function TripDocumentProcessingPanel({
                             <label key={key} className="space-y-1">
                               <span className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">{formatFieldLabel(key)}</span>
                               <input
-                                value={activeValues[key] ?? ''}
+                                value={formatFieldValue(activeValues[key])}
                                 onChange={(event) => updateDraftField(activeDraft.id, key, event.target.value)}
                                 disabled={activeDraft.status === 'saved'}
                                 className="w-full bg-black/40 border border-zinc-800 rounded-xl p-3 text-sm font-mono outline-none focus:border-emerald-500 disabled:opacity-70"
@@ -533,11 +597,13 @@ export default function TripDocumentProcessingPanel({
                         >
                           {savingId === activeDraft.id
                             ? 'Saving...'
-                            : activeType === 'fuel'
-                              ? 'Confirm fuel entry'
-                              : activeType === 'reimbursement'
-                                ? 'Confirm reimbursement'
-                                : 'Confirm expense'}
+                            : activeType === 'itinerary'
+                              ? 'Confirm itinerary'
+                              : activeType === 'fuel'
+                                ? 'Confirm fuel entry'
+                                : activeType === 'reimbursement'
+                                  ? 'Confirm reimbursement'
+                                  : 'Confirm expense'}
                         </button>
                       )}
                     </div>
