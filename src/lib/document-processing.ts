@@ -1,8 +1,22 @@
 import { db } from '@/lib/db';
 import { buildDocumentDownloadUrl, buildSourcePathUrl, ensureUserDocumentsTable } from '@/lib/dispatch-documents';
-import { extractTextFromPdf } from '@/lib/pdf-processing';
+import Anthropic from '@anthropic-ai/sdk';
+import {
+  extractTextFromImage,
+  extractTextFromPdf,
+  extractWithClaude,
+  extractWithLlm,
+  extractWithMinimax,
+  extractWithOpenRouterVision,
+  getLlmConfig,
+  llmResultToParsedTrip,
+  mergeTripAndStops,
+  parseDriverItinerary,
+  type ParsedStop,
+  type ParsedTrip,
+} from '@/lib/pdf-processing';
 
-export type DocumentDraftType = 'fuel' | 'toll' | 'reimbursement' | 'other' | 'receipt' | 'unknown';
+export type DocumentDraftType = 'itinerary' | 'fuel' | 'toll' | 'reimbursement' | 'other' | 'receipt' | 'unknown';
 export type DocumentDraftStatus = 'processing' | 'needs_review' | 'ready' | 'saved' | 'error';
 
 export type DocumentDraftData = {
@@ -18,6 +32,19 @@ export type DocumentDraftData = {
   name?: string | null;
   category?: string | null;
   notes?: string | null;
+  trip_number?: string | null;
+  start_date?: string | null;
+  end_date?: string | null;
+  total_miles?: number | null;
+  route?: string | null;
+  driver_name?: string | null;
+  lead_driver?: string | null;
+  co_driver?: string | null;
+  truck_number?: string | null;
+  trailer_number?: string | null;
+  stops?: ParsedStop[] | null;
+  raw_text?: string | null;
+  [key: string]: unknown;
 };
 
 export type DocumentProcessingDraft = {
@@ -31,6 +58,7 @@ export type DocumentProcessingDraft = {
   error_message: string | null;
   linked_record_type: string | null;
   linked_record_id: number | null;
+  linked_record_key: string | null;
   created_at: string | null;
   updated_at: string | null;
   original_filename: string;
@@ -121,14 +149,26 @@ function pickLocation(text: string, fallbackName: string) {
   return candidate || fallbackName || null;
 }
 
+function sanitizeJsonResponse(content: string) {
+  return content
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/```$/i, '')
+    .trim();
+}
+
 function normalizeDocumentType(type: DocumentDraftType | string | null | undefined): DocumentDraftType {
+  if (type === 'dispatch_itinerary' || type === 'itinerary') return 'itinerary';
+  if (type === 'fuel_receipt') return 'fuel';
+  if (type === 'toll_receipt') return 'toll';
   if (type === 'receipt') return 'other';
   if (type === 'fuel' || type === 'toll' || type === 'reimbursement' || type === 'other' || type === 'unknown') return type;
   return 'unknown';
 }
 
-function inferDocumentType(filename: string, description?: string | null): DocumentDraftType {
-  const haystack = `${filename} ${description || ''}`.toLowerCase();
+function inferDocumentType(filename: string, description?: string | null, rawText?: string | null): DocumentDraftType {
+  const haystack = `${filename} ${description || ''} ${rawText || ''}`.toLowerCase();
+  if (/trip itinerary|driver trip itinerary|dispatch itinerary|\bt\d{4,}\b/.test(haystack)) return 'itinerary';
   if (/toll|ezpass|407|plate|bridge/.test(haystack)) return 'toll';
   if (/fuel|diesel|def|pump/.test(haystack)) return 'fuel';
   if (/reimb|reimbursement|expense/.test(haystack)) return 'reimbursement';
@@ -190,7 +230,177 @@ function parseOtherReceiptDraft(text: string, fallbackName: string): DocumentDra
   };
 }
 
+function parsedTripToDraftData(parsed: ParsedTrip): DocumentDraftData {
+  return {
+    trip_number: parsed.tripNumber || null,
+    start_date: parsed.startDate || null,
+    end_date: parsed.endDate || null,
+    total_miles: Number(parsed.totalMiles) || null,
+    route: parsed.route || null,
+    driver_name: parsed.driverName || null,
+    lead_driver: parsed.leadDriver || null,
+    co_driver: parsed.coDriver || null,
+    truck_number: parsed.truckNumber || null,
+    trailer_number: parsed.trailerNumber || null,
+    stops: Array.isArray(parsed.stops) ? parsed.stops : [],
+    raw_text: parsed.rawText || null,
+    notes: parsed.notes || null,
+  };
+}
+
+function draftDataToParsedTrip(data: DocumentDraftData): ParsedTrip {
+  const stops = Array.isArray(data.stops)
+    ? data.stops.map((stop, index) => ({
+        stop_type: String(stop?.stop_type || 'PICKUP').toUpperCase(),
+        location: String(stop?.location || '').trim(),
+        miles_from_last: Number(stop?.miles_from_last) || 0,
+        date: stop?.date ? String(stop.date) : null,
+        event_index: Number(stop?.event_index) || index,
+      }))
+    : [];
+
+  return {
+    tripNumber: String(data.trip_number || '').trim().toUpperCase(),
+    startDate: data.start_date ? String(data.start_date) : null,
+    endDate: data.end_date ? String(data.end_date) : null,
+    totalMiles: Number(data.total_miles) || 0,
+    route: data.route ? String(data.route) : 'Unknown',
+    rawText: data.raw_text ? String(data.raw_text) : '',
+    notes: data.notes ? String(data.notes) : '',
+    stops,
+    placeholders: [],
+    hasDetectedTripNumber: Boolean(data.trip_number),
+    driverName: data.driver_name ? String(data.driver_name) : null,
+    leadDriver: data.lead_driver ? String(data.lead_driver) : null,
+    coDriver: data.co_driver ? String(data.co_driver) : null,
+    truckNumber: data.truck_number ? String(data.truck_number) : null,
+    trailerNumber: data.trailer_number ? String(data.trailer_number) : null,
+  };
+}
+
+type SmartIntakeLlmResult = {
+  document_type?: string | null;
+  extracted_data?: Record<string, unknown> | null;
+};
+
+async function callAnthropicJson(system: string, prompt: string, apiKey: string) {
+  const client = new Anthropic({ apiKey });
+  const response = await client.messages.create({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 1500,
+    temperature: 0,
+    system,
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  const text = response.content
+    .map((part: any) => (part?.type === 'text' ? part.text : ''))
+    .join('\n')
+    .trim();
+  if (!text) throw new Error('Empty response from Anthropic');
+  return JSON.parse(sanitizeJsonResponse(text)) as SmartIntakeLlmResult;
+}
+
+async function callMinimaxJson(system: string, prompt: string, apiKey: string, model: string) {
+  const response = await fetch('https://api.minimax.io/v1/text/chatcompletion_v2', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: prompt },
+      ],
+    }),
+  });
+  if (!response.ok) throw new Error(`Minimax classification failed: ${response.status}`);
+  const data = await response.json();
+  const text = data?.choices?.[0]?.message?.content;
+  if (!text || typeof text !== 'string') throw new Error('Empty response from Minimax');
+  return JSON.parse(sanitizeJsonResponse(text)) as SmartIntakeLlmResult;
+}
+
+async function callZaiJson(system: string, prompt: string, apiKey: string) {
+  const response = await fetch('https://open.bigmodel.cn/api/paas/v4/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: 'glm-4.5-air',
+      temperature: 0,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: prompt },
+      ],
+    }),
+  });
+  if (!response.ok) throw new Error(`ZAI classification failed: ${response.status}`);
+  const data = await response.json();
+  const text = data?.choices?.[0]?.message?.content;
+  if (!text || typeof text !== 'string') throw new Error('Empty response from ZAI');
+  return JSON.parse(sanitizeJsonResponse(text)) as SmartIntakeLlmResult;
+}
+
+async function classifyAndExtractWithLlm(rawText: string, filename: string, description?: string | null) {
+  const cfg = await getLlmConfig();
+  const system = `You classify trucking dispatch uploads and extract structured data. Return JSON only with this exact shape:\n{\n  "document_type": "dispatch_itinerary" | "fuel_receipt" | "toll_receipt" | "reimbursement" | "other",\n  "extracted_data": { ... }\n}\n\nRules:\n- Use dispatch_itinerary only for trip itinerary / load itinerary documents.\n- Use fuel_receipt, toll_receipt, reimbursement, or other for receipts and expense documents.\n- For receipts, extract only fields you can support from the text: date, location, gallons, liters, price_per_unit, amount_usd, odometer, fuel_type, currency, name, category, notes.\n- Do not decide where to save the document. Only classify and extract.`;
+  const prompt = `Filename: ${filename}\nDescription: ${description || ''}\n\nDocument text:\n${rawText.slice(0, 12000)}`;
+
+  const attempts = [cfg.primary, 'minimax', 'claude', 'zai'].filter((value, index, list) => list.indexOf(value) === index);
+
+  for (const method of attempts) {
+    try {
+      if (method === 'minimax' && cfg.minimaxApiKey) return await callMinimaxJson(system, prompt, cfg.minimaxApiKey, cfg.minimaxModel);
+      if (method === 'claude' && cfg.anthropicApiKey) return await callAnthropicJson(system, prompt, cfg.anthropicApiKey);
+      if (method === 'zai' && cfg.zaiApiKey) return await callZaiJson(system, prompt, cfg.zaiApiKey);
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
+}
+
+async function extractItineraryDraft(buffer: Buffer | null | undefined, fileType: string, rawText: string): Promise<DocumentDraftData> {
+  const cfg = await getLlmConfig();
+  let parsed: ParsedTrip | null = null;
+  const isPdf = fileType === 'application/pdf';
+
+  if (cfg.openrouterApiKey && isPdf && buffer) {
+    try {
+      parsed = llmResultToParsedTrip(await extractWithOpenRouterVision(buffer, cfg.openrouterApiKey, cfg.openrouterVisionModel), rawText);
+    } catch {
+      parsed = null;
+    }
+  }
+
+  const ordered = [cfg.primary, 'minimax', 'claude', 'zai', 'regex'].filter((value, index, list) => list.indexOf(value) === index);
+  for (const method of ordered) {
+    if (parsed) break;
+    try {
+      if (method === 'minimax' && cfg.minimaxApiKey) parsed = llmResultToParsedTrip(await extractWithMinimax(rawText, cfg.minimaxApiKey, cfg.minimaxModel), rawText);
+      else if (method === 'claude' && cfg.anthropicApiKey && buffer && isPdf) parsed = llmResultToParsedTrip(await extractWithClaude(buffer, cfg.anthropicApiKey), rawText);
+      else if (method === 'zai' && cfg.zaiApiKey) parsed = llmResultToParsedTrip(await extractWithLlm(rawText, cfg.zaiApiKey), rawText);
+      else if (method === 'regex') parsed = parseDriverItinerary(rawText);
+    } catch {
+      continue;
+    }
+  }
+
+  parsed = parsed || parseDriverItinerary(rawText);
+  return parsedTripToDraftData(parsed);
+}
+
 function getMissingFields(type: DocumentDraftType, data: DocumentDraftData) {
+  if (type === 'itinerary') {
+    return ['trip_number'].filter((field) => !data[field as keyof DocumentDraftData]);
+  }
   if (type === 'fuel') {
     return ['date', 'amount_usd', 'odometer'].filter((field) => !data[field as keyof DocumentDraftData]);
   }
@@ -203,6 +413,10 @@ function getMissingFields(type: DocumentDraftType, data: DocumentDraftData) {
 async function extractDocumentText(buffer: Buffer, fileType: string) {
   if (fileType === 'application/pdf') {
     return extractTextFromPdf(buffer);
+  }
+
+  if (fileType.startsWith('image/')) {
+    return extractTextFromImage(buffer, 'upload');
   }
 
   if (fileType.startsWith('text/')) {
@@ -228,6 +442,7 @@ export async function ensureDocumentProcessingTables() {
       error_message TEXT,
       linked_record_type TEXT,
       linked_record_id INTEGER,
+      linked_record_key TEXT,
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW(),
       FOREIGN KEY (user_document_id) REFERENCES user_documents(id) ON DELETE CASCADE,
@@ -237,8 +452,10 @@ export async function ensureDocumentProcessingTables() {
 
   await db().run('ALTER TABLE user_documents ADD COLUMN IF NOT EXISTS linked_record_type TEXT').catch(() => {});
   await db().run('ALTER TABLE user_documents ADD COLUMN IF NOT EXISTS linked_record_id INTEGER').catch(() => {});
+  await db().run('ALTER TABLE user_documents ADD COLUMN IF NOT EXISTS linked_record_key TEXT').catch(() => {});
   await db().run('ALTER TABLE document_processing_drafts ADD COLUMN IF NOT EXISTS linked_record_type TEXT').catch(() => {});
   await db().run('ALTER TABLE document_processing_drafts ADD COLUMN IF NOT EXISTS linked_record_id INTEGER').catch(() => {});
+  await db().run('ALTER TABLE document_processing_drafts ADD COLUMN IF NOT EXISTS linked_record_key TEXT').catch(() => {});
   await db().run('ALTER TABLE document_processing_drafts ADD COLUMN IF NOT EXISTS extracted_data JSONB').catch(() => {});
   await db().run('ALTER TABLE document_processing_drafts ADD COLUMN IF NOT EXISTS missing_fields JSONB NOT NULL DEFAULT \'' + '[]' + '\'::jsonb').catch(() => {});
 }
@@ -254,19 +471,26 @@ export async function createDocumentProcessingDraftFromUpload(params: {
 }) {
   await ensureDocumentProcessingTables();
 
-  const documentType = normalizeDocumentType(inferDocumentType(params.filename, params.description));
   const rawText = params.buffer ? await extractDocumentText(params.buffer, params.fileType) : '';
+  const llmResult = rawText.trim()
+    ? await classifyAndExtractWithLlm(rawText, params.filename, params.description).catch(() => null)
+    : null;
+  const documentType = normalizeDocumentType(llmResult?.document_type || inferDocumentType(params.filename, params.description, rawText));
 
   let extractedData: DocumentDraftData = {};
-  if (documentType === 'fuel') {
-    extractedData = parseFuelDraft(rawText, params.filename);
+  if (documentType === 'itinerary') {
+    extractedData = await extractItineraryDraft(params.buffer, params.fileType, rawText);
+  } else if (documentType === 'fuel') {
+    extractedData = { ...parseFuelDraft(rawText, params.filename), ...(llmResult?.extracted_data || {}) };
   } else if (documentType === 'toll') {
-    extractedData = parseTollDraft(rawText, params.filename);
+    extractedData = { ...parseTollDraft(rawText, params.filename), ...(llmResult?.extracted_data || {}) };
   } else if (documentType === 'reimbursement') {
-    extractedData = parseReimbursementDraft(rawText, params.filename);
+    extractedData = { ...parseReimbursementDraft(rawText, params.filename), ...(llmResult?.extracted_data || {}) };
   } else if (documentType === 'other' || documentType === 'receipt') {
-    extractedData = parseOtherReceiptDraft(rawText, params.filename);
+    extractedData = { ...parseOtherReceiptDraft(rawText, params.filename), ...(llmResult?.extracted_data || {}) };
   }
+
+  if (!extractedData.raw_text && rawText) extractedData.raw_text = rawText.slice(0, 12000);
 
   const missingFields = getMissingFields(documentType, extractedData);
   const status: DocumentDraftStatus = documentType === 'unknown'
@@ -315,6 +539,7 @@ export async function getDocumentProcessingDrafts(userId: string | number, tripN
             d.error_message,
             d.linked_record_type,
             d.linked_record_id,
+            d.linked_record_key,
             d.created_at::text AS created_at,
             d.updated_at::text AS updated_at,
             u.filename AS original_filename,
@@ -349,12 +574,12 @@ export async function confirmDocumentProcessingDraft(params: {
   await ensureDocumentProcessingTables();
 
   const draft = await db().get(
-    `SELECT d.id, d.user_document_id, d.document_type, d.trip_number, u.description
+    `SELECT d.id, d.user_document_id, d.document_type, d.trip_number, u.description, u.s3_key, u.source_path
      FROM document_processing_drafts d
      JOIN user_documents u ON u.id = d.user_document_id
      WHERE d.id = $1 AND d.user_id = $2`,
     [params.draftId, params.userId]
-  ) as { id: number; user_document_id: number; document_type: DocumentDraftType; trip_number: string | null; description: string | null } | undefined;
+  ) as { id: number; user_document_id: number; document_type: DocumentDraftType; trip_number: string | null; description: string | null; s3_key: string | null; source_path: string | null } | undefined;
 
   if (!draft) throw new Error('Document draft not found');
 
@@ -371,6 +596,56 @@ export async function confirmDocumentProcessingDraft(params: {
   const missingFields = getMissingFields(documentType, extractedData);
   if (missingFields.length > 0) {
     throw new Error(`Missing required fields: ${missingFields.join(', ')}`);
+  }
+
+  if (documentType === 'itinerary') {
+    const parsedTrip = draftDataToParsedTrip(extractedData);
+    if (!parsedTrip.tripNumber) throw new Error('Missing required fields: trip_number');
+
+    const effectiveTripNumber = await mergeTripAndStops(
+      params.userId,
+      parsedTrip,
+      draft.s3_key || draft.source_path || `document-${draft.user_document_id}`
+    );
+
+    await db().run(
+      `UPDATE user_documents
+       SET trip_number = $1,
+           description = $2,
+           linked_record_type = 'trip',
+           linked_record_id = NULL,
+           linked_record_key = $3
+       WHERE id = $4`,
+      [
+        effectiveTripNumber,
+        `dispatch itinerary • trip ${effectiveTripNumber}`,
+        effectiveTripNumber,
+        draft.user_document_id,
+      ]
+    );
+
+    await db().run(
+      `UPDATE document_processing_drafts
+       SET trip_number = $1,
+           document_type = 'itinerary',
+           status = 'saved',
+           extracted_data = $2::jsonb,
+           missing_fields = '[]'::jsonb,
+           linked_record_type = 'trip',
+           linked_record_id = NULL,
+           linked_record_key = $3,
+           error_message = NULL,
+           updated_at = NOW()
+       WHERE id = $4`,
+      [
+        effectiveTripNumber,
+        JSON.stringify({ ...extractedData, trip_number: effectiveTripNumber }),
+        effectiveTripNumber,
+        draft.id,
+      ]
+    );
+
+    return { linkedRecordType: 'trip', linkedRecordId: null, linkedRecordKey: effectiveTripNumber, tripNumber: effectiveTripNumber };
   }
 
   if (documentType === 'fuel') {
@@ -404,12 +679,14 @@ export async function confirmDocumentProcessingDraft(params: {
        SET trip_number = COALESCE($1, trip_number),
            description = $2,
            linked_record_type = 'fuel',
-           linked_record_id = $3
-       WHERE id = $4`,
+           linked_record_id = $3,
+           linked_record_key = $4
+       WHERE id = $5`,
       [
         params.tripNumber || draft.trip_number || null,
         `fuel receipt • fuel #${fuelId}${extractedData.date ? ` • ${extractedData.date}` : ''}`,
         fuelId,
+        String(fuelId),
         draft.user_document_id,
       ]
     );
@@ -422,13 +699,14 @@ export async function confirmDocumentProcessingDraft(params: {
            missing_fields = '[]'::jsonb,
            linked_record_type = 'fuel',
            linked_record_id = $3,
+           linked_record_key = $4,
            error_message = NULL,
            updated_at = NOW()
-       WHERE id = $4`,
-      [params.tripNumber || draft.trip_number || null, JSON.stringify(extractedData), fuelId, draft.id]
+       WHERE id = $5`,
+      [params.tripNumber || draft.trip_number || null, JSON.stringify(extractedData), fuelId, String(fuelId), draft.id]
     );
 
-    return { linkedRecordType: 'fuel', linkedRecordId: fuelId };
+    return { linkedRecordType: 'fuel', linkedRecordId: fuelId, linkedRecordKey: String(fuelId) };
   }
 
   const insert = await db().run(
@@ -460,8 +738,9 @@ export async function confirmDocumentProcessingDraft(params: {
      SET trip_number = COALESCE($1, trip_number),
          description = $2,
          linked_record_type = 'expense',
-         linked_record_id = $3
-     WHERE id = $4`,
+         linked_record_id = $3,
+         linked_record_key = $4
+     WHERE id = $5`,
     [
       params.tripNumber || draft.trip_number || null,
       documentType === 'toll'
@@ -470,6 +749,7 @@ export async function confirmDocumentProcessingDraft(params: {
           ? `reimbursement receipt • expense #${expenseId}`
           : `other receipt • expense #${expenseId}`,
       expenseId,
+      String(expenseId),
       draft.user_document_id,
     ]
   );
@@ -482,11 +762,12 @@ export async function confirmDocumentProcessingDraft(params: {
          missing_fields = '[]'::jsonb,
          linked_record_type = 'expense',
          linked_record_id = $4,
+         linked_record_key = $5,
          error_message = NULL,
          updated_at = NOW()
-     WHERE id = $5`,
-    [params.tripNumber || draft.trip_number || null, documentType, JSON.stringify(extractedData), expenseId, draft.id]
+     WHERE id = $6`,
+    [params.tripNumber || draft.trip_number || null, documentType, JSON.stringify(extractedData), expenseId, String(expenseId), draft.id]
   );
 
-  return { linkedRecordType: 'expense', linkedRecordId: expenseId };
+  return { linkedRecordType: 'expense', linkedRecordId: expenseId, linkedRecordKey: String(expenseId) };
 }

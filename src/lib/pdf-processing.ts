@@ -17,7 +17,7 @@ const ZAI_MODEL = 'glm-4.5-air';
 import { DISPATCH_APP_RULES, ITINERARY_LLM_RULES } from '@/lib/app-rules';
 
 // Runtime LLM config — reads from DB (admin_settings), falls back to env vars
-interface LlmConfig {
+export interface LlmConfig {
   primary: 'minimax' | 'claude' | 'zai' | 'regex';
   minimaxApiKey: string;
   minimaxModel: string;
@@ -27,7 +27,7 @@ interface LlmConfig {
   zaiApiKey: string;
 }
 
-async function getLlmConfig(): Promise<LlmConfig> {
+export async function getLlmConfig(): Promise<LlmConfig> {
   try {
     const rows = await db().query(
       "SELECT key, value FROM system_defaults WHERE key LIKE 'llm_%'",
