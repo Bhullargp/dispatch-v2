@@ -1,7 +1,13 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { SUPPORTED_DOCUMENT_ACCEPT } from '@/lib/upload-file-types';
+import {
+  BUILTIN_PROVIDER_DETAILS,
+  getSelectableBuiltinProviders,
+  type BuiltinModelId,
+  type BuiltinProviderId,
+} from '@/lib/llm-config';
 
 type PreviewResponse = {
   mode: 'dry-run';
@@ -18,14 +24,10 @@ type PreviewResponse = {
   };
 };
 
-const PROVIDERS = [
-  { value: 'auto', label: 'Auto chain (configured fallback)' },
-  { value: 'minimax', label: 'Minimax' },
-  { value: 'claude', label: 'Claude (Anthropic)' },
-  { value: 'zai', label: 'Z.AI (GLM)' },
-  { value: 'openrouter', label: 'OpenRouter Vision (PDF itinerary focus)' },
-  { value: 'regex', label: 'Regex only (no LLM)' },
-] as const;
+type AdminSettingsResponse = {
+  llm_disabled_provider_ids: BuiltinProviderId[];
+  llm_disabled_model_ids: BuiltinModelId[];
+};
 
 export default function AdminModelTestUtility() {
   const [provider, setProvider] = useState<string>('auto');
@@ -34,6 +36,44 @@ export default function AdminModelTestUtility() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
+  const [adminSettings, setAdminSettings] = useState<AdminSettingsResponse>({
+    llm_disabled_provider_ids: [],
+    llm_disabled_model_ids: [],
+  });
+
+  useEffect(() => {
+    fetch('/api/dispatch/admin/settings')
+      .then((res) => res.json())
+      .then((data) => {
+        if (!data?.settings) return;
+        setAdminSettings({
+          llm_disabled_provider_ids: Array.isArray(data.settings.llm_disabled_provider_ids) ? data.settings.llm_disabled_provider_ids : [],
+          llm_disabled_model_ids: Array.isArray(data.settings.llm_disabled_model_ids) ? data.settings.llm_disabled_model_ids : [],
+        });
+      })
+      .catch(() => {});
+  }, []);
+
+  const providerOptions = useMemo(() => {
+    const builtins = getSelectableBuiltinProviders(
+      adminSettings.llm_disabled_provider_ids || [],
+      adminSettings.llm_disabled_model_ids || []
+    );
+
+    return [
+      { value: 'auto', label: 'Auto chain (configured fallback)' },
+      ...builtins.map((providerId) => ({
+        value: providerId,
+        label: providerId === 'regex' ? 'Regex only (no LLM)' : BUILTIN_PROVIDER_DETAILS[providerId].label,
+      })),
+    ];
+  }, [adminSettings.llm_disabled_model_ids, adminSettings.llm_disabled_provider_ids]);
+
+  useEffect(() => {
+    if (!providerOptions.some((option) => option.value === provider)) {
+      setProvider('auto');
+    }
+  }, [provider, providerOptions]);
 
   const runTest = async () => {
     if (!file) {
@@ -81,7 +121,7 @@ export default function AdminModelTestUtility() {
               onChange={(e) => setProvider(e.target.value)}
               className="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-sm text-zinc-200"
             >
-              {PROVIDERS.map((item) => (
+              {providerOptions.map((item) => (
                 <option key={item.value} value={item.value}>{item.label}</option>
               ))}
             </select>

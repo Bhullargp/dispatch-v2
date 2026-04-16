@@ -6,6 +6,16 @@ import { promisify } from 'util';
 import Anthropic from '@anthropic-ai/sdk';
 import pool, { db } from '@/lib/db';
 import { getDocumentUploadMimeType } from '@/lib/upload-file-types';
+import {
+  getRuntimeMethodOrder,
+  normalizeCustomProviders,
+  normalizeDisabledModelIds,
+  normalizeDisabledProviderIds,
+  normalizeSelectablePrimary,
+  type BuiltinModelId,
+  type BuiltinProviderId,
+  type CustomLlmProvider,
+} from '@/lib/llm-config';
 
 const execFileAsync = promisify(execFile);
 
@@ -26,48 +36,8 @@ export interface LlmConfig {
   anthropicApiKey: string;
   zaiApiKey: string;
   customProviders: CustomLlmProvider[];
-}
-
-export type CustomLlmProvider = {
-  id: string;
-  name: string;
-  provider: 'openrouter' | 'openrouter-vision' | 'minimax' | 'zai';
-  model: string;
-  api_key: string;
-  enabled: boolean;
-};
-
-function parseCustomProviders(value: unknown): CustomLlmProvider[] {
-  let parsed: unknown = [];
-  if (typeof value === 'string') {
-    try {
-      parsed = JSON.parse(value);
-    } catch {
-      parsed = [];
-    }
-  } else if (Array.isArray(value)) {
-    parsed = value;
-  }
-
-  if (!Array.isArray(parsed)) return [];
-
-  return parsed
-    .map((entry) => {
-      const item = (entry || {}) as Record<string, unknown>;
-      const provider = String(item.provider || '').trim() as CustomLlmProvider['provider'];
-      if (!['openrouter', 'openrouter-vision', 'minimax', 'zai'].includes(provider)) return null;
-      const id = String(item.id || '').trim();
-      if (!id) return null;
-      return {
-        id,
-        name: String(item.name || '').trim() || `Custom ${provider}`,
-        provider,
-        model: String(item.model || '').trim(),
-        api_key: String(item.api_key || ''),
-        enabled: item.enabled === false ? false : true,
-      } satisfies CustomLlmProvider;
-    })
-    .filter(Boolean) as CustomLlmProvider[];
+  disabledProviderIds: BuiltinProviderId[];
+  disabledModelIds: BuiltinModelId[];
 }
 
 export async function getLlmConfig(): Promise<LlmConfig> {
@@ -77,15 +47,20 @@ export async function getLlmConfig(): Promise<LlmConfig> {
       []
     ) as Array<{ key: string; value: string }>;
     const s: Record<string, string> = Object.fromEntries(rows.map(r => [r.key, r.value]));
+    const customProviders = normalizeCustomProviders(s.llm_custom_providers || '[]');
+    const disabledProviderIds = normalizeDisabledProviderIds(s.llm_disabled_provider_ids || '[]');
+    const disabledModelIds = normalizeDisabledModelIds(s.llm_disabled_model_ids || '[]');
     return {
-      primary:         s.llm_primary || 'minimax',
+      primary:         normalizeSelectablePrimary(s.llm_primary || 'minimax', customProviders, disabledProviderIds, disabledModelIds),
       minimaxApiKey:   s.llm_minimax_api_key         || process.env.MINIMAX_API_KEY          || '',
       minimaxModel:    s.llm_minimax_model           || process.env.MINIMAX_MODEL            || 'MiniMax-M2.7',
       openrouterApiKey:s.llm_openrouter_api_key      || process.env.OPENROUTER_API_KEY       || '',
       openrouterVisionModel: s.llm_openrouter_vision_model || process.env.OPENROUTER_VISION_MODEL || 'qwen/qwen3-vl-32b-instruct',
       anthropicApiKey: s.llm_anthropic_api_key       || process.env.ANTHROPIC_API_KEY        || '',
       zaiApiKey:       s.llm_zai_api_key             || process.env.ZAI_API_KEY              || '',
-      customProviders: parseCustomProviders(s.llm_custom_providers || '[]'),
+      customProviders,
+      disabledProviderIds,
+      disabledModelIds,
     };
   } catch {
     return {
@@ -97,6 +72,8 @@ export async function getLlmConfig(): Promise<LlmConfig> {
       anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
       zaiApiKey: process.env.ZAI_API_KEY || '',
       customProviders: [],
+      disabledProviderIds: [],
+      disabledModelIds: [],
     };
   }
 }
@@ -948,20 +925,7 @@ export async function processClaimedUploadJob(job: UploadJob) {
       return llmResultToParsedTrip(llmResult, rawText);
     };
 
-    const customMethods = cfg.customProviders
-      .filter(entry => entry.enabled)
-      .map(entry => `custom:${entry.id}`);
-
-    // Build ordered list: primary first, then built-in fallbacks, then enabled custom providers
-    const ordered = [
-      cfg.primary,
-      'minimax',
-      'claude',
-      'zai',
-      'openrouter-vision',
-      ...customMethods,
-      'regex',
-    ].filter((value, index, list) => value && list.indexOf(value) === index);
+    const ordered = getRuntimeMethodOrder(cfg.primary, cfg.customProviders);
 
     parsed = undefined as any;
 

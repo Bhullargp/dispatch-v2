@@ -1,6 +1,16 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
+import {
+  BUILTIN_PROVIDER_DETAILS,
+  BUILTIN_PROVIDER_ORDER,
+  getRuntimeMethodOrder,
+  getSelectableBuiltinProviders,
+  getSelectablePrimaryOptions,
+  normalizeSelectablePrimary,
+  type BuiltinModelId,
+  type BuiltinProviderId,
+} from '@/lib/llm-config';
 
 type CustomProvider = {
   id: string;
@@ -20,18 +30,20 @@ type LlmSettings = {
   llm_anthropic_api_key: string;
   llm_zai_api_key: string;
   llm_custom_providers: CustomProvider[];
+  llm_disabled_provider_ids: BuiltinProviderId[];
+  llm_disabled_model_ids: BuiltinModelId[];
   llm_minimax_configured: string;
   llm_openrouter_configured: string;
   llm_anthropic_configured: string;
   llm_zai_configured: string;
 };
 
-const BUILTIN_PROVIDER_LABELS: Record<string, { label: string; color: string; desc: string }> = {
-  minimax: { label: 'Minimax M2.7', color: 'text-purple-400', desc: 'Primary model, independent app default' },
-  claude: { label: 'Claude (Anthropic)', color: 'text-amber-400', desc: 'Best accuracy, vision support' },
-  zai: { label: 'Z.AI (GLM)', color: 'text-blue-400', desc: 'Alternative LLM' },
-  'openrouter-vision': { label: 'OpenRouter Vision', color: 'text-fuchsia-400', desc: 'PDF/image extraction via vision model' },
-  regex: { label: 'Regex Only', color: 'text-zinc-400', desc: 'No AI, rule-based parsing only' },
+const BUILTIN_PROVIDER_STYLES: Record<BuiltinProviderId, { color: string }> = {
+  minimax: { color: 'text-purple-400' },
+  claude: { color: 'text-amber-400' },
+  zai: { color: 'text-blue-400' },
+  'openrouter-vision': { color: 'text-fuchsia-400' },
+  regex: { color: 'text-zinc-400' },
 };
 
 const CUSTOM_PROVIDER_OPTIONS: Array<{ value: CustomProvider['provider']; label: string }> = [
@@ -55,7 +67,11 @@ function createCustomProvider(): CustomProvider {
 
 export default function AdminLlmSettings() {
   const [settings, setSettings] = useState<LlmSettings | null>(null);
-  const [form, setForm] = useState<Partial<LlmSettings>>({ llm_custom_providers: [] });
+  const [form, setForm] = useState<Partial<LlmSettings>>({
+    llm_custom_providers: [],
+    llm_disabled_provider_ids: [],
+    llm_disabled_model_ids: [],
+  });
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<{ ok: boolean; msg: string } | null>(null);
   const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
@@ -68,6 +84,8 @@ export default function AdminLlmSettings() {
           const withProviders = {
             ...d.settings,
             llm_custom_providers: Array.isArray(d.settings.llm_custom_providers) ? d.settings.llm_custom_providers : [],
+            llm_disabled_provider_ids: Array.isArray(d.settings.llm_disabled_provider_ids) ? d.settings.llm_disabled_provider_ids : [],
+            llm_disabled_model_ids: Array.isArray(d.settings.llm_disabled_model_ids) ? d.settings.llm_disabled_model_ids : [],
           } as LlmSettings;
           setSettings(withProviders);
           setForm(withProviders);
@@ -92,6 +110,8 @@ export default function AdminLlmSettings() {
           const withProviders = {
             ...fresh.settings,
             llm_custom_providers: Array.isArray(fresh.settings.llm_custom_providers) ? fresh.settings.llm_custom_providers : [],
+            llm_disabled_provider_ids: Array.isArray(fresh.settings.llm_disabled_provider_ids) ? fresh.settings.llm_disabled_provider_ids : [],
+            llm_disabled_model_ids: Array.isArray(fresh.settings.llm_disabled_model_ids) ? fresh.settings.llm_disabled_model_ids : [],
           } as LlmSettings;
           setSettings(withProviders);
           setForm(withProviders);
@@ -114,6 +134,21 @@ export default function AdminLlmSettings() {
   const customProviders = useMemo(() => {
     return Array.isArray(form.llm_custom_providers) ? form.llm_custom_providers : [];
   }, [form.llm_custom_providers]);
+  const disabledProviderIds = useMemo(() => (
+    Array.isArray(form.llm_disabled_provider_ids) ? form.llm_disabled_provider_ids : []
+  ), [form.llm_disabled_provider_ids]);
+  const disabledModelIds = useMemo(() => (
+    Array.isArray(form.llm_disabled_model_ids) ? form.llm_disabled_model_ids : []
+  ), [form.llm_disabled_model_ids]);
+
+  const selectableBuiltinProviders = useMemo(
+    () => getSelectableBuiltinProviders(disabledProviderIds, disabledModelIds),
+    [disabledModelIds, disabledProviderIds]
+  );
+  const selectablePrimaryKeys = useMemo(
+    () => getSelectablePrimaryOptions(customProviders, disabledProviderIds, disabledModelIds),
+    [customProviders, disabledModelIds, disabledProviderIds]
+  );
 
   const updateCustomProvider = (id: string, patch: Partial<CustomProvider>) => {
     setForm((f) => ({
@@ -128,7 +163,12 @@ export default function AdminLlmSettings() {
     setForm((f) => ({
       ...f,
       llm_custom_providers: (Array.isArray(f.llm_custom_providers) ? f.llm_custom_providers : []).filter((entry) => entry.id !== id),
-      llm_primary: f.llm_primary === `custom:${id}` ? 'minimax' : f.llm_primary,
+      llm_primary: normalizeSelectablePrimary(
+        f.llm_primary === `custom:${id}` ? '' : String(f.llm_primary || ''),
+        (Array.isArray(f.llm_custom_providers) ? f.llm_custom_providers : []).filter((entry) => entry.id !== id),
+        Array.isArray(f.llm_disabled_provider_ids) ? f.llm_disabled_provider_ids : [],
+        Array.isArray(f.llm_disabled_model_ids) ? f.llm_disabled_model_ids : []
+      ),
     }));
   };
 
@@ -143,14 +183,19 @@ export default function AdminLlmSettings() {
     return <div className="text-zinc-500 text-sm animate-pulse">Loading LLM settings…</div>;
   }
 
-  const primary = form.llm_primary || 'minimax';
+  const primary = normalizeSelectablePrimary(
+    String(form.llm_primary || ''),
+    customProviders,
+    disabledProviderIds,
+    disabledModelIds
+  );
 
   const primaryOptions = [
-    ...Object.entries(BUILTIN_PROVIDER_LABELS).map(([key, info]) => ({
+    ...selectableBuiltinProviders.map((key) => ({
       key,
-      label: info.label,
-      color: info.color,
-      desc: info.desc,
+      label: BUILTIN_PROVIDER_DETAILS[key].label,
+      color: BUILTIN_PROVIDER_STYLES[key].color,
+      desc: BUILTIN_PROVIDER_DETAILS[key].description,
       configured:
         key === 'regex'
           ? true
@@ -158,27 +203,21 @@ export default function AdminLlmSettings() {
             ? isConfigured('openrouter')
             : isConfigured(key === 'claude' ? 'anthropic' : key),
     })),
-    ...customProviders.map((entry) => ({
-      key: `custom:${entry.id}`,
-      label: entry.name || `Custom ${entry.provider}`,
-      color: entry.enabled ? 'text-cyan-300' : 'text-zinc-500',
-      desc: `${entry.provider}${entry.model ? ` · ${entry.model}` : ''}`,
-      configured: Boolean(entry.api_key && !entry.api_key.includes('••')) || (entry.api_key || '').includes('••'),
-    })),
+    ...customProviders
+      .filter((entry) => entry.enabled)
+      .map((entry) => ({
+        key: `custom:${entry.id}`,
+        label: entry.name || `Custom ${entry.provider}`,
+        color: 'text-cyan-300',
+        desc: `${entry.provider}${entry.model ? ` · ${entry.model}` : ''}`,
+        configured: Boolean(entry.api_key && !entry.api_key.includes('••')) || (entry.api_key || '').includes('••'),
+      })),
   ];
 
-  const previewOrder = [
-    primary,
-    'minimax',
-    'claude',
-    'zai',
-    'openrouter-vision',
-    ...customProviders.filter((c) => c.enabled).map((c) => `custom:${c.id}`),
-    'regex',
-  ].filter((value, index, arr) => value && arr.indexOf(value) === index);
+  const previewOrder = getRuntimeMethodOrder(primary, customProviders);
 
   const resolvePreviewLabel = (key: string) => {
-    if (BUILTIN_PROVIDER_LABELS[key]) return BUILTIN_PROVIDER_LABELS[key].label;
+    if ((BUILTIN_PROVIDER_DETAILS as Record<string, { label: string }>)[key]) return (BUILTIN_PROVIDER_DETAILS as Record<string, { label: string }>)[key].label;
     if (key.startsWith('custom:')) {
       const id = key.slice('custom:'.length);
       const entry = customProviders.find((c) => c.id === id);
@@ -187,11 +226,43 @@ export default function AdminLlmSettings() {
     return key;
   };
 
+  const toggleBuiltinAvailability = (providerId: BuiltinProviderId, nextEnabled: boolean) => {
+    const modelId = BUILTIN_PROVIDER_DETAILS[providerId].modelId;
+    setForm((current) => {
+      const nextDisabledProviders = new Set(Array.isArray(current.llm_disabled_provider_ids) ? current.llm_disabled_provider_ids : []);
+      const nextDisabledModels = new Set(Array.isArray(current.llm_disabled_model_ids) ? current.llm_disabled_model_ids : []);
+
+      if (nextEnabled) {
+        nextDisabledProviders.delete(providerId);
+        if (modelId) nextDisabledModels.delete(modelId);
+      } else {
+        nextDisabledProviders.add(providerId);
+        if (modelId) nextDisabledModels.add(modelId);
+      }
+
+      const nextCustomProviders = Array.isArray(current.llm_custom_providers) ? current.llm_custom_providers : [];
+      return {
+        ...current,
+        llm_disabled_provider_ids: Array.from(nextDisabledProviders),
+        llm_disabled_model_ids: Array.from(nextDisabledModels),
+        llm_primary: normalizeSelectablePrimary(
+          String(current.llm_primary || ''),
+          nextCustomProviders,
+          Array.from(nextDisabledProviders),
+          Array.from(nextDisabledModels)
+        ),
+      };
+    });
+  };
+
   return (
     <div className="space-y-6">
       <div>
         <p className="text-xs uppercase font-black tracking-widest text-zinc-500 mb-3">Primary Extraction Model</p>
-        <p className="text-xs text-zinc-600 mb-4">All providers are now in one selector, including OpenRouter Vision and any custom entries.</p>
+        <p className="text-xs text-zinc-600 mb-4">Disabled built-ins are hidden from selection here, but still remain available to the internal fallback chain.</p>
+        {primaryOptions.length === 0 && (
+          <p className="text-xs text-amber-300 mb-4">No selectable models are enabled right now. Re-enable a built-in or add a custom provider below.</p>
+        )}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {primaryOptions.map((info) => {
             const active = primary === info.key;
@@ -214,6 +285,45 @@ export default function AdminLlmSettings() {
                   </p>
                 )}
               </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="bg-zinc-900/30 border border-zinc-800 rounded-2xl p-4 space-y-4">
+        <div>
+          <p className="text-xs uppercase font-black tracking-widest text-zinc-500">Built-in Availability</p>
+          <p className="text-xs text-zinc-600 mt-1">Disable built-ins to remove them from admin dropdowns without deleting their config or breaking runtime fallbacks.</p>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {BUILTIN_PROVIDER_ORDER.map((providerId) => {
+            const disabled = !selectableBuiltinProviders.includes(providerId);
+            const configured =
+              providerId === 'regex'
+                ? true
+                : providerId === 'openrouter-vision'
+                  ? isConfigured('openrouter')
+                  : isConfigured(providerId === 'claude' ? 'anthropic' : providerId);
+            return (
+              <div key={providerId} className={`rounded-2xl border p-4 ${disabled ? 'border-zinc-800 bg-zinc-950/60' : 'border-zinc-700/60 bg-zinc-900/40'}`}>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className={`text-sm font-black ${disabled ? 'text-zinc-500' : BUILTIN_PROVIDER_STYLES[providerId].color}`}>
+                      {BUILTIN_PROVIDER_DETAILS[providerId].label}
+                    </p>
+                    <p className="text-[10px] text-zinc-500 mt-1">{BUILTIN_PROVIDER_DETAILS[providerId].description}</p>
+                    <p className={`text-[10px] mt-2 font-bold ${configured ? 'text-emerald-500' : 'text-red-500/70'}`}>
+                      {providerId === 'regex' ? 'Always available' : (configured ? '● Key set' : '○ No key')}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => toggleBuiltinAvailability(providerId, disabled)}
+                    className={`px-3 py-1.5 text-xs rounded-xl border ${disabled ? 'border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10' : 'border-red-500/40 text-red-300 hover:bg-red-500/10'}`}
+                  >
+                    {disabled ? 'Enable' : 'Disable'}
+                  </button>
+                </div>
+              </div>
             );
           })}
         </div>
@@ -349,7 +459,7 @@ export default function AdminLlmSettings() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-black text-cyan-300">Custom Providers</p>
-              <p className="text-[10px] text-zinc-500">Add extra provider/model combos with their own API keys.</p>
+              <p className="text-[10px] text-zinc-500">Custom entries are hard-deleted when removed. Disable built-ins in the section above instead of deleting them.</p>
             </div>
             <button onClick={addCustomProvider} className="px-3 py-2 text-xs rounded-xl border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10">
               + Add Provider
@@ -379,7 +489,7 @@ export default function AdminLlmSettings() {
                   Enabled
                 </label>
                 <button onClick={() => removeCustomProvider(entry.id)} className="px-2 py-1 text-xs rounded-lg border border-red-500/40 text-red-300 hover:bg-red-500/10">
-                  Remove
+                  Delete
                 </button>
               </div>
 
@@ -434,15 +544,16 @@ export default function AdminLlmSettings() {
       </div>
 
       <div className="bg-zinc-900/20 border border-zinc-700/30 rounded-2xl p-4">
-        <p className="text-[10px] uppercase font-black tracking-widest text-zinc-600 mb-2">Extraction Order</p>
+        <p className="text-[10px] uppercase font-black tracking-widest text-zinc-600 mb-2">Internal Fallback Order</p>
         <div className="flex items-center gap-2 flex-wrap">
           {previewOrder.map((method, i) => {
             const isPrimary = i === 0;
+            const hiddenFromSelection = !selectablePrimaryKeys.includes(method);
             return (
               <React.Fragment key={method}>
                 {i > 0 && <span className="text-zinc-700 text-xs">→ fallback</span>}
-                <span className={`text-xs font-bold px-2 py-1 rounded-lg ${isPrimary ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-zinc-800 text-zinc-400'}`}>
-                  {isPrimary ? '★ ' : ''}{resolvePreviewLabel(method)}
+                <span className={`text-xs font-bold px-2 py-1 rounded-lg ${isPrimary ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : hiddenFromSelection ? 'bg-zinc-900 text-zinc-500 border border-zinc-800' : 'bg-zinc-800 text-zinc-400'}`}>
+                  {isPrimary ? '★ ' : ''}{resolvePreviewLabel(method)}{hiddenFromSelection ? ' (fallback only)' : ''}
                 </span>
               </React.Fragment>
             );

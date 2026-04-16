@@ -4,7 +4,7 @@ import { requireAccess } from '@/lib/ownership';
 import { generateDocumentProcessingPreview, type ModelTestProvider } from '@/lib/document-processing';
 import { getDocumentUploadMimeType } from '@/lib/upload-file-types';
 
-const ALLOWED_PROVIDERS = new Set<ModelTestProvider>(['auto', 'minimax', 'claude', 'zai', 'openrouter', 'regex']);
+const ALLOWED_PROVIDERS = new Set<ModelTestProvider>(['auto', 'minimax', 'claude', 'zai', 'openrouter-vision', 'openrouter', 'regex']);
 const MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024;
 
 export async function POST(request: Request) {
