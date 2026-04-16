@@ -3,7 +3,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import AuthGuard from '../AuthGuard';
-import PdfUploader from '../PdfUploader';
 import { calcTripPay, PAYABLE_DEFAULTS, type PayableItem, type MileRates } from '@/lib/trip-pay';
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -693,17 +692,18 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
           </div>
 
 
-          {/* PDF Upload */}
-          <div className="mt-3">
-            <PdfUploader
-              onTripCreated={refreshDashboard}
-              availableTrips={allTrips.map((trip) => ({
-                trip_number: trip.trip_number,
-                start_date: trip.start_date,
-                end_date: trip.end_date,
-                status: trip.status,
-              }))}
-            />
+          {/* Documents tab entry point */}
+          <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.03] p-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-[0.25em] text-emerald-400">Documents</p>
+              <p className="mt-1 text-xs text-zinc-400">Upload PDFs and receipt images from the dedicated Documents tab for smart intake review.</p>
+            </div>
+            <Link
+              href="/dispatch/documents"
+              className="inline-flex items-center justify-center rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-2 text-[10px] font-black uppercase tracking-[0.22em] text-emerald-300 transition hover:bg-emerald-500/20"
+            >
+              Open Documents →
+            </Link>
           </div>
         </section>
 
