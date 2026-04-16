@@ -7,9 +7,9 @@ import { LogoutButton } from './AuthGuard';
 
 const NAV_ITEMS = [
   { name: 'Dashboard', path: '/dispatch/dashboard', icon: '📊' },
+  { name: 'Trips', path: '/dispatch/trips', icon: '📋' },
   { name: 'Active', path: '/dispatch/active', icon: '🚛' },
   { name: 'Documents', path: '/dispatch/documents', icon: '📄' },
-  { name: 'Trips', path: '/dispatch/trips', icon: '📋' },
   { name: 'Fuel', path: '/dispatch/fuel-history', icon: '⛽' },
 ];
 
