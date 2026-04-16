@@ -14,10 +14,10 @@ type LlmSettings = {
 };
 
 const PROVIDER_LABELS: Record<string, { label: string; color: string; desc: string }> = {
-  minimax: { label: 'Minimax', color: 'text-purple-400', desc: 'Primary model — fast, reliable' },
+  minimax: { label: 'Minimax M2.7', color: 'text-purple-400', desc: 'Primary model, independent app default' },
   claude:  { label: 'Claude (Anthropic)', color: 'text-amber-400', desc: 'Best accuracy, vision support' },
   zai:     { label: 'Z.AI (GLM)', color: 'text-blue-400', desc: 'Alternative LLM' },
-  regex:   { label: 'Regex Only', color: 'text-zinc-400', desc: 'No AI — rule-based parsing only' },
+  regex:   { label: 'Regex Only', color: 'text-zinc-400', desc: 'No AI, rule-based parsing only' },
 };
 
 export default function AdminLlmSettings() {
@@ -119,8 +119,8 @@ export default function AdminLlmSettings() {
         <div className="bg-zinc-900/30 border border-zinc-800 rounded-2xl p-4 space-y-3">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-black text-purple-400">Minimax</p>
-              <p className="text-[10px] text-zinc-500">api.minimax.chat — fast structured extraction</p>
+              <p className="text-sm font-black text-purple-400">Minimax M2.7</p>
+              <p className="text-[10px] text-zinc-500">api.minimax.chat, independent Dispatch default</p>
             </div>
             <span className={`text-[10px] font-bold px-2 py-1 rounded-full ${isConfigured('minimax') ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>
               {isConfigured('minimax') ? 'Configured' : 'Not set'}
@@ -150,7 +150,7 @@ export default function AdminLlmSettings() {
               type="text"
               value={form.llm_minimax_model || ''}
               onChange={e => setForm(f => ({ ...f, llm_minimax_model: e.target.value }))}
-              placeholder="MiniMax-Text-01"
+              placeholder="MiniMax-M2.7"
               className="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-sm font-mono text-zinc-300 focus:outline-none focus:border-purple-500/60"
             />
           </div>

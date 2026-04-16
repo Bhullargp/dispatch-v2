@@ -5,6 +5,7 @@ import { requireAccess } from '@/lib/ownership';
 
 // Keys that hold sensitive values — mask them in GET responses
 const SENSITIVE_KEYS = new Set([
+  'llm_minimax_api_key',
   'llm_anthropic_api_key',
   'llm_zai_api_key',
 ]);
@@ -26,12 +27,14 @@ export async function GET(request: Request) {
 
     // Merge env fallbacks for display (masked)
     const display: Record<string, string> = {
-      llm_primary:           raw.llm_primary           || 'claude',
-      llm_anthropic_api_key: maskKey(raw.llm_anthropic_api_key || process.env.ANTHROPIC_API_KEY || ''),
-      llm_zai_api_key:       maskKey(raw.llm_zai_api_key || process.env.ZAI_API_KEY || ''),
-      llm_minimax_configured: 'false',
-      llm_anthropic_configured: String(!!(raw.llm_anthropic_api_key || process.env.ANTHROPIC_API_KEY)),
-      llm_zai_configured:       String(!!(raw.llm_zai_api_key || process.env.ZAI_API_KEY)),
+      llm_primary:             raw.llm_primary || 'minimax',
+      llm_minimax_model:       raw.llm_minimax_model || process.env.MINIMAX_MODEL || 'MiniMax-M2.7',
+      llm_minimax_api_key:     maskKey(raw.llm_minimax_api_key || process.env.MINIMAX_API_KEY || ''),
+      llm_anthropic_api_key:   maskKey(raw.llm_anthropic_api_key || process.env.ANTHROPIC_API_KEY || ''),
+      llm_zai_api_key:         maskKey(raw.llm_zai_api_key || process.env.ZAI_API_KEY || ''),
+      llm_minimax_configured:  String(!!(raw.llm_minimax_api_key || process.env.MINIMAX_API_KEY)),
+      llm_anthropic_configured:String(!!(raw.llm_anthropic_api_key || process.env.ANTHROPIC_API_KEY)),
+      llm_zai_configured:      String(!!(raw.llm_zai_api_key || process.env.ZAI_API_KEY)),
     };
 
     return NextResponse.json({ settings: display });
