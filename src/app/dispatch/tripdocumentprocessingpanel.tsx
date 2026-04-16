@@ -14,6 +14,7 @@ type DraftType = 'itinerary' | 'fuel' | 'toll' | 'reimbursement' | 'other' | 're
 
 type Draft = {
   id: number;
+  user_document_id?: number;
   trip_number: string | null;
   document_type: DraftType;
   status: DraftStatus;
@@ -24,6 +25,7 @@ type Draft = {
   error_message: string | null;
   original_filename: string;
   description: string | null;
+  file_key?: string | null;
   url: string | null;
   sourceUrl: string | null;
 };
@@ -154,6 +156,11 @@ function getPreviewKind(draft: Draft) {
   if (candidate.includes('.pdf')) return 'pdf';
   if (candidate.match(/\.(png|jpg|jpeg|gif|webp|bmp|heic)/)) return 'image';
   return 'unknown';
+}
+
+function getPreferredPreviewUrl(draft: Draft) {
+  if (draft.file_key?.startsWith('documents/') && draft.url) return draft.url;
+  return draft.sourceUrl || draft.url;
 }
 
 export default function TripDocumentProcessingPanel({
@@ -473,7 +480,7 @@ export default function TripDocumentProcessingPanel({
 
                 <div className="rounded-2xl border border-zinc-800 bg-zinc-950/80 overflow-hidden min-h-[22rem]">
                   {(() => {
-                    const previewUrl = activeDraft.sourceUrl || activeDraft.url;
+                    const previewUrl = getPreferredPreviewUrl(activeDraft);
                     const previewKind = getPreviewKind(activeDraft);
                     if (!previewUrl) {
                       return <div className="p-6 text-sm text-zinc-500">No preview available for this document yet.</div>;

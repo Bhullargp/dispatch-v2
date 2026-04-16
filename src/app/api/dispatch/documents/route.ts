@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { ensureDispatchAuthSchemaAndSeed } from '@/lib/dispatch-auth';
 import { getDocumentSourceFileType, ensureUserDocumentsTable, resolveDocumentSourcePath } from '@/lib/dispatch-documents';
-import { createDocumentProcessingDraftFromUpload } from '@/lib/document-processing';
+import { createDocumentProcessingDraftFromUpload, getDocumentProcessingDrafts } from '@/lib/document-processing';
 import { requireAccess } from '@/lib/ownership';
 import { uploadFileToR2, deleteFileFromR2, listUserFiles, isR2Configured } from '@/lib/r2-storage';
 
@@ -145,7 +145,7 @@ export async function POST(req: Request) {
     const userDocumentId = insertResult.rows?.[0]?.id;
     let processingDraft: any = null;
     if (userDocumentId) {
-      processingDraft = await createDocumentProcessingDraftFromUpload({
+      await createDocumentProcessingDraftFromUpload({
         userDocumentId,
         userId: access.session.userId,
         tripNumber,
@@ -155,6 +155,9 @@ export async function POST(req: Request) {
         buffer: uploadedBuffer,
         sourcePath: storedFile?.sourcePath || null,
       }).catch(() => null);
+
+      const drafts = await getDocumentProcessingDrafts(access.session.userId, tripNumber || null).catch(() => []);
+      processingDraft = drafts.find((draft) => draft.user_document_id === userDocumentId) || null;
     }
 
     return NextResponse.json({

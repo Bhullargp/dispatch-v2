@@ -53,6 +53,24 @@ function isImageDocument(fileType: string, filename: string) {
   return /\.(png|jpe?g|webp|heic|heif|gif)$/i.test(filename);
 }
 
+function buildDocumentOpenHref(document: DocumentRow) {
+  const isR2Key = !!document.file_key && document.file_key.startsWith('documents/');
+
+  if (isR2Key && document.file_key) {
+    return `/api/dispatch/documents/download/${document.file_key.split('/').map(encodeURIComponent).join('/')}`;
+  }
+
+  if (document.source_path) {
+    return `/api/dispatch/documents/source?path=${encodeURIComponent(document.source_path)}`;
+  }
+
+  if (document.file_key) {
+    return `/api/dispatch/documents/download/${document.file_key.split('/').map(encodeURIComponent).join('/')}`;
+  }
+
+  return null;
+}
+
 export default function DocumentsClient({
   availableTrips,
   initialDocuments,
@@ -120,11 +138,7 @@ export default function DocumentsClient({
         ) : (
           <div className="mt-6 grid gap-3">
             {documents.map((document) => {
-              const sourceHref = document.source_path
-                ? `/api/dispatch/documents/source?path=${encodeURIComponent(document.source_path)}`
-                : document.file_key
-                  ? `/api/dispatch/documents/download/${document.file_key.split('/').map(encodeURIComponent).join('/')}`
-                  : null;
+              const sourceHref = buildDocumentOpenHref(document);
 
               return (
                 <article

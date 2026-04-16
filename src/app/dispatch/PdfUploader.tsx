@@ -21,6 +21,7 @@ type DraftType = 'itinerary' | 'fuel' | 'toll' | 'reimbursement' | 'other' | 're
 
 type UploadDraft = {
   id: number;
+  user_document_id?: number;
   trip_number: string | null;
   document_type: DraftType;
   status: DraftStatus;
@@ -31,6 +32,7 @@ type UploadDraft = {
   error_message: string | null;
   original_filename: string;
   description: string | null;
+  file_key?: string | null;
   url: string | null;
   sourceUrl: string | null;
 };
@@ -149,6 +151,11 @@ function getPreviewKind(draft: UploadDraft) {
   if (candidate.includes('.pdf')) return 'pdf';
   if (candidate.match(/\.(png|jpg|jpeg|gif|webp|bmp|heic|heif)/)) return 'image';
   return 'unknown';
+}
+
+function getPreferredPreviewUrl(draft: UploadDraft) {
+  if (draft.file_key?.startsWith('documents/') && draft.url) return draft.url;
+  return draft.sourceUrl || draft.url;
 }
 
 function getReviewFields(type: DraftType): FieldConfig[] {
@@ -455,7 +462,7 @@ export default function PdfUploader({
 
                   <div className="min-h-[280px] flex-1 overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950/80">
                     {(() => {
-                      const previewUrl = reviewDraft.sourceUrl || reviewDraft.url;
+                      const previewUrl = getPreferredPreviewUrl(reviewDraft);
                       const previewKind = getPreviewKind(reviewDraft);
                       if (!previewUrl) {
                         return <div className="p-6 text-sm text-zinc-500">No preview available for this document yet.</div>;

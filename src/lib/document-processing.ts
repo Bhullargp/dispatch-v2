@@ -507,7 +507,17 @@ export async function createDocumentProcessingDraftFromUpload(params: {
     fileType: params.fileType,
   });
 
-  const rawText = buffer ? await extractDocumentText(buffer, fileType) : '';
+  let rawText = '';
+  let extractionError: string | null = null;
+  if (buffer) {
+    try {
+      rawText = await extractDocumentText(buffer, fileType);
+    } catch {
+      extractionError = 'Smart intake could not read this file automatically. Please review and confirm manually.';
+      rawText = '';
+    }
+  }
+
   const llmResult = rawText.trim()
     ? await classifyAndExtractWithLlm(rawText, params.filename, params.description).catch(() => null)
     : null;
@@ -538,14 +548,14 @@ export async function createDocumentProcessingDraftFromUpload(params: {
   await db().run(
     `INSERT INTO document_processing_drafts (
        user_document_id, user_id, trip_number, document_type, status, extracted_data, missing_fields, error_message, updated_at
-     ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, NULL, NOW())
+     ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, NOW())
      ON CONFLICT (user_document_id) DO UPDATE
      SET trip_number = EXCLUDED.trip_number,
          document_type = EXCLUDED.document_type,
          status = EXCLUDED.status,
          extracted_data = EXCLUDED.extracted_data,
          missing_fields = EXCLUDED.missing_fields,
-         error_message = NULL,
+         error_message = EXCLUDED.error_message,
          updated_at = NOW()`,
     [
       params.userDocumentId,
@@ -555,6 +565,7 @@ export async function createDocumentProcessingDraftFromUpload(params: {
       status,
       JSON.stringify(extractedData || {}),
       JSON.stringify(missingFields),
+      extractionError,
     ]
   );
 
