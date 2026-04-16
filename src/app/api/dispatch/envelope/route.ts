@@ -50,6 +50,8 @@ const S = StyleSheet.create({
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function fmtDate(d: string | null | undefined) {
   if (!d) return '';
+  const m = String(d).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) return `${m[2]}/${m[3]}/${m[1]}`;
   const dt = new Date(d);
   if (isNaN(dt.getTime())) return d;
   return `${String(dt.getMonth() + 1).padStart(2, '0')}/${String(dt.getDate()).padStart(2, '0')}/${dt.getFullYear()}`;
@@ -60,8 +62,32 @@ function fmtNum(n: any, dec = 0) {
   return isNaN(v) ? '' : v.toFixed(dec);
 }
 
-function fmtStopType(stopType: string | null | undefined) {
-  return (stopType || '').trim().replace(/\s+/g, ' ').toUpperCase();
+// Parse city + province/state from a full location string
+function cityProvince(loc: string) {
+  if (!loc) return '';
+  const parts = loc.split(',').map((p: string) => p.trim()).filter(Boolean);
+  if (parts.length >= 2) {
+    const city = parts[parts.length - 2];
+    let prov = parts[parts.length - 1];
+    // Strip postal codes: US zip (12345 or 12345-6789) and Canadian (A1A 1A1)
+    prov = prov.replace(/\s+[A-Z]\d[A-Z]\s*\d[A-Z]\d/i, '').replace(/\s+\d{5}(-\d{4})?/i, '').trim();
+    return `${city}, ${prov}`;
+  }
+  return loc;
+}
+
+// Detect trailer attachment timeline from stop descriptions
+function buildTrailerMap(trip: any, stops: any[]): Map<number, string> {
+  const map = new Map<number, string>();
+  let current = '';
+  for (let i = 0; i < stops.length; i++) {
+    const s = stops[i];
+    const desc = String(s?.description || '');
+    const m = desc.match(/trailer\s+([A-Z0-9]+)/i);
+    if (m) current = m[1].toUpperCase();
+    map.set(i, current);
+  }
+  return map;
 }
 
 // ─── PDF Document ─────────────────────────────────────────────────────────────
@@ -76,10 +102,15 @@ function TripEnvelope({ trip, stops, fuel, extraPay, expenses, driverName }: {
 
   const distUnit = 'MILES';
   const truckNum = trip.truck_number || trip.truck || '';
-  const trailerNum = trip.trailer_number || trip.trailer || '';
+  // Build per-stop trailer map
+  const trailerMap = buildTrailerMap(trip, stops);
 
-  // Stops — pad to at least 8 rows
-  const stopRows = [...stops];
+  // Filter out BORDER_CROSSING stops, then pad
+  const filteredStops = stops.filter((s: any) => {
+    const t = (s?.stop_type || '').toUpperCase();
+    return t !== 'BORDER_CROSSING';
+  });
+  const stopRows = [...filteredStops];
   while (stopRows.length < 8) stopRows.push(null);
 
   // Fuel — pad to at least 4 empty rows
@@ -191,7 +222,7 @@ function TripEnvelope({ trip, stops, fuel, extraPay, expenses, driverName }: {
             React.createElement(Text, { style: { fontFamily: 'Helvetica-Bold' } }, odometerTotal),
           ),
           React.createElement(View, { style: [S.tCell, { flex: 2.4, borderRight: 0 }] },
-            React.createElement(Text, null, trailerNum ? `Trailer: ${trailerNum}` : ''),
+            React.createElement(Text, null, (trip.trailer_number || trip.trailer) ? `Trailer: ${trip.trailer_number || trip.trailer}` : ''),
           ),
         ),
       ),
@@ -199,40 +230,71 @@ function TripEnvelope({ trip, stops, fuel, extraPay, expenses, driverName }: {
       // ── Stops table ──
       React.createElement(View, { style: S.table },
         React.createElement(View, { style: S.tHead },
-          React.createElement(Text, { style: [S.tHeadCell, { flex: 0.8 }] }, 'STOP TYPE'),
-          React.createElement(Text, { style: [S.tHeadCell, { flex: 0.6 }] }, 'TRAILER #'),
-          React.createElement(Text, { style: [S.tHeadCell, { flex: 2.2 }] }, 'COMPANY, CITY, PROVINCE'),
-          React.createElement(Text, { style: [S.tHeadCell, { flex: 0.6 }] }, 'REEFER TEMP'),
-          React.createElement(Text, { style: [S.tHeadCell, { flex: 0.5 }] }, 'TRIP #'),
-          React.createElement(Text, { style: [S.tHeadCell, { flex: 0.7, borderRight: 0 }] }, 'P/U DELIVER DROP'),
+          React.createElement(Text, { style: [S.tHeadCell, { flex: 0.7 }] }, 'TRAILER'),
+          React.createElement(Text, { style: [S.tHeadCell, { flex: 2.8 }] }, 'CITY, PROVINCE'),
+          React.createElement(Text, { style: [S.tHeadCell, { flex: 0.6 }] }, 'TEMP'),
+          React.createElement(Text, { style: [S.tHeadCell, { flex: 0.7 }] }, 'TRIP #'),
+          React.createElement(Text, { style: [S.tHeadCell, { flex: 1.0, borderRight: 0 }] }, 'EVENT'),
         ),
-        ...stopRows.map((s, i) => {
-          const stopType = fmtStopType(s?.stop_type);
-          const location = s?.location || '';
-          const stopTypeInline = stopType ? ` [${stopType}]` : '';
+        ...(() => {
+          const rows: any[] = [];
+          let lastTrailer = '';
+          let deliveryCount = 0;
+          let pickupCount = 0;
+          filteredStops.forEach((s: any, i: number) => {
+            if (!s) {
+              rows.push(React.createElement(View, { key: `empty-${i}`, style: S.tRow },
+                React.createElement(Text, { style: [S.tCell, { flex: 0.7 }] }, ''),
+                React.createElement(Text, { style: [S.tCell, { flex: 2.8 }] }, ''),
+                React.createElement(Text, { style: [S.tCell, { flex: 0.6 }] }, ''),
+                React.createElement(Text, { style: [S.tCell, { flex: 0.7 }] }, ''),
+                React.createElement(Text, { style: [S.tCell, { flex: 1.0, borderRight: 0 }] }, ''),
+              ));
+              return;
+            }
+            const tNum = trailerMap.get(i) || lastTrailer;
+            if (tNum) lastTrailer = tNum;
+            const stype = (s?.stop_type || '').toUpperCase();
+            const eventDisplay = stype.replace(/_/g, ' ');
+            const showTrailer = stype !== 'ACQUIRE' && stype !== 'RELEASE' ? tNum : '';
+            let tripCol = '';
+            if (stype === 'DELIVERY') {
+              deliveryCount += 1;
+              if (deliveryCount > 1) tripCol = '+1';
+            } else if (stype === 'PICKUP') {
+              pickupCount += 1;
+              if (pickupCount > 1) tripCol = '+1';
+            } else if (stype === 'HOOK' && i > 0 && String(filteredStops[i - 1]?.stop_type || '').toUpperCase() === 'DROP') {
+              tripCol = '+1';
+            }
 
-          return React.createElement(View, { key: i, style: S.tRow },
-            React.createElement(Text, { style: [S.tCell, S.stopTypeCellText, { flex: 0.8 }] }, stopType),
-            React.createElement(Text, { style: [S.tCell, { flex: 0.6 }] }, s ? (trailerNum || '') : ''),
-            React.createElement(View, { style: [S.tCell, S.locationCell, { flex: 2.2 }] },
-              s ? React.createElement(React.Fragment, null,
-                React.createElement(Text, { style: S.locationText }, location),
-                stopType ? React.createElement(Text, { style: S.stopTypeInline }, stopTypeInline) : null,
-              ) : null
-            ),
+            rows.push(React.createElement(View, { key: s.id || i, style: S.tRow },
+              React.createElement(Text, { style: [S.tCell, { flex: 0.7, fontFamily: showTrailer ? 'Helvetica-Bold' : 'Helvetica' }] },
+                showTrailer
+              ),
+              React.createElement(Text, { style: [S.tCell, { flex: 2.8, fontFamily: 'Helvetica-Bold' }] },
+                cityProvince(s.location || '')
+              ),
+              React.createElement(Text, { style: [S.tCell, { flex: 0.6 }] }, ''),
+              React.createElement(Text, { style: [S.tCell, { flex: 0.7, fontFamily: tripCol ? 'Helvetica-Bold' : 'Helvetica', fontSize: 7.5 }] },
+                tripCol
+              ),
+              React.createElement(Text, { style: [S.tCell, { flex: 1.0, borderRight: 0, fontFamily: eventDisplay ? 'Helvetica-Bold' : 'Helvetica', fontSize: 7.2 }] },
+                eventDisplay
+              ),
+            ));
+          });
+          while (rows.length < 8) rows.push(React.createElement(View, { key: `pad-${rows.length}`, style: S.tRow },
+            React.createElement(Text, { style: [S.tCell, { flex: 0.7 }] }, ''),
+            React.createElement(Text, { style: [S.tCell, { flex: 2.8 }] }, ''),
             React.createElement(Text, { style: [S.tCell, { flex: 0.6 }] }, ''),
-            React.createElement(Text, { style: [S.tCell, { flex: 0.5 }] }, ''),
-            React.createElement(Text, { style: [S.tCell, { flex: 0.7, borderRight: 0, fontFamily: s?.stop_type ? 'Helvetica-Bold' : 'Helvetica' }] },
-              s ? (s.stop_type || '').toUpperCase()
-                .replace('PICKUP', 'P/U')
-                .replace('DELIVERY', 'D/L')
-                .replace('DELIVER', 'D/L') : ''
-            ),
-          );
-        }),
+            React.createElement(Text, { style: [S.tCell, { flex: 0.7 }] }, ''),
+            React.createElement(Text, { style: [S.tCell, { flex: 1.0, borderRight: 0 }] }, ''),
+          ));
+          return rows;
+        })(),
       ),
-
-      // ── Extra Pay & Reimbursements (two-column) ──
+// ── Extra Pay & Reimbursements (two-column) ──
       ...(extraRows.length > 0 ? [
         React.createElement(View, { style: { flexDirection: 'row', gap: 8 } },
 
@@ -241,13 +303,11 @@ function TripEnvelope({ trip, stops, fuel, extraPay, expenses, driverName }: {
             React.createElement(Text, { style: S.sectionLabel }, 'EXTRA PAY'),
             React.createElement(View, { style: S.extrasTable },
               React.createElement(View, { style: S.extrasHead },
-                React.createElement(Text, { style: S.extrasHeadDesc }, 'DESCRIPTION'),
-                React.createElement(Text, { style: S.extrasHeadAmt }, 'AMOUNT'),
+                React.createElement(Text, { style: [S.extrasHeadDesc, { flex: 1 }] }, 'DESCRIPTION'),
               ),
               ...extraRows.filter(r => !r.isToll).map((r, i) =>
                 React.createElement(View, { key: i, style: S.extrasRow },
                   React.createElement(Text, { style: S.extrasDesc }, r.desc),
-                  React.createElement(Text, { style: S.extrasAmt }, r.amt > 0 ? `$${r.amt.toFixed(2)}` : ''),
                 )
               ),
               extraRows.filter(r => !r.isToll).length === 0
@@ -259,7 +319,7 @@ function TripEnvelope({ trip, stops, fuel, extraPay, expenses, driverName }: {
               // Subtotal
               React.createElement(View, { style: S.extrasTotalRow },
                 React.createElement(Text, { style: [S.extrasDesc, { color: '#cc1111' }] }, 'SUBTOTAL'),
-                React.createElement(Text, { style: [S.extrasAmt, { color: '#cc1111' }] }, `$${payTotal.toFixed(2)}`),
+                React.createElement(Text, { style: [S.extrasAmt, { color: '#cc1111' }] }, ''),
               ),
             ),
           ),
@@ -269,13 +329,11 @@ function TripEnvelope({ trip, stops, fuel, extraPay, expenses, driverName }: {
             React.createElement(Text, { style: S.sectionLabel }, 'REIMBURSEMENTS & TOLLS'),
             React.createElement(View, { style: S.extrasTable },
               React.createElement(View, { style: S.extrasHead },
-                React.createElement(Text, { style: S.extrasHeadDesc }, 'DESCRIPTION'),
-                React.createElement(Text, { style: S.extrasHeadAmt }, 'AMOUNT (CAD)'),
+                React.createElement(Text, { style: [S.extrasHeadDesc, { flex: 1 }] }, 'DESCRIPTION'),
               ),
               ...extraRows.filter(r => r.isToll).map((r, i) =>
                 React.createElement(View, { key: i, style: S.extrasRow },
                   React.createElement(Text, { style: S.extrasDesc }, r.desc),
-                  React.createElement(Text, { style: S.extrasAmt }, r.amt > 0 ? `$${r.amt.toFixed(2)}` : ''),
                 )
               ),
               extraRows.filter(r => r.isToll).length === 0
@@ -287,7 +345,7 @@ function TripEnvelope({ trip, stops, fuel, extraPay, expenses, driverName }: {
               // Subtotal
               React.createElement(View, { style: S.extrasTotalRow },
                 React.createElement(Text, { style: [S.extrasDesc, { color: '#cc1111' }] }, 'SUBTOTAL'),
-                React.createElement(Text, { style: [S.extrasAmt, { color: '#cc1111' }] }, `$${tollsTotal.toFixed(2)}`),
+                React.createElement(Text, { style: [S.extrasAmt, { color: '#cc1111' }] }, ''),
               ),
             ),
           ),
@@ -392,7 +450,7 @@ export async function GET(request: Request) {
     return new Response(uint8, {
       headers: {
         'Content-Type': 'application/pdf',
-        'Content-Disposition': `attachment; filename="trip-envelope-${trip_number}.pdf"`,
+        'Content-Disposition': `attachment; filename="${trip_number}.pdf"`,
         'Cache-Control': 'no-store',
       },
     });
