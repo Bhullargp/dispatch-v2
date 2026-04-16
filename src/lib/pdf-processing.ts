@@ -791,8 +791,6 @@ export async function processClaimedUploadJob(job: UploadJob) {
     const buffer = await readFile(absPath);
 
     const rawText = await extractTextFromPdf(buffer);
-    const textLooksSparse = rawText.replace(/\s+/g, ' ').trim().length < 300;
-    const textMissesTripNumber = !/\bT\d{4,}\b/i.test(rawText);
 
     // Load runtime LLM config from DB (admin can change at any time)
     const cfg = await getLlmConfig();
@@ -827,7 +825,7 @@ export async function processClaimedUploadJob(job: UploadJob) {
 
     parsed = undefined as any;
 
-    if ((textLooksSparse || textMissesTripNumber) && cfg.openrouterApiKey) {
+    if (cfg.openrouterApiKey) {
       try {
         parsed = await tryOpenRouterVision();
       } catch (err: any) {

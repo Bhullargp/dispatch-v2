@@ -82,7 +82,7 @@ export default function AdminLlmSettings() {
       {/* Primary Model Selector */}
       <div>
         <p className="text-xs uppercase font-black tracking-widest text-zinc-500 mb-3">Primary Extraction Model</p>
-        <p className="text-xs text-zinc-600 mb-4">This model runs first for text-based itinerary parsing. Scanned/image documents can separately use OpenRouter Vision.</p>
+        <p className="text-xs text-zinc-600 mb-4">This model runs first for text-based extraction. OpenRouter Vision handles document PDF understanding separately, including scanned/image-based files.</p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {Object.entries(PROVIDER_LABELS).map(([key, info]) => {
             const active = primary === key;
@@ -164,7 +164,7 @@ export default function AdminLlmSettings() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-black text-fuchsia-400">OpenRouter Vision</p>
-              <p className="text-[10px] text-zinc-500">Scanned/image document extraction only, not general app logic</p>
+              <p className="text-[10px] text-zinc-500">Document PDF understanding and scanned/image extraction only, not general app logic</p>
             </div>
             <span className={`text-[10px] font-bold px-2 py-1 rounded-full ${isConfigured('openrouter') ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>
               {isConfigured('openrouter') ? 'Configured' : 'Not set'}
