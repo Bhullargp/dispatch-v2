@@ -695,7 +695,15 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
 
           {/* PDF Upload */}
           <div className="mt-3">
-            <PdfUploader onTripCreated={refreshDashboard} />
+            <PdfUploader
+              onTripCreated={refreshDashboard}
+              availableTrips={allTrips.map((trip) => ({
+                trip_number: trip.trip_number,
+                start_date: trip.start_date,
+                end_date: trip.end_date,
+                status: trip.status,
+              }))}
+            />
           </div>
         </section>
 
