@@ -10,6 +10,7 @@ import { useAuth } from './auth';
 import AuthGuard from './AuthGuard';
 
 import { calcTripPay as sharedCalcTripPay, PAYABLE_DEFAULTS, type PayableItem, type MileRates } from '@/lib/trip-pay';
+import { SUPPORTED_DOCUMENT_ACCEPT } from '@/lib/upload-file-types';
 
 const PAYABLE_TYPES = PAYABLE_DEFAULTS;
 
@@ -226,7 +227,7 @@ export default function TripSheet({ initialTrips, isAdmin = false }: { initialTr
           <input
             ref={fileInputRef}
             type="file"
-            accept="application/pdf"
+            accept={SUPPORTED_DOCUMENT_ACCEPT}
             className="hidden"
             onChange={(e) => onSelectPdf(e.target.files?.[0] || undefined)}
           />
@@ -247,7 +248,7 @@ export default function TripSheet({ initialTrips, isAdmin = false }: { initialTr
                     <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse inline-block" />
                   )}
                   {uploadingPdf ? 'Uploading…'
-                    : activeJobs.length > 0 ? `Processing ${activeJobs.length} PDF${activeJobs.length > 1 ? 's' : ''}…`
+                    : activeJobs.length > 0 ? `Processing ${activeJobs.length} upload${activeJobs.length > 1 ? 's' : ''}…`
                     : `${failedJobs.length} failed`}
                   {failedJobs.length > 0 && !uploadingPdf && activeJobs.length === 0 && (
                     <span className="ml-1 text-red-400 truncate max-w-[120px]">{failedJobs[0].error_message?.slice(0, 40)}</span>

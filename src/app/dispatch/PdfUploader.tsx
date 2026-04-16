@@ -2,6 +2,11 @@
 
 import React, { useState, useRef, useCallback } from 'react';
 import Link from 'next/link';
+import {
+  isSupportedDocumentUpload,
+  SUPPORTED_DOCUMENT_ACCEPT,
+  SUPPORTED_DOCUMENT_UPLOAD_ERROR,
+} from '@/lib/upload-file-types';
 
 type UploadStatus = 'idle' | 'uploading' | 'extracting' | 'saving' | 'done' | 'error';
 
@@ -21,14 +26,14 @@ export default function PdfUploader({ onTripCreated }: { onTripCreated?: () => v
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const upload = useCallback(async (file: File) => {
-    if (!file.name.toLowerCase().endsWith('.pdf')) {
-      setMessage('Only PDF files are supported');
+    if (!isSupportedDocumentUpload(file)) {
+      setMessage(SUPPORTED_DOCUMENT_UPLOAD_ERROR);
       setStatus('error');
       return;
     }
 
     setStatus('uploading');
-    setMessage('Uploading PDF...');
+    setMessage('Uploading document...');
     setTripNumber(null);
 
     try {
@@ -111,7 +116,7 @@ export default function PdfUploader({ onTripCreated }: { onTripCreated?: () => v
         <input
           ref={fileInputRef}
           type="file"
-          accept="application/pdf"
+          accept={SUPPORTED_DOCUMENT_ACCEPT}
           className="hidden"
           onChange={handleFileSelect}
         />
@@ -121,7 +126,7 @@ export default function PdfUploader({ onTripCreated }: { onTripCreated?: () => v
             <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto" />
             <div>
               <p className="text-xs font-black uppercase tracking-widest text-emerald-400">
-                {status === 'uploading' && 'Uploading PDF...'}
+                {status === 'uploading' && 'Uploading document...'}
                 {status === 'extracting' && 'Extracting trip data...'}
                 {status === 'saving' && 'Saving trip...'}
               </p>
@@ -133,10 +138,10 @@ export default function PdfUploader({ onTripCreated }: { onTripCreated?: () => v
             <div className="text-2xl">📄</div>
             <div>
               <p className="text-xs font-black uppercase tracking-widest text-zinc-400">
-                Drop PDF here or click to upload
+                Drop PDF or image here or click to upload
               </p>
               <p className="text-[10px] text-zinc-600 mt-1">
-                Driver itineraries auto-parsed with AI
+                Driver itineraries and document images supported
               </p>
             </div>
           </div>

@@ -6,6 +6,12 @@ import { db } from '@/lib/db';
 import { ensureDispatchAuthSchemaAndSeed } from '@/lib/dispatch-auth';
 import { requireAccess } from '@/lib/ownership';
 import { claimUploadJobById, processClaimedUploadJob } from '@/lib/pdf-processing';
+import {
+  getDocumentUploadMimeType,
+  isPdfDocumentUpload,
+  isSupportedDocumentUpload,
+  SUPPORTED_DOCUMENT_UPLOAD_ERROR,
+} from '@/lib/upload-file-types';
 
 export async function GET(req: Request) {
   try {
@@ -51,12 +57,15 @@ export async function POST(req: Request) {
     const formData = await req.formData();
     const file = formData.get('file') as File | null;
     if (!file) return NextResponse.json({ error: 'Missing file' }, { status: 400 });
-    if (!file.name.toLowerCase().endsWith('.pdf')) return NextResponse.json({ error: 'Only PDF files are supported' }, { status: 400 });
+    if (!isSupportedDocumentUpload(file)) {
+      return NextResponse.json({ error: SUPPORTED_DOCUMENT_UPLOAD_ERROR }, { status: 400 });
+    }
 
     const bytes = await file.arrayBuffer();
     const buffer = Buffer.from(bytes);
+    const mimeType = getDocumentUploadMimeType(file);
 
-    if (buffer.length < 5 || buffer.subarray(0, 5).toString('utf8') !== '%PDF-') {
+    if (isPdfDocumentUpload(file) && (buffer.length < 5 || buffer.subarray(0, 5).toString('utf8') !== '%PDF-')) {
       return NextResponse.json({ error: 'Invalid PDF file. Please upload a valid PDF.' }, { status: 400 });
     }
 
@@ -74,7 +83,7 @@ export async function POST(req: Request) {
     const inserted = await db().run(`
       INSERT INTO upload_jobs (user_id, original_filename, stored_path, mime_type, size_bytes, content_hash, status, max_attempts)
       VALUES ($1, $2, $3, $4, $5, $6, 'queued', 3)
-    `, [access.session.userId, file.name, relativePath, file.type || 'application/pdf', file.size || buffer.length, contentHash]);
+    `, [access.session.userId, file.name, relativePath, mimeType || file.type || 'application/pdf', file.size || buffer.length, contentHash]);
     jobId = inserted.changes;
 
     // Try to get the actual inserted ID
