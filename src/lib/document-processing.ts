@@ -1,6 +1,7 @@
 import { readFile } from 'fs/promises';
 import { db } from '@/lib/db';
 import { buildDocumentDownloadUrl, buildSourcePathUrl, ensureUserDocumentsTable, getDocumentSourceFileType, resolveDocumentSourcePath } from '@/lib/dispatch-documents';
+import { downloadFromR2 } from '@/lib/r2-storage';
 import Anthropic from '@anthropic-ai/sdk';
 import {
   extractTextFromImage,
@@ -414,12 +415,20 @@ function getMissingFields(type: DocumentDraftType, data: DocumentDraftData) {
 async function loadDocumentBinary(params: {
   buffer?: Buffer | null;
   sourcePath?: string | null;
+  s3Key?: string | null;
   filename: string;
   fileType?: string | null;
 }) {
   if (params.buffer) {
     return {
       buffer: params.buffer,
+      fileType: params.fileType || getDocumentSourceFileType(params.filename),
+    };
+  }
+
+  if (params.s3Key) {
+    return {
+      buffer: await downloadFromR2(params.s3Key),
       fileType: params.fileType || getDocumentSourceFileType(params.filename),
     };
   }
@@ -497,53 +506,65 @@ export async function createDocumentProcessingDraftFromUpload(params: {
   fileType?: string | null;
   buffer?: Buffer | null;
   sourcePath?: string | null;
+  s3Key?: string | null;
 }) {
   await ensureDocumentProcessingTables();
-
-  const { buffer, fileType } = await loadDocumentBinary({
-    buffer: params.buffer,
-    sourcePath: params.sourcePath,
-    filename: params.filename,
-    fileType: params.fileType,
-  });
-
-  let rawText = '';
-  let extractionError: string | null = null;
-  if (buffer) {
-    try {
-      rawText = await extractDocumentText(buffer, fileType);
-    } catch {
-      extractionError = 'Smart intake could not read this file automatically. Please review and confirm manually.';
-      rawText = '';
-    }
-  }
-
-  const llmResult = rawText.trim()
-    ? await classifyAndExtractWithLlm(rawText, params.filename, params.description).catch(() => null)
-    : null;
-  const documentType = normalizeDocumentType(llmResult?.document_type || inferDocumentType(params.filename, params.description, rawText));
-
+  let documentType: DocumentDraftType = 'unknown';
+  let status: DocumentDraftStatus = 'needs_review';
   let extractedData: DocumentDraftData = {};
-  if (documentType === 'itinerary') {
-    extractedData = await extractItineraryDraft(buffer, fileType, rawText);
-  } else if (documentType === 'fuel') {
-    extractedData = { ...parseFuelDraft(rawText, params.filename), ...(llmResult?.extracted_data || {}) };
-  } else if (documentType === 'toll') {
-    extractedData = { ...parseTollDraft(rawText, params.filename), ...(llmResult?.extracted_data || {}) };
-  } else if (documentType === 'reimbursement') {
-    extractedData = { ...parseReimbursementDraft(rawText, params.filename), ...(llmResult?.extracted_data || {}) };
-  } else if (documentType === 'other' || documentType === 'receipt') {
-    extractedData = { ...parseOtherReceiptDraft(rawText, params.filename), ...(llmResult?.extracted_data || {}) };
+  let missingFields: string[] = [];
+  let extractionError: string | null = null;
+
+  try {
+    const loaded = await loadDocumentBinary({
+      buffer: params.buffer,
+      sourcePath: params.sourcePath,
+      s3Key: params.s3Key,
+      filename: params.filename,
+      fileType: params.fileType,
+    });
+
+    let rawText = '';
+    if (loaded.buffer) {
+      try {
+        rawText = await extractDocumentText(loaded.buffer, loaded.fileType);
+      } catch {
+        extractionError = 'Smart intake could not read this file automatically. Please review and confirm manually.';
+        rawText = '';
+      }
+    }
+
+    const llmResult = rawText.trim()
+      ? await classifyAndExtractWithLlm(rawText, params.filename, params.description).catch(() => null)
+      : null;
+    documentType = normalizeDocumentType(llmResult?.document_type || inferDocumentType(params.filename, params.description, rawText));
+
+    if (documentType === 'itinerary') {
+      extractedData = await extractItineraryDraft(loaded.buffer, loaded.fileType, rawText);
+    } else if (documentType === 'fuel') {
+      extractedData = { ...parseFuelDraft(rawText, params.filename), ...(llmResult?.extracted_data || {}) };
+    } else if (documentType === 'toll') {
+      extractedData = { ...parseTollDraft(rawText, params.filename), ...(llmResult?.extracted_data || {}) };
+    } else if (documentType === 'reimbursement') {
+      extractedData = { ...parseReimbursementDraft(rawText, params.filename), ...(llmResult?.extracted_data || {}) };
+    } else if (documentType === 'other' || documentType === 'receipt') {
+      extractedData = { ...parseOtherReceiptDraft(rawText, params.filename), ...(llmResult?.extracted_data || {}) };
+    }
+
+    if (!extractedData.raw_text && rawText) extractedData.raw_text = rawText.slice(0, 12000);
+
+    missingFields = getMissingFields(documentType, extractedData);
+    status = documentType === 'unknown'
+      ? 'needs_review'
+      : missingFields.length === 0
+        ? 'ready'
+        : 'needs_review';
+  } catch (error: any) {
+    documentType = normalizeDocumentType(inferDocumentType(params.filename, params.description, null));
+    status = 'error';
+    missingFields = [];
+    extractionError = String(error?.message || 'Smart intake failed to process this file. Retry extraction or review manually.');
   }
-
-  if (!extractedData.raw_text && rawText) extractedData.raw_text = rawText.slice(0, 12000);
-
-  const missingFields = getMissingFields(documentType, extractedData);
-  const status: DocumentDraftStatus = documentType === 'unknown'
-    ? 'needs_review'
-    : missingFields.length === 0
-      ? 'ready'
-      : 'needs_review';
 
   await db().run(
     `INSERT INTO document_processing_drafts (
@@ -569,7 +590,54 @@ export async function createDocumentProcessingDraftFromUpload(params: {
     ]
   );
 
-  return { documentType, status, extractedData, missingFields };
+  return { documentType, status, extractedData, missingFields, extractionError };
+}
+
+export async function retryDocumentProcessingDraft(params: {
+  draftId: number;
+  userId: number;
+}) {
+  await ensureDocumentProcessingTables();
+
+  const draft = await db().get(
+    `SELECT d.id,
+            d.user_document_id,
+            d.trip_number,
+            u.filename,
+            u.description,
+            u.file_type,
+            u.s3_key,
+            u.source_path
+     FROM document_processing_drafts d
+     JOIN user_documents u ON u.id = d.user_document_id
+     WHERE d.id = $1 AND d.user_id = $2`,
+    [params.draftId, params.userId]
+  ) as {
+    id: number;
+    user_document_id: number;
+    trip_number: string | null;
+    filename: string;
+    description: string | null;
+    file_type: string | null;
+    s3_key: string | null;
+    source_path: string | null;
+  } | undefined;
+
+  if (!draft) throw new Error('Document draft not found');
+
+  await createDocumentProcessingDraftFromUpload({
+    userDocumentId: draft.user_document_id,
+    userId: params.userId,
+    tripNumber: draft.trip_number,
+    filename: draft.filename,
+    description: draft.description,
+    fileType: draft.file_type || undefined,
+    sourcePath: draft.source_path,
+    s3Key: draft.s3_key,
+  });
+
+  const rows = await getDocumentProcessingDrafts(params.userId, draft.trip_number);
+  return rows.find((row) => row.id === params.draftId) || rows.find((row) => row.user_document_id === draft.user_document_id) || null;
 }
 
 export async function getDocumentProcessingDrafts(userId: string | number, tripNumber?: string | null): Promise<DocumentProcessingDraft[]> {

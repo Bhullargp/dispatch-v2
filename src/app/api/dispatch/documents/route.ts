@@ -154,6 +154,7 @@ export async function POST(req: Request) {
         fileType: storedFile?.fileType || file?.type || 'application/octet-stream',
         buffer: uploadedBuffer,
         sourcePath: storedFile?.sourcePath || null,
+        s3Key: storedFile?.sourcePath ? null : storedFile?.key || null,
       }).catch(() => null);
 
       const drafts = await getDocumentProcessingDrafts(access.session.userId, tripNumber || null).catch(() => []);

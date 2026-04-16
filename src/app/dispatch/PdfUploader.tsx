@@ -200,6 +200,31 @@ function buildSuccessMessage(params: {
   return `Receipt saved as expense #${linkedRecordId}${tripNumber ? ` for trip ${tripNumber}` : ''}.`;
 }
 
+function buildBasicReceiptSummary(values: Record<string, any>) {
+  const toText = (value: any) => {
+    if (value === null || value === undefined || value === '') return null;
+    return String(value).trim() || null;
+  };
+
+  const amountRaw = values.amount_usd;
+  const amount = amountRaw === null || amountRaw === undefined || amountRaw === ''
+    ? null
+    : Number(amountRaw);
+  const amountNumber = typeof amount === 'number' && Number.isFinite(amount) ? amount : null;
+  const amountText = amountNumber !== null ? `$${amountNumber.toFixed(2)}` : toText(amountRaw);
+
+  const notes = toText(values.notes);
+
+  return [
+    { label: 'Date', value: toText(values.date) },
+    { label: 'Amount', value: amountText },
+    { label: 'Name', value: toText(values.name) },
+    { label: 'Location', value: toText(values.location) },
+    { label: 'Category', value: toText(values.category) },
+    { label: 'Notes', value: notes ? (notes.length > 80 ? `${notes.slice(0, 80)}…` : notes) : null },
+  ].filter((item) => item.value);
+}
+
 export default function PdfUploader({
   onTripCreated,
   availableTrips = [],
@@ -214,6 +239,7 @@ export default function PdfUploader({
   const [reviewDraft, setReviewDraft] = useState<UploadDraft | null>(null);
   const [draftEdits, setDraftEdits] = useState<Record<string, any>>({});
   const [assignedTripNumber, setAssignedTripNumber] = useState<string>('');
+  const [retryingDraft, setRetryingDraft] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const orderedTrips = useMemo(() => {
@@ -231,6 +257,8 @@ export default function PdfUploader({
     : {};
   const reviewFields = getReviewFields(activeType);
   const requiresTripAssignment = !!reviewDraft && activeType !== 'itinerary';
+  const showBasicReceiptSummary = activeType === 'toll' || activeType === 'reimbursement' || activeType === 'other';
+  const basicReceiptSummary = buildBasicReceiptSummary(activeValues);
 
   const updateDraftField = useCallback((field: string, value: any) => {
     setDraftEdits((current) => ({
@@ -332,6 +360,38 @@ export default function PdfUploader({
     }
   }, [assignedTripNumber, draftEdits, onTripCreated, reviewDraft]);
 
+  const retryDraftProcessing = useCallback(async () => {
+    if (!reviewDraft) return;
+
+    setRetryingDraft(true);
+    setStatus('saving');
+    setMessage('Retrying smart intake extraction from stored file...');
+    try {
+      const res = await fetch('/api/dispatch/document-processing/retry', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ draftId: reviewDraft.id }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Could not retry document processing');
+
+      if (data?.draft) {
+        const nextDraft = data.draft as UploadDraft;
+        setReviewDraft(nextDraft);
+        setDraftEdits({ ...(nextDraft.extracted_data || {}), document_type: nextDraft.document_type });
+        setAssignedTripNumber(nextDraft.trip_number || orderedTrips[0]?.trip_number || '');
+      }
+
+      setStatus('done');
+      setMessage('Retry complete. Review extracted details and confirm.');
+    } catch (error: any) {
+      setStatus('error');
+      setMessage(error?.message || 'Could not retry document processing');
+    } finally {
+      setRetryingDraft(false);
+    }
+  }, [orderedTrips, reviewDraft]);
+
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
@@ -353,7 +413,7 @@ export default function PdfUploader({
     if (file) upload(file);
   }, [upload]);
 
-  const isProcessing = status === 'uploading' || status === 'saving';
+  const isProcessing = status === 'uploading' || status === 'saving' || retryingDraft;
   const extraFieldKeys = Object.keys(activeValues).filter((key) => !reviewFields.some((field) => field.key === key) && key !== 'document_type');
 
   return (
@@ -458,6 +518,16 @@ export default function PdfUploader({
                         Missing {formatFieldLabel(field)}
                       </span>
                     ))}
+                    {reviewDraft.status === 'error' && (
+                      <button
+                        type="button"
+                        onClick={retryDraftProcessing}
+                        disabled={retryingDraft || status === 'saving'}
+                        className="rounded-full border border-red-600/50 bg-red-950/30 px-3 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-red-200 transition hover:bg-red-950/50 disabled:opacity-60"
+                      >
+                        {retryingDraft ? 'Retrying...' : 'Retry extraction'}
+                      </button>
+                    )}
                   </div>
 
                   <div className="min-h-[280px] flex-1 overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950/80">
@@ -493,6 +563,36 @@ export default function PdfUploader({
                         <p className="mt-2 break-all text-sm font-black text-white sm:text-base">{reviewDraft.original_filename}</p>
                         <p className="mt-1 text-xs text-zinc-400 sm:text-sm">{getTypeDetails(activeType).helper}</p>
                       </div>
+
+                      {showBasicReceiptSummary && (
+                        <div className="rounded-2xl border border-zinc-800 bg-black/20 p-4">
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Basic extracted info</p>
+                            {reviewDraft.status === 'error' && (
+                              <button
+                                type="button"
+                                onClick={retryDraftProcessing}
+                                disabled={retryingDraft || status === 'saving'}
+                                className="rounded-lg border border-amber-600/40 bg-amber-900/20 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-amber-200 transition hover:bg-amber-900/35 disabled:opacity-60"
+                              >
+                                {retryingDraft ? 'Retrying...' : 'Retry extract'}
+                              </button>
+                            )}
+                          </div>
+                          {basicReceiptSummary.length === 0 ? (
+                            <p className="mt-2 text-xs text-zinc-500">No basic fields were extracted yet. You can fill them below.</p>
+                          ) : (
+                            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                              {basicReceiptSummary.map((item) => (
+                                <div key={item.label} className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-3 py-2">
+                                  <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-500">{item.label}</p>
+                                  <p className="mt-1 text-xs font-semibold text-zinc-200">{item.value}</p>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
 
                       <div className="grid gap-3 md:grid-cols-2">
                         <label className="space-y-1 md:col-span-2">
@@ -580,7 +680,17 @@ export default function PdfUploader({
 
                       {reviewDraft.error_message && (
                         <div className="rounded-2xl border border-red-700/40 bg-red-950/20 p-4 text-xs text-red-300">
-                          {reviewDraft.error_message}
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                            <span>{reviewDraft.error_message}</span>
+                            <button
+                              type="button"
+                              onClick={retryDraftProcessing}
+                              disabled={retryingDraft || status === 'saving'}
+                              className="rounded-lg border border-red-500/40 bg-red-900/20 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.18em] text-red-100 transition hover:bg-red-900/35 disabled:opacity-60"
+                            >
+                              {retryingDraft ? 'Retrying...' : 'Retry'}
+                            </button>
+                          </div>
                         </div>
                       )}
                     </div>
