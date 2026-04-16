@@ -4,6 +4,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { calcTripPay, PAYABLE_DEFAULTS, type PayableItem, type MileRates, type TripPayInput } from '@/lib/trip-pay';
+import TripDocumentProcessingPanel from './tripdocumentprocessingpanel';
 
 // User-configurable extra pay items (fetched from settings)
 let userExtraPayItems: Array<{ name: string; rate: number; unit: string }> = [];
@@ -740,6 +741,15 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
             {!isSaving && !actionError && actionSuccess && <p className="text-green-400">{actionSuccess}</p>}
           </div>
         )}
+
+        <TripDocumentProcessingPanel
+          tripNumber={currentTrip.trip_number}
+          onSaved={(message) => {
+            setActionError(null);
+            setActionSuccess(message);
+            setTimeout(() => setActionSuccess(null), 3000);
+          }}
+        />
 
         {/* ── Crew & Equipment Card ── */}
         <div className="grid grid-cols-3 gap-3">

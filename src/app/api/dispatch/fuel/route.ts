@@ -156,16 +156,12 @@ export async function GET(request: Request) {
           END AS receipt_url,
           filename AS receipt_filename
         FROM user_documents
-        WHERE trip_number = $1
-          AND (lower(description) LIKE '%fuel%' OR lower(description) LIKE '%receipt%' OR lower(filename) LIKE '%fuel%' OR lower(filename) LIKE '%receipt%')
-          AND (
-            filename ILIKE $2 OR
-            COALESCE(description, '') ILIKE $2 OR
-            COALESCE(source_path, '') ILIKE $2
-          )
+        WHERE user_id = $1
+          AND linked_record_type = 'fuel'
+          AND linked_record_id = $2
         ORDER BY uploaded_at DESC, id DESC
         LIMIT 1`,
-        [entry.trip_number || 'UNLINKED', `%${entry.date || ''}%`]
+        [access.session.userId, entry.id]
       ) || await db().get(
         `SELECT
           CASE WHEN source_path IS NOT NULL AND source_path <> ''
@@ -175,10 +171,30 @@ export async function GET(request: Request) {
           filename AS receipt_filename
         FROM user_documents
         WHERE trip_number = $1
+          AND user_id = $2
+          AND (lower(description) LIKE '%fuel%' OR lower(description) LIKE '%receipt%' OR lower(filename) LIKE '%fuel%' OR lower(filename) LIKE '%receipt%')
+          AND (
+            filename ILIKE $3 OR
+            COALESCE(description, '') ILIKE $3 OR
+            COALESCE(source_path, '') ILIKE $3
+          )
+        ORDER BY uploaded_at DESC, id DESC
+        LIMIT 1`,
+        [entry.trip_number || 'UNLINKED', access.session.userId, `%${entry.date || ''}%`]
+      ) || await db().get(
+        `SELECT
+          CASE WHEN source_path IS NOT NULL AND source_path <> ''
+            THEN '/api/dispatch/documents/source?path=' || REPLACE(source_path, ' ', '%20')
+            ELSE '/api/dispatch/documents/download/' || REPLACE(s3_key, '/', '%2F') || '?redirect=true'
+          END AS receipt_url,
+          filename AS receipt_filename
+        FROM user_documents
+        WHERE trip_number = $1
+          AND user_id = $2
           AND (lower(description) LIKE '%fuel%' OR lower(description) LIKE '%receipt%' OR lower(filename) LIKE '%fuel%' OR lower(filename) LIKE '%receipt%')
         ORDER BY uploaded_at DESC, id DESC
         LIMIT 1`,
-        [entry.trip_number || 'UNLINKED']
+        [entry.trip_number || 'UNLINKED', access.session.userId]
       );
       return {
         ...entry,

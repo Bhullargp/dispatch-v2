@@ -4,6 +4,7 @@ import { ensureDispatchAuthSchemaAndSeed } from '@/lib/dispatch-auth';
 import { requireAccess } from '@/lib/ownership';
 import { uploadFileToR2, deleteFileFromR2, listUserFiles, isR2Configured } from '@/lib/r2-storage';
 import { ensureUserDocumentsTable } from '@/lib/dispatch-documents';
+import { createDocumentProcessingDraftFromUpload } from '@/lib/document-processing';
 
 // GET - List user's documents
 export async function GET(req: Request) {
@@ -55,6 +56,7 @@ export async function POST(req: Request) {
     await ensureUserDocumentsTable();
 
     let storedFile = null as null | { key: string; url: string; originalFilename: string; fileType: string; fileSize: number; sourcePath?: string | null };
+    let uploadedBuffer: Buffer | null = null;
 
     if (file) {
       // File size limit: 50MB
@@ -86,6 +88,7 @@ export async function POST(req: Request) {
 
       const bytes = await file.arrayBuffer();
       const buffer = Buffer.from(bytes);
+      uploadedBuffer = buffer;
 
       const r2Result = await uploadFileToR2({
         userId: access.session.userId,
@@ -112,9 +115,10 @@ export async function POST(req: Request) {
       };
     }
 
-    await database.run(`
+    const insertResult = await database.run(`
       INSERT INTO user_documents (user_id, s3_key, filename, file_type, file_size, description, trip_number, source_path)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      RETURNING id
     `, [
       access.session.userId,
       storedFile?.key,
@@ -126,9 +130,24 @@ export async function POST(req: Request) {
       storedFile?.sourcePath || null,
     ]);
 
+    const userDocumentId = insertResult.rows?.[0]?.id;
+    let processingDraft: any = null;
+    if (userDocumentId) {
+      processingDraft = await createDocumentProcessingDraftFromUpload({
+        userDocumentId,
+        userId: access.session.userId,
+        tripNumber,
+        filename: storedFile?.originalFilename || file?.name || 'document',
+        description,
+        fileType: storedFile?.fileType || file?.type || 'application/octet-stream',
+        buffer: uploadedBuffer,
+      }).catch(() => null);
+    }
+
     return NextResponse.json({
       success: true,
       file: {
+        id: userDocumentId,
         key: storedFile?.key,
         url: storedFile?.url,
         originalFilename: storedFile?.originalFilename,
@@ -137,7 +156,8 @@ export async function POST(req: Request) {
         description,
         tripNumber,
         sourcePath: storedFile?.sourcePath || null,
-      }
+      },
+      processingDraft,
     });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });

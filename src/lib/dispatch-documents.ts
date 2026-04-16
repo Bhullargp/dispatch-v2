@@ -9,6 +9,8 @@ export type TripDocument = {
   description: string | null;
   trip_number: string | null;
   source_path: string | null;
+  linked_record_type?: string | null;
+  linked_record_id?: number | null;
   uploaded_at: string | null;
   url: string | null;
   sourceUrl: string | null;
@@ -33,6 +35,8 @@ export async function ensureUserDocumentsTable() {
 
   await db().run('ALTER TABLE user_documents ADD COLUMN IF NOT EXISTS source_path TEXT').catch(() => {});
   await db().run('ALTER TABLE user_documents ADD COLUMN IF NOT EXISTS description TEXT').catch(() => {});
+  await db().run('ALTER TABLE user_documents ADD COLUMN IF NOT EXISTS linked_record_type TEXT').catch(() => {});
+  await db().run('ALTER TABLE user_documents ADD COLUMN IF NOT EXISTS linked_record_id INTEGER').catch(() => {});
 }
 
 export function buildDocumentDownloadUrl(fileKey: string) {
@@ -60,6 +64,8 @@ export async function getTripDocuments(userId: string | number, tripNumber: stri
             description,
             trip_number,
             source_path,
+            linked_record_type,
+            linked_record_id,
             uploaded_at::text AS uploaded_at
      FROM user_documents
      WHERE user_id = $1 AND trip_number = $2
