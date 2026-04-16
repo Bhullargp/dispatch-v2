@@ -1,6 +1,13 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 
 type DraftStatus = 'processing' | 'needs_review' | 'ready' | 'saved' | 'error';
 type DraftType = 'fuel' | 'toll' | 'reimbursement' | 'other' | 'receipt' | 'unknown';
@@ -21,18 +28,104 @@ type Draft = {
   sourceUrl: string | null;
 };
 
-const TYPE_OPTIONS: Array<{ value: DraftType; label: string }> = [
-  { value: 'fuel', label: 'Fuel receipt' },
-  { value: 'toll', label: 'Toll receipt' },
-  { value: 'reimbursement', label: 'Reimbursement receipt' },
-  { value: 'other', label: 'Other receipt' },
+type FieldConfig = {
+  key: string;
+  label: string;
+  type?: 'text' | 'number' | 'date' | 'textarea';
+  step?: string;
+  placeholder?: string;
+  fullWidth?: boolean;
+};
+
+const TYPE_OPTIONS: Array<{ value: DraftType; label: string; helper: string }> = [
+  { value: 'fuel', label: 'Fuel receipt', helper: 'Pump slips, truck-stop invoices, diesel receipts' },
+  { value: 'toll', label: 'Toll receipt', helper: 'Road tolls, bridge charges, weigh-station fees' },
+  { value: 'reimbursement', label: 'Reimbursement receipt', helper: 'Driver reimbursement items and out-of-pocket spend' },
+  { value: 'other', label: 'Other receipt', helper: 'Lumper, parking, scales, supplies, and other trip costs' },
 ];
+
+const FIELD_LABELS: Record<string, string> = {
+  amount_usd: 'Amount (USD)',
+  date: 'Date',
+  gallons: 'Gallons',
+  liters: 'Litres',
+  location: 'Location',
+  name: 'Name',
+  notes: 'Notes',
+  odometer: 'Odometer',
+  price_per_unit: 'Price / unit',
+  vendor: 'Vendor',
+  invoice_number: 'Invoice #',
+  tax_amount: 'Tax amount',
+  currency: 'Currency',
+  category: 'Category',
+  description: 'Description',
+};
+
+const BASE_FIELDS: FieldConfig[] = [
+  { key: 'date', label: 'Date', type: 'date' },
+  { key: 'amount_usd', label: 'Amount (USD)', type: 'number', step: '0.01', placeholder: '0.00' },
+];
+
+const TYPE_FIELDS: Record<'fuel' | 'toll' | 'reimbursement' | 'other', FieldConfig[]> = {
+  fuel: [
+    { key: 'location', label: 'Location', placeholder: 'TA, Flying J, Petro, etc.', fullWidth: true },
+    { key: 'gallons', label: 'Gallons', type: 'number', step: '0.001' },
+    { key: 'liters', label: 'Litres', type: 'number', step: '0.01' },
+    { key: 'price_per_unit', label: 'Price / unit', type: 'number', step: '0.001' },
+    { key: 'odometer', label: 'Odometer', type: 'number', step: '1' },
+    { key: 'notes', label: 'Notes', type: 'textarea', fullWidth: true, placeholder: 'Optional fuel notes' },
+  ],
+  toll: [
+    { key: 'name', label: 'Charge name', placeholder: 'Toll road or bridge name' },
+    { key: 'location', label: 'Location', placeholder: 'Where this charge happened' },
+    { key: 'notes', label: 'Notes', type: 'textarea', fullWidth: true, placeholder: 'Lane, bridge, road, or extra context' },
+  ],
+  reimbursement: [
+    { key: 'name', label: 'Reimbursement name', placeholder: 'Meal, hotel, parking, etc.' },
+    { key: 'location', label: 'Location', placeholder: 'Store, city, or stop' },
+    { key: 'notes', label: 'Notes', type: 'textarea', fullWidth: true, placeholder: 'What this reimbursement is for' },
+  ],
+  other: [
+    { key: 'name', label: 'Expense name', placeholder: 'Lumper, parking, supplies, etc.' },
+    { key: 'location', label: 'Location', placeholder: 'Vendor or location' },
+    { key: 'notes', label: 'Notes', type: 'textarea', fullWidth: true, placeholder: 'Any extra context for dispatch/accounting' },
+  ],
+};
 
 function statusTone(status: DraftStatus) {
   if (status === 'saved') return 'border-emerald-700/50 bg-emerald-950/30 text-emerald-300';
   if (status === 'ready') return 'border-cyan-700/50 bg-cyan-950/30 text-cyan-300';
   if (status === 'error') return 'border-red-700/50 bg-red-950/30 text-red-300';
   return 'border-amber-700/50 bg-amber-950/20 text-amber-200';
+}
+
+function friendlyStatus(status: DraftStatus) {
+  if (status === 'needs_review') return 'needs review';
+  return status;
+}
+
+function getTypeDetails(type: DraftType) {
+  return TYPE_OPTIONS.find((option) => option.value === type) || TYPE_OPTIONS[3];
+}
+
+function getReviewFields(type: DraftType): FieldConfig[] {
+  const normalizedType = (type === 'fuel' || type === 'toll' || type === 'reimbursement' || type === 'other'
+    ? type
+    : 'other') as 'fuel' | 'toll' | 'reimbursement' | 'other';
+
+  return [...BASE_FIELDS, ...TYPE_FIELDS[normalizedType]];
+}
+
+function formatFieldLabel(key: string) {
+  return FIELD_LABELS[key] || key.replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function getPreviewKind(draft: Draft) {
+  const candidate = `${draft.original_filename} ${draft.sourceUrl || ''} ${draft.url || ''}`.toLowerCase();
+  if (candidate.includes('.pdf')) return 'pdf';
+  if (candidate.match(/\.(png|jpg|jpeg|gif|webp|bmp|heic)/)) return 'image';
+  return 'unknown';
 }
 
 export default function TripDocumentProcessingPanel({
@@ -50,6 +143,7 @@ export default function TripDocumentProcessingPanel({
   const [panelError, setPanelError] = useState<string | null>(null);
   const [selectedType, setSelectedType] = useState<DraftType>('fuel');
   const [draftEdits, setDraftEdits] = useState<Record<number, Record<string, any>>>({});
+  const [reviewDraftId, setReviewDraftId] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const loadDrafts = useCallback(async () => {
@@ -58,10 +152,11 @@ export default function TripDocumentProcessingPanel({
       const res = await fetch(`/api/dispatch/document-processing?tripNumber=${encodeURIComponent(tripNumber)}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || 'Failed to load documents');
-      setDrafts(Array.isArray(data?.drafts) ? data.drafts : []);
+      const nextDrafts = Array.isArray(data?.drafts) ? data.drafts : [];
+      setDrafts(nextDrafts);
       setDraftEdits((current) => {
         const next = { ...current };
-        for (const draft of Array.isArray(data?.drafts) ? data.drafts : []) {
+        for (const draft of nextDrafts) {
           next[draft.id] = next[draft.id] || { ...(draft.extracted_data || {}), document_type: draft.document_type };
         }
         return next;
@@ -77,10 +172,17 @@ export default function TripDocumentProcessingPanel({
     loadDrafts();
   }, [loadDrafts]);
 
-  const pendingCount = useMemo(
-    () => drafts.filter((draft) => draft.status !== 'saved').length,
-    [drafts]
+  const pendingCount = useMemo(() => drafts.filter((draft) => draft.status !== 'saved').length, [drafts]);
+
+  const activeDraft = useMemo(
+    () => drafts.find((draft) => draft.id === reviewDraftId) || null,
+    [drafts, reviewDraftId]
   );
+
+  const activeType = ((draftEdits[activeDraft?.id || -1]?.document_type || activeDraft?.document_type || 'other') as DraftType);
+  const activeValues = activeDraft
+    ? { ...(activeDraft.extracted_data || {}), ...(draftEdits[activeDraft.id] || {}) }
+    : {};
 
   const handleUpload = useCallback(async (file: File) => {
     setUploading(true);
@@ -90,16 +192,15 @@ export default function TripDocumentProcessingPanel({
       const form = new FormData();
       form.append('file', file);
       form.append('tripNumber', tripNumber);
-      form.append('description', TYPE_OPTIONS.find((option) => option.value === selectedType)?.label || 'Receipt');
+      form.append('description', getTypeDetails(selectedType).label);
 
       const res = await fetch('/api/dispatch/documents', { method: 'POST', body: form });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || 'Upload failed');
 
-      setPanelMessage(data?.processingDraft?.status === 'ready'
-        ? 'Document parsed and ready to save.'
-        : 'Document uploaded. Review extracted fields before saving.');
+      setPanelMessage('Document uploaded. Open the review modal to confirm extracted fields before saving.');
       await loadDrafts();
+      if (data?.processingDraft?.id) setReviewDraftId(data.processingDraft.id);
     } catch (error: any) {
       setPanelError(error.message || 'Upload failed');
     } finally {
@@ -136,10 +237,13 @@ export default function TripDocumentProcessingPanel({
 
       const successMessage = documentType === 'fuel'
         ? `Fuel entry #${data?.linkedRecordId} created and receipt linked.`
-        : `Expense #${data?.linkedRecordId} created and receipt linked.`;
+        : documentType === 'reimbursement'
+          ? `Reimbursement #${data?.linkedRecordId} created and receipt linked.`
+          : `Expense #${data?.linkedRecordId} created and receipt linked.`;
       setPanelMessage(successMessage);
       onSaved?.(successMessage);
       await loadDrafts();
+      setReviewDraftId(null);
     } catch (error: any) {
       setPanelError(error.message || 'Could not save document');
     } finally {
@@ -151,10 +255,11 @@ export default function TripDocumentProcessingPanel({
     <section className="bg-zinc-900/40 border border-zinc-800 rounded-3xl p-6 space-y-5">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
-          <p className="text-[10px] font-black uppercase tracking-[0.35em] text-emerald-500">Document processing</p>
-          <h2 className="text-xl font-black text-white mt-1">Receipt inbox</h2>
-          <p className="text-xs text-zinc-500 mt-1">
-            Upload trip receipts, review extracted values, fill gaps like odometer, then save directly into the trip.
+          <p className="text-[10px] font-black uppercase tracking-[0.35em] text-emerald-500">Smart intake</p>
+          <h2 className="text-xl font-black text-white mt-1">Trip document inbox</h2>
+          <p className="text-xs text-zinc-500 mt-1 max-w-2xl">
+            One place for PDFs and images, whether Boss is dropping in dispatch paperwork, fuel receipts, or reimbursement docs.
+            Upload, review the extracted fields in-place, make fixes, then confirm without leaving this trip screen.
           </p>
         </div>
 
@@ -183,14 +288,22 @@ export default function TripDocumentProcessingPanel({
             disabled={uploading}
             className="bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60 text-white text-[10px] font-black uppercase px-4 py-3 rounded-xl border border-emerald-600 transition-all"
           >
-            {uploading ? 'Uploading...' : 'Upload receipt'}
+            {uploading ? 'Uploading...' : 'Upload file'}
           </button>
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3 text-[11px] font-mono text-zinc-500">
-        <span>{loading ? 'Loading documents...' : `${drafts.length} documents in this trip inbox`}</span>
-        <span className="text-amber-400 font-black">{pendingCount} pending</span>
+      <div className="grid gap-3 xl:grid-cols-[1.2fr_0.8fr]">
+        <div className="rounded-2xl border border-zinc-800 bg-black/20 p-4">
+          <div className="flex flex-wrap items-center gap-3 text-[11px] font-mono text-zinc-500">
+            <span>{loading ? 'Loading documents...' : `${drafts.length} files in this trip inbox`}</span>
+            <span className="text-amber-400 font-black">{pendingCount} pending review</span>
+          </div>
+        </div>
+        <div className="rounded-2xl border border-zinc-800 bg-black/20 p-4 text-xs text-zinc-400">
+          <p className="font-black text-zinc-200 uppercase tracking-[0.25em] text-[10px] mb-1">What this handles</p>
+          Smart review covers receipts now, with the same intake area ready for dispatch packets, PDFs, phone photos, and reimbursement support.
+        </div>
       </div>
 
       {(panelMessage || panelError) && (
@@ -201,37 +314,40 @@ export default function TripDocumentProcessingPanel({
 
       {drafts.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-zinc-800 bg-black/20 p-6 text-sm text-zinc-500">
-          No receipt documents for this trip yet.
+          No trip documents yet. Upload a PDF or image to start the smart review flow.
         </div>
       ) : (
         <div className="space-y-4">
           {drafts.map((draft) => {
             const values = { ...(draft.extracted_data || {}), ...(draftEdits[draft.id] || {}) };
             const currentType = (draftEdits[draft.id]?.document_type || draft.document_type) as DraftType;
-            const isFuel = currentType === 'fuel';
             const isSaved = draft.status === 'saved';
-            const previewUrl = draft.sourceUrl || draft.url;
+            const summaryName = currentType === 'fuel' ? values.location : values.name || values.location;
 
             return (
               <div key={draft.id} className={`rounded-2xl border p-4 ${statusTone(draft.status)}`}>
-                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                  <div className="space-y-2 min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-400">{currentType}</span>
-                      <span className="text-[10px] font-black uppercase tracking-[0.3em]">{draft.status.replace('_', ' ')}</span>
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                  <div className="min-w-0 space-y-2">
+                    <div className="flex flex-wrap items-center gap-2 text-[10px] font-black uppercase tracking-[0.25em]">
+                      <span className="text-zinc-400">{getTypeDetails(currentType).label}</span>
+                      <span>{friendlyStatus(draft.status)}</span>
                       {draft.missing_fields?.length > 0 && !isSaved && (
-                        <span className="text-[10px] text-amber-300">Missing: {draft.missing_fields.join(', ')}</span>
+                        <span className="text-amber-300 tracking-normal normal-case text-[11px] font-mono">
+                          Missing: {draft.missing_fields.join(', ')}
+                        </span>
                       )}
                     </div>
                     <p className="text-sm font-black text-white truncate">{draft.original_filename}</p>
                     <p className="text-xs text-zinc-400">
-                      {draft.description || 'No description yet'}
+                      {summaryName || draft.description || getTypeDetails(currentType).helper}
+                      {values.amount_usd ? ` • $${values.amount_usd}` : ''}
+                      {values.date ? ` • ${values.date}` : ''}
                       {draft.linked_record_type && draft.linked_record_id ? ` • linked to ${draft.linked_record_type} #${draft.linked_record_id}` : ''}
                     </p>
                     {draft.error_message && <p className="text-xs text-red-300">{draft.error_message}</p>}
                   </div>
 
-                  <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
                     <select
                       value={currentType}
                       onChange={(event) => updateDraftField(draft.id, 'document_type', event.target.value)}
@@ -242,137 +358,196 @@ export default function TripDocumentProcessingPanel({
                         <option key={option.value} value={option.value}>{option.label}</option>
                       ))}
                     </select>
-                    {previewUrl && (
-                      <a
-                        href={previewUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="bg-zinc-900 hover:bg-zinc-800 text-[10px] font-black uppercase px-3 py-2 rounded-xl border border-zinc-700 transition-all"
+                    <button
+                      onClick={() => setReviewDraftId(draft.id)}
+                      className="bg-zinc-900 hover:bg-zinc-800 text-[10px] font-black uppercase px-3 py-2 rounded-xl border border-zinc-700 transition-all"
+                    >
+                      {isSaved ? 'View' : 'Review'}
+                    </button>
+                    {!isSaved && (
+                      <button
+                        onClick={() => saveDraft(draft)}
+                        disabled={savingId === draft.id}
+                        className="bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60 text-white text-[10px] font-black uppercase px-4 py-2 rounded-xl border border-emerald-600 transition-all"
                       >
-                        Preview
-                      </a>
+                        {savingId === draft.id ? 'Saving...' : 'Quick save'}
+                      </button>
                     )}
                   </div>
-                </div>
-
-                <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                  <label className="space-y-1">
-                    <span className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">Date</span>
-                    <input
-                      type="date"
-                      value={values.date || ''}
-                      onChange={(event) => updateDraftField(draft.id, 'date', event.target.value)}
-                      disabled={isSaved}
-                      className="w-full bg-black/40 border border-zinc-800 rounded-xl p-3 text-sm font-mono outline-none focus:border-emerald-500 disabled:opacity-70"
-                    />
-                  </label>
-
-                  <label className="space-y-1 md:col-span-2">
-                    <span className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">{isFuel ? 'Location' : 'Name'}</span>
-                    <input
-                      value={isFuel ? (values.location || '') : (values.name || '')}
-                      onChange={(event) => updateDraftField(draft.id, isFuel ? 'location' : 'name', event.target.value)}
-                      disabled={isSaved}
-                      className="w-full bg-black/40 border border-zinc-800 rounded-xl p-3 text-sm font-mono outline-none focus:border-emerald-500 disabled:opacity-70"
-                    />
-                  </label>
-
-                  <label className="space-y-1">
-                    <span className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">Amount</span>
-                    <input
-                      type="number"
-                      step="0.01"
-                      value={values.amount_usd ?? ''}
-                      onChange={(event) => updateDraftField(draft.id, 'amount_usd', event.target.value)}
-                      disabled={isSaved}
-                      className="w-full bg-black/40 border border-zinc-800 rounded-xl p-3 text-sm font-mono outline-none focus:border-emerald-500 disabled:opacity-70"
-                    />
-                  </label>
-
-                  {isFuel ? (
-                    <>
-                      <label className="space-y-1">
-                        <span className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">Gallons</span>
-                        <input
-                          type="number"
-                          step="0.001"
-                          value={values.gallons ?? ''}
-                          onChange={(event) => updateDraftField(draft.id, 'gallons', event.target.value)}
-                          disabled={isSaved}
-                          className="w-full bg-black/40 border border-zinc-800 rounded-xl p-3 text-sm font-mono outline-none focus:border-emerald-500 disabled:opacity-70"
-                        />
-                      </label>
-                      <label className="space-y-1">
-                        <span className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">Litres</span>
-                        <input
-                          type="number"
-                          step="0.01"
-                          value={values.liters ?? ''}
-                          onChange={(event) => updateDraftField(draft.id, 'liters', event.target.value)}
-                          disabled={isSaved}
-                          className="w-full bg-black/40 border border-zinc-800 rounded-xl p-3 text-sm font-mono outline-none focus:border-emerald-500 disabled:opacity-70"
-                        />
-                      </label>
-                      <label className="space-y-1">
-                        <span className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">Price / unit</span>
-                        <input
-                          type="number"
-                          step="0.001"
-                          value={values.price_per_unit ?? ''}
-                          onChange={(event) => updateDraftField(draft.id, 'price_per_unit', event.target.value)}
-                          disabled={isSaved}
-                          className="w-full bg-black/40 border border-zinc-800 rounded-xl p-3 text-sm font-mono outline-none focus:border-emerald-500 disabled:opacity-70"
-                        />
-                      </label>
-                      <label className="space-y-1">
-                        <span className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">Odometer</span>
-                        <input
-                          type="number"
-                          value={values.odometer ?? ''}
-                          onChange={(event) => updateDraftField(draft.id, 'odometer', event.target.value)}
-                          disabled={isSaved}
-                          className="w-full bg-black/40 border border-zinc-800 rounded-xl p-3 text-sm font-mono outline-none focus:border-emerald-500 disabled:opacity-70"
-                        />
-                      </label>
-                    </>
-                  ) : (
-                    <>
-                      <label className="space-y-1 xl:col-span-1">
-                        <span className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">Location</span>
-                        <input
-                          value={values.location || ''}
-                          onChange={(event) => updateDraftField(draft.id, 'location', event.target.value)}
-                          disabled={isSaved}
-                          className="w-full bg-black/40 border border-zinc-800 rounded-xl p-3 text-sm font-mono outline-none focus:border-emerald-500 disabled:opacity-70"
-                        />
-                      </label>
-                      <label className="space-y-1 xl:col-span-2">
-                        <span className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">Notes</span>
-                        <input
-                          value={values.notes || ''}
-                          onChange={(event) => updateDraftField(draft.id, 'notes', event.target.value)}
-                          disabled={isSaved}
-                          className="w-full bg-black/40 border border-zinc-800 rounded-xl p-3 text-sm font-mono outline-none focus:border-emerald-500 disabled:opacity-70"
-                        />
-                      </label>
-                    </>
-                  )}
-                </div>
-
-                <div className="mt-4 flex justify-end">
-                  <button
-                    onClick={() => saveDraft(draft)}
-                    disabled={isSaved || savingId === draft.id}
-                    className="bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60 text-white text-[10px] font-black uppercase px-4 py-3 rounded-xl border border-emerald-600 transition-all"
-                  >
-                    {isSaved ? 'Saved' : savingId === draft.id ? 'Saving...' : isFuel ? 'Create fuel entry' : currentType === 'reimbursement' ? 'Create reimbursement' : 'Create expense'}
-                  </button>
                 </div>
               </div>
             );
           })}
         </div>
       )}
+
+      <Dialog open={!!activeDraft} onOpenChange={(open) => !open && setReviewDraftId(null)}>
+        {activeDraft && (
+          <DialogContent className="max-w-6xl border-zinc-800 bg-zinc-950 text-white p-0 overflow-hidden">
+            <DialogHeader className="border-b border-zinc-800 px-6 py-5 text-left">
+              <DialogTitle className="text-xl font-black">Review and confirm</DialogTitle>
+              <DialogDescription className="text-zinc-400">
+                Confirm the extracted values for this PDF or image, adjust anything that looks off, then save it straight into this trip.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="grid max-h-[80vh] gap-0 lg:grid-cols-[1.1fr_0.9fr]">
+              <div className="border-b border-zinc-800 bg-black/30 p-4 lg:border-b-0 lg:border-r lg:p-5 overflow-auto">
+                <div className="flex flex-wrap items-center gap-2 mb-4">
+                  <span className="rounded-full border border-zinc-700 px-3 py-1 text-[10px] font-black uppercase tracking-[0.25em] text-zinc-300">
+                    {getTypeDetails(activeType).label}
+                  </span>
+                  <span className="rounded-full border border-zinc-700 px-3 py-1 text-[10px] font-black uppercase tracking-[0.25em] text-zinc-400">
+                    {friendlyStatus(activeDraft.status)}
+                  </span>
+                  {activeDraft.missing_fields?.map((field) => (
+                    <span key={field} className="rounded-full border border-amber-700/50 bg-amber-950/30 px-3 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-amber-200">
+                      Missing {formatFieldLabel(field)}
+                    </span>
+                  ))}
+                </div>
+
+                <div className="rounded-2xl border border-zinc-800 bg-zinc-950/80 overflow-hidden min-h-[22rem]">
+                  {(() => {
+                    const previewUrl = activeDraft.sourceUrl || activeDraft.url;
+                    const previewKind = getPreviewKind(activeDraft);
+                    if (!previewUrl) {
+                      return <div className="p-6 text-sm text-zinc-500">No preview available for this document yet.</div>;
+                    }
+                    if (previewKind === 'image') {
+                      return <img src={previewUrl} alt={activeDraft.original_filename} className="w-full h-full object-contain bg-black max-h-[58vh]" />;
+                    }
+                    if (previewKind === 'pdf') {
+                      return <iframe src={previewUrl} title={activeDraft.original_filename} className="w-full h-[58vh] bg-black" />;
+                    }
+                    return (
+                      <div className="p-6 text-sm text-zinc-400 space-y-3">
+                        <p>Preview is not embedded for this file type.</p>
+                        <a href={previewUrl} target="_blank" rel="noopener noreferrer" className="inline-flex rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-2 text-xs font-black uppercase text-white">
+                          Open file
+                        </a>
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+
+              <div className="p-5 overflow-auto">
+                <div className="space-y-4 pb-2">
+                  <div className="rounded-2xl border border-zinc-800 bg-black/20 p-4">
+                    <p className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Document</p>
+                    <p className="mt-2 text-sm font-black text-white break-all">{activeDraft.original_filename}</p>
+                    <p className="mt-1 text-xs text-zinc-400">{getTypeDetails(activeType).helper}</p>
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <label className="space-y-1 md:col-span-2">
+                      <span className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">Document type</span>
+                      <select
+                        value={activeType}
+                        onChange={(event) => updateDraftField(activeDraft.id, 'document_type', event.target.value)}
+                        disabled={activeDraft.status === 'saved'}
+                        className="w-full bg-black/40 border border-zinc-800 rounded-xl px-3 py-3 text-sm font-mono outline-none focus:border-emerald-500 disabled:opacity-70"
+                      >
+                        {TYPE_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                    </label>
+
+                    {getReviewFields(activeType).map((field) => {
+                      const value = activeValues[field.key] ?? '';
+                      const className = `w-full bg-black/40 border border-zinc-800 rounded-xl p-3 text-sm font-mono outline-none focus:border-emerald-500 ${activeDraft.status === 'saved' ? 'opacity-70' : ''}`;
+                      const wrapperClass = field.fullWidth ? 'space-y-1 md:col-span-2' : 'space-y-1';
+
+                      if (field.type === 'textarea') {
+                        return (
+                          <label key={field.key} className={wrapperClass}>
+                            <span className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">{field.label}</span>
+                            <textarea
+                              value={value}
+                              placeholder={field.placeholder}
+                              onChange={(event) => updateDraftField(activeDraft.id, field.key, event.target.value)}
+                              disabled={activeDraft.status === 'saved'}
+                              rows={4}
+                              className={`${className} resize-y min-h-24`}
+                            />
+                          </label>
+                        );
+                      }
+
+                      return (
+                        <label key={field.key} className={wrapperClass}>
+                          <span className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">{field.label}</span>
+                          <input
+                            type={field.type || 'text'}
+                            step={field.step}
+                            value={value}
+                            placeholder={field.placeholder}
+                            onChange={(event) => updateDraftField(activeDraft.id, field.key, event.target.value)}
+                            disabled={activeDraft.status === 'saved'}
+                            className={className}
+                          />
+                        </label>
+                      );
+                    })}
+                  </div>
+
+                  {Object.keys(activeValues).filter((key) => !getReviewFields(activeType).some((field) => field.key === key) && key !== 'document_type').length > 0 && (
+                    <div className="rounded-2xl border border-zinc-800 bg-black/20 p-4 space-y-3">
+                      <p className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Extra extracted fields</p>
+                      <div className="grid gap-3 md:grid-cols-2">
+                        {Object.keys(activeValues)
+                          .filter((key) => !getReviewFields(activeType).some((field) => field.key === key) && key !== 'document_type')
+                          .map((key) => (
+                            <label key={key} className="space-y-1">
+                              <span className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">{formatFieldLabel(key)}</span>
+                              <input
+                                value={activeValues[key] ?? ''}
+                                onChange={(event) => updateDraftField(activeDraft.id, key, event.target.value)}
+                                disabled={activeDraft.status === 'saved'}
+                                className="w-full bg-black/40 border border-zinc-800 rounded-xl p-3 text-sm font-mono outline-none focus:border-emerald-500 disabled:opacity-70"
+                              />
+                            </label>
+                          ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex flex-col-reverse gap-3 border-t border-zinc-800 pt-4 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-xs text-zinc-500">
+                      This review stays in the trip screen so Boss can confirm receipts, reimbursements, and future dispatch docs without bouncing to a separate page.
+                    </p>
+                    <div className="flex gap-2 sm:shrink-0">
+                      <button
+                        onClick={() => setReviewDraftId(null)}
+                        className="rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-3 text-[10px] font-black uppercase text-zinc-200 transition-all hover:bg-zinc-800"
+                      >
+                        Close
+                      </button>
+                      {activeDraft.status !== 'saved' && (
+                        <button
+                          onClick={() => saveDraft(activeDraft)}
+                          disabled={savingId === activeDraft.id}
+                          className="rounded-xl border border-emerald-600 bg-emerald-700 px-4 py-3 text-[10px] font-black uppercase text-white transition-all hover:bg-emerald-600 disabled:opacity-60"
+                        >
+                          {savingId === activeDraft.id
+                            ? 'Saving...'
+                            : activeType === 'fuel'
+                              ? 'Confirm fuel entry'
+                              : activeType === 'reimbursement'
+                                ? 'Confirm reimbursement'
+                                : 'Confirm expense'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </DialogContent>
+        )}
+      </Dialog>
     </section>
   );
 }
