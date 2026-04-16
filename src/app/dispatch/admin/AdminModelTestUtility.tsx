@@ -105,6 +105,54 @@ export default function AdminModelTestUtility() {
     }
   };
 
+  const toText = (value: unknown) => {
+    if (value === null || value === undefined || value === '') return null;
+    const text = String(value).trim();
+    return text || null;
+  };
+
+  const toAmount = (value: unknown, currency?: unknown) => {
+    if (value === null || value === undefined || value === '') return null;
+    const num = Number(value);
+    const prefix = toText(currency) || 'USD';
+    if (Number.isFinite(num)) return `${prefix} ${num.toFixed(2)}`;
+    return toText(value);
+  };
+
+  const buildSummary = (type: string, data: Record<string, unknown>) => {
+    if (type === 'fuel') {
+      return [
+        ['Date', toText(data.date)],
+        ['Amount', toAmount(data.amount_usd, data.currency)],
+        ['Odometer', toText(data.odometer)],
+        ['Gallons', toText(data.gallons)],
+        ['Litres', toText(data.liters)],
+        ['PPU', toText(data.price_per_unit)],
+        ['DEF gallons', toText(data.def_gallons)],
+        ['DEF litres', toText(data.def_liters)],
+        ['DEF amount', toAmount(data.def_amount_usd, data.currency)],
+        ['DEF PPU', toText(data.def_price_per_unit)],
+        ['Location', toText(data.location)],
+        ['Currency', toText(data.currency)],
+      ].filter((item) => item[1]);
+    }
+
+    if (type === 'toll' || type === 'reimbursement' || type === 'other' || type === 'receipt') {
+      return [
+        ['Date', toText(data.date)],
+        ['Amount', toAmount(data.amount_usd, data.currency)],
+        ['Name', toText(data.name)],
+        ['Location', toText(data.location)],
+        ['Category', toText(data.category)],
+        ['Currency', toText(data.currency)],
+      ].filter((item) => item[1]);
+    }
+
+    return [] as string[][];
+  };
+
+  const summaryRows = preview ? buildSummary(preview.documentType, preview.extractedData || {}) : [];
+
   return (
     <div className="space-y-4">
       <div className="bg-zinc-900/30 border border-zinc-800 rounded-2xl p-4 space-y-4">
@@ -170,6 +218,20 @@ export default function AdminModelTestUtility() {
 
           {preview.missingFields.length > 0 && (
             <p className="text-xs text-amber-300">Missing fields: {preview.missingFields.join(', ')}</p>
+          )}
+
+          {summaryRows.length > 0 && (
+            <div>
+              <p className="text-[10px] uppercase tracking-widest text-zinc-500 font-black mb-1">{preview.documentType} summary</p>
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {summaryRows.map(([label, value]) => (
+                  <div key={label} className="rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2">
+                    <p className="text-[10px] uppercase tracking-wider text-zinc-500">{label}</p>
+                    <p className="text-xs font-semibold text-zinc-200 mt-0.5">{value}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
           )}
 
           <div>

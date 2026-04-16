@@ -18,6 +18,14 @@ Fuel processing:
 - Prefer exact linkage; otherwise match by multiple signals in this order: explicit link, date + location, odometer, litres/gallons, then weaker fallbacks.
 - The app should aim for 1 fuel entry ↔ 1 receipt document.
 
+Receipt and expense processing:
+- The same matching philosophy applies to toll receipts, repair receipts, scale tickets, lumper receipts, and reimbursement/other expense receipts.
+- Do not blindly attach a receipt to the currently open or most recent trip.
+- First match the receipt to the correct trip by date range, then refine using stronger signals such as location, odometer, amount, vendor, litres/gallons, or explicit linkage.
+- The app should preserve the raw receipt evidence and also store structured fields exactly as provided or extracted.
+- One trip can have many receipts across different categories, and each receipt should map to the correct entry or expense record when possible.
+- Re-uploads or corrected uploads should update linkage and structured data instead of being blocked as duplicates.
+
 Envelope PDF rules:
 - Border crossing stops are excluded from the envelope unless explicitly requested.
 - Trailer column follows the trailer attached after each stop event.

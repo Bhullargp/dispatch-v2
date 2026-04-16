@@ -27,6 +27,10 @@ export type DocumentDraftData = {
   location?: string | null;
   gallons?: number | null;
   liters?: number | null;
+  def_gallons?: number | null;
+  def_liters?: number | null;
+  def_amount_usd?: number | null;
+  def_price_per_unit?: number | null;
   price_per_unit?: number | null;
   amount_usd?: number | null;
   odometer?: number | null;
@@ -169,33 +173,171 @@ function normalizeDocumentType(type: DocumentDraftType | string | null | undefin
   return 'unknown';
 }
 
+const ITINERARY_EVENT_PATTERN = /\b(?:pickup|deliver|drop|hook|acquire|release|border crossing)\b/gi;
+const ITINERARY_CONTEXT_PATTERN = /\b(?:trip|itinerary|dispatch|driver|load|consignee|shipper|trailer|tractor|bol|pickup #|delivery #)\b/gi;
+const FUEL_SIGNAL_PATTERN = /\b(fuel|diesel|def|pump|gallons?|gal\b|liters?|litres?|odometer|price\s*(?:\/|per)?\s*(?:unit|gal|gallon|l|liter|litre)|ppu)\b/gi;
+const TOLL_SIGNAL_PATTERN = /\b(toll|ezpass|plate|bridge|407)\b/i;
+
+const TYPE_ALLOWED_FIELDS: Record<DocumentDraftType, string[]> = {
+  itinerary: [
+    'trip_number', 'start_date', 'end_date', 'total_miles', 'route', 'driver_name', 'lead_driver',
+    'co_driver', 'truck_number', 'trailer_number', 'stops', 'raw_text', 'notes',
+  ],
+  fuel: [
+    'date', 'location', 'gallons', 'liters', 'def_gallons', 'def_liters', 'def_amount_usd', 'def_price_per_unit',
+    'price_per_unit', 'amount_usd', 'odometer', 'fuel_type', 'currency', 'name', 'category', 'notes', 'raw_text',
+  ],
+  toll: ['date', 'location', 'amount_usd', 'currency', 'name', 'category', 'notes', 'raw_text'],
+  reimbursement: ['date', 'location', 'amount_usd', 'currency', 'name', 'category', 'notes', 'raw_text'],
+  other: ['date', 'location', 'amount_usd', 'currency', 'name', 'category', 'notes', 'raw_text'],
+  receipt: ['date', 'location', 'amount_usd', 'currency', 'name', 'category', 'notes', 'raw_text'],
+  unknown: ['raw_text', 'notes'],
+};
+
+function isMeaningfulValue(value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) return false;
+    if (normalized === 'null' || normalized === 'undefined' || normalized === 'n/a' || normalized === 'na' || normalized === 'none') return false;
+    return true;
+  }
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === 'object') return Object.keys(value as Record<string, unknown>).length > 0;
+  return true;
+}
+
+function mergePreferNonEmpty<T extends Record<string, unknown>>(base: T, override?: Record<string, unknown> | null): T {
+  if (!override) return { ...base };
+  const merged: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(override)) {
+    if (isMeaningfulValue(value)) merged[key] = value;
+  }
+  return merged as T;
+}
+
+function normalizeByType(type: DocumentDraftType, data: DocumentDraftData): DocumentDraftData {
+  const allowed = TYPE_ALLOWED_FIELDS[type] || TYPE_ALLOWED_FIELDS.unknown;
+  const normalized: DocumentDraftData = {};
+  for (const key of allowed) {
+    if (key in data) normalized[key] = data[key];
+  }
+
+  if (type === 'fuel') {
+    normalized.gallons = toNumber(normalized.gallons);
+    normalized.liters = toNumber(normalized.liters);
+    normalized.def_gallons = toNumber(normalized.def_gallons);
+    normalized.def_liters = toNumber(normalized.def_liters);
+    normalized.price_per_unit = toNumber(normalized.price_per_unit);
+    normalized.def_price_per_unit = toNumber(normalized.def_price_per_unit);
+    normalized.amount_usd = toNumber(normalized.amount_usd);
+    normalized.def_amount_usd = toNumber(normalized.def_amount_usd);
+    normalized.odometer = toNumber(normalized.odometer);
+  } else if (type === 'toll' || type === 'reimbursement' || type === 'other' || type === 'receipt') {
+    normalized.amount_usd = toNumber(normalized.amount_usd);
+  }
+
+  return normalized;
+}
+
+function hasItineraryStructure(haystack: string) {
+  if (/trip itinerary|driver trip itinerary|dispatch itinerary/.test(haystack)) return true;
+
+  const eventCount = haystack.match(ITINERARY_EVENT_PATTERN)?.length || 0;
+  const hasTripNumber = /\bt\d{4,}\b/.test(haystack);
+  const hasItineraryContext = (haystack.match(ITINERARY_CONTEXT_PATTERN)?.length || 0) >= 1;
+
+  if (hasTripNumber && eventCount >= 1) return true;
+  if (eventCount >= 2 && hasItineraryContext) return true;
+
+  return false;
+}
+
+function fuelSignalScore(haystack: string) {
+  return haystack.match(FUEL_SIGNAL_PATTERN)?.length || 0;
+}
+
+function shouldBiasToFuel(filename: string, description?: string | null, rawText?: string | null, llmExtractedData?: Record<string, unknown> | null) {
+  const haystack = `${filename} ${description || ''} ${rawText || ''}`.toLowerCase();
+  const itinerary = hasItineraryStructure(haystack);
+  const score = fuelSignalScore(haystack);
+  const hasFuelFieldHints = Boolean(llmExtractedData && (
+    isMeaningfulValue(llmExtractedData.gallons) ||
+    isMeaningfulValue(llmExtractedData.liters) ||
+    isMeaningfulValue(llmExtractedData.price_per_unit) ||
+    isMeaningfulValue(llmExtractedData.odometer) ||
+    isMeaningfulValue(llmExtractedData.def_gallons) ||
+    isMeaningfulValue(llmExtractedData.def_liters)
+  ));
+
+  return !itinerary && (score >= 2 || (score >= 1 && hasFuelFieldHints));
+}
+
+function resolveDocumentType(params: {
+  filename: string;
+  description?: string | null;
+  rawText?: string | null;
+  llmType?: string | null;
+  llmExtractedData?: Record<string, unknown> | null;
+}) {
+  const inferred = inferDocumentType(params.filename, params.description, params.rawText);
+  const llm = normalizeDocumentType(params.llmType);
+  let resolved = llm !== 'unknown' ? llm : inferred;
+
+  if (shouldBiasToFuel(params.filename, params.description, params.rawText, params.llmExtractedData)) {
+    if (resolved === 'unknown' || resolved === 'itinerary' || resolved === 'other' || resolved === 'receipt') {
+      resolved = 'fuel';
+    }
+  }
+
+  return resolved;
+}
+
 function inferDocumentType(filename: string, description?: string | null, rawText?: string | null): DocumentDraftType {
   const haystack = `${filename} ${description || ''} ${rawText || ''}`.toLowerCase();
-  if (/trip itinerary|driver trip itinerary|dispatch itinerary|\bt\d{4,}\b/.test(haystack)) return 'itinerary';
-  if (/toll|ezpass|407|plate|bridge/.test(haystack)) return 'toll';
-  if (/fuel|diesel|def|pump/.test(haystack)) return 'fuel';
+  if (hasItineraryStructure(haystack)) return 'itinerary';
+  if (TOLL_SIGNAL_PATTERN.test(haystack) && fuelSignalScore(haystack) === 0) return 'toll';
+  if (fuelSignalScore(haystack) >= 1) return 'fuel';
+  if (TOLL_SIGNAL_PATTERN.test(haystack)) return 'toll';
   if (/reimb|reimbursement|expense/.test(haystack)) return 'reimbursement';
   if (/receipt|parking|scale|lumper|repair|wash/.test(haystack)) return 'other';
   return 'unknown';
 }
 
 function parseFuelDraft(text: string, fallbackName: string): DocumentDraftData {
-  const gallonsMatch = text.match(/\b([0-9]+(?:\.[0-9]+)?)\s*(?:gal|gallons?)\b/i);
-  const litersMatch = text.match(/\b([0-9]+(?:\.[0-9]+)?)\s*(?:l|liters?|litres?)\b/i);
+  const cleaned = text || '';
+  const gallonsMatch = cleaned.match(/\b([0-9]+(?:\.[0-9]+)?)\s*(?:gal|gallons?)\b/i);
+  const litersMatch = cleaned.match(/\b([0-9]+(?:\.[0-9]+)?)\s*(?:l|liters?|litres?)\b/i);
   const priceMatch = text.match(/(?:price\s*(?:\/|per)?\s*(?:unit|gal|gallon|l|liter|litre)|ppu)\s*[: ]\s*\$?\s*([0-9]+(?:\.[0-9]{2,3})?)/i)
     || text.match(/\$\s*([0-9]+(?:\.[0-9]{2,3})?)\s*\/(?:gal|gallon|l|liter|litre)/i);
   const odometerMatch = text.match(/odo(?:meter)?\s*[:# ]\s*(\d{4,8})/i);
+  const defBlock = cleaned.match(/(?:def|diesel\s*exhaust\s*fluid)[\s\S]{0,180}/i)?.[0] || '';
+  const defGallonsMatch = defBlock.match(/\b([0-9]+(?:\.[0-9]+)?)\s*(?:gal|gallons?)\b/i)
+    || cleaned.match(/(?:def|diesel\s*exhaust\s*fluid)[^\d]{0,25}(\d+(?:\.\d+)?)\s*(?:gal|gallons?)\b/i)
+    || cleaned.match(/(?:def|diesel\s*exhaust\s*fluid)(\d+(?:\.\d+)?)\s*(?:gal|gallons?)\b/i);
+  const defLitersMatch = defBlock.match(/\b([0-9]+(?:\.[0-9]+)?)\s*(?:l|liters?|litres?)\b/i)
+    || cleaned.match(/(?:def|diesel\s*exhaust\s*fluid)[^\d]{0,25}(\d+(?:\.\d+)?)\s*(?:l|liters?|litres?)\b/i)
+    || cleaned.match(/(?:def|diesel\s*exhaust\s*fluid)(\d+(?:\.\d+)?)\s*(?:l|liters?|litres?)\b/i);
+  const defAmountMatch = cleaned.match(/(?:def|diesel\s*exhaust\s*fluid)[\s\S]{0,60}(?:total|amount|sale)?\s*[: ]?\$\s*([0-9]+(?:\.[0-9]{2})?)/i);
+  const defPriceMatch = cleaned.match(/(?:def|diesel\s*exhaust\s*fluid)[\s\S]{0,60}(?:price\s*(?:\/|per)?\s*(?:unit|gal|gallon|l|liter|litre)|ppu)?\s*[: ]?\$\s*([0-9]+(?:\.[0-9]{2,3})?)\s*(?:\/(?:gal|gallon|l|liter|litre))?/i);
+  const hasDef = /\bdef\b|diesel\s*exhaust\s*fluid/i.test(cleaned);
 
   return {
     date: parseDate(text),
     location: pickLocation(text, fallbackName),
     gallons: gallonsMatch ? Number(gallonsMatch[1]) : null,
     liters: litersMatch ? Number(litersMatch[1]) : null,
+    def_gallons: defGallonsMatch ? Number(defGallonsMatch[1]) : null,
+    def_liters: defLitersMatch ? Number(defLitersMatch[1]) : null,
+    def_amount_usd: defAmountMatch ? Number(defAmountMatch[1]) : null,
+    def_price_per_unit: defPriceMatch ? Number(defPriceMatch[1]) : null,
     price_per_unit: priceMatch ? Number(priceMatch[1]) : null,
     amount_usd: pickAmount(text),
     odometer: odometerMatch ? Number(odometerMatch[1]) : null,
-    fuel_type: /\bdef\b/i.test(text) ? 'def' : 'diesel',
+    fuel_type: hasDef && /\bdiesel\b/i.test(cleaned) ? 'both' : hasDef ? 'def' : 'diesel',
     currency: /\bCAD\b|C\$/i.test(text) ? 'CAD' : 'USD',
+    category: 'fuel',
+    name: 'Fuel receipt',
     notes: text ? text.slice(0, 1000) : null,
   };
 }
@@ -207,6 +349,7 @@ function parseTollDraft(text: string, fallbackName: string): DocumentDraftData {
     amount_usd: pickAmount(text),
     name: 'Toll receipt',
     category: 'toll',
+    currency: /\bCAD\b|C\$/i.test(text) ? 'CAD' : 'USD',
     notes: text ? text.slice(0, 1000) : null,
   };
 }
@@ -218,6 +361,7 @@ function parseReimbursementDraft(text: string, fallbackName: string): DocumentDr
     amount_usd: pickAmount(text),
     name: fallbackName || 'Reimbursement receipt',
     category: 'reimbursement',
+    currency: /\bCAD\b|C\$/i.test(text) ? 'CAD' : 'USD',
     notes: text ? text.slice(0, 1000) : null,
   };
 }
@@ -229,9 +373,18 @@ function parseOtherReceiptDraft(text: string, fallbackName: string): DocumentDra
     amount_usd: pickAmount(text),
     name: fallbackName || 'Other receipt',
     category: 'misc',
+    currency: /\bCAD\b|C\$/i.test(text) ? 'CAD' : 'USD',
     notes: text ? text.slice(0, 1000) : null,
   };
 }
+
+const TYPE_PARSERS: Partial<Record<DocumentDraftType, (text: string, fallbackName: string) => DocumentDraftData>> = {
+  fuel: parseFuelDraft,
+  toll: parseTollDraft,
+  reimbursement: parseReimbursementDraft,
+  other: parseOtherReceiptDraft,
+  receipt: parseOtherReceiptDraft,
+};
 
 function parsedTripToDraftData(parsed: ParsedTrip): DocumentDraftData {
   return {
@@ -366,7 +519,7 @@ async function classifyAndExtractWithLlm(
   const cfg = await getLlmConfig();
   const selectedProvider = options?.provider || 'auto';
   const selectedModel = (options?.model || '').trim();
-  const system = `You classify trucking dispatch uploads and extract structured data. Return JSON only with this exact shape:\n{\n  "document_type": "dispatch_itinerary" | "fuel_receipt" | "toll_receipt" | "reimbursement" | "other",\n  "extracted_data": { ... }\n}\n\nRules:\n- Use dispatch_itinerary only for trip itinerary / load itinerary documents.\n- Use fuel_receipt, toll_receipt, reimbursement, or other for receipts and expense documents.\n- For receipts, extract only fields you can support from the text: date, location, gallons, liters, price_per_unit, amount_usd, odometer, fuel_type, currency, name, category, notes.\n- Do not decide where to save the document. Only classify and extract.`;
+  const system = `You classify trucking dispatch uploads and extract structured data. Return JSON only with this exact shape:\n{\n  "document_type": "dispatch_itinerary" | "fuel_receipt" | "toll_receipt" | "reimbursement" | "other",\n  "extracted_data": { ... }\n}\n\nRules:\n- Use dispatch_itinerary only for trip itinerary / load itinerary documents.\n- Use fuel_receipt, toll_receipt, reimbursement, or other for receipts and expense documents.\n- For receipts, extract only fields you can support from the text: date, location, gallons, liters, def_gallons, def_liters, def_amount_usd, def_price_per_unit, price_per_unit, amount_usd, odometer, fuel_type, currency, name, category, notes.\n- Do not decide where to save the document. Only classify and extract.`;
   const prompt = `Filename: ${filename}\nDescription: ${description || ''}\n\nDocument text:\n${rawText.slice(0, 12000)}`;
 
   const attempts = selectedProvider === 'auto'
@@ -525,22 +678,25 @@ export async function generateDocumentProcessingPreview(params: {
     ? await classifyAndExtractWithLlm(rawText, params.filename, params.description, params.options).catch(() => null)
     : null;
 
-  let documentType = normalizeDocumentType(llmResult?.document_type || inferDocumentType(params.filename, params.description, rawText));
+  let documentType = resolveDocumentType({
+    filename: params.filename,
+    description: params.description,
+    rawText,
+    llmType: llmResult?.document_type,
+    llmExtractedData: llmResult?.extracted_data || null,
+  });
   let extractedData: DocumentDraftData = {};
 
   if (documentType === 'itinerary') {
     extractedData = await extractItineraryDraft(loaded.buffer, loaded.fileType, rawText, params.options);
-  } else if (documentType === 'fuel') {
-    extractedData = { ...parseFuelDraft(rawText, params.filename), ...(llmResult?.extracted_data || {}) };
-  } else if (documentType === 'toll') {
-    extractedData = { ...parseTollDraft(rawText, params.filename), ...(llmResult?.extracted_data || {}) };
-  } else if (documentType === 'reimbursement') {
-    extractedData = { ...parseReimbursementDraft(rawText, params.filename), ...(llmResult?.extracted_data || {}) };
-  } else if (documentType === 'other' || documentType === 'receipt') {
-    extractedData = { ...parseOtherReceiptDraft(rawText, params.filename), ...(llmResult?.extracted_data || {}) };
+  } else {
+    const parser = TYPE_PARSERS[documentType] || parseOtherReceiptDraft;
+    const heuristicData = parser(rawText, params.filename);
+    extractedData = mergePreferNonEmpty(heuristicData, llmResult?.extracted_data || null);
   }
 
   if (!extractedData.raw_text && rawText) extractedData.raw_text = rawText.slice(0, 12000);
+  extractedData = normalizeByType(documentType, extractedData);
 
   const missingFields = getMissingFields(documentType, extractedData);
   const status: DocumentDraftStatus = documentType === 'unknown'
@@ -639,21 +795,24 @@ export async function createDocumentProcessingDraftFromUpload(params: {
     const llmResult = rawText.trim()
       ? await classifyAndExtractWithLlm(rawText, params.filename, params.description).catch(() => null)
       : null;
-    documentType = normalizeDocumentType(llmResult?.document_type || inferDocumentType(params.filename, params.description, rawText));
+    documentType = resolveDocumentType({
+      filename: params.filename,
+      description: params.description,
+      rawText,
+      llmType: llmResult?.document_type,
+      llmExtractedData: llmResult?.extracted_data || null,
+    });
 
     if (documentType === 'itinerary') {
       extractedData = await extractItineraryDraft(loaded.buffer, loaded.fileType, rawText);
-    } else if (documentType === 'fuel') {
-      extractedData = { ...parseFuelDraft(rawText, params.filename), ...(llmResult?.extracted_data || {}) };
-    } else if (documentType === 'toll') {
-      extractedData = { ...parseTollDraft(rawText, params.filename), ...(llmResult?.extracted_data || {}) };
-    } else if (documentType === 'reimbursement') {
-      extractedData = { ...parseReimbursementDraft(rawText, params.filename), ...(llmResult?.extracted_data || {}) };
-    } else if (documentType === 'other' || documentType === 'receipt') {
-      extractedData = { ...parseOtherReceiptDraft(rawText, params.filename), ...(llmResult?.extracted_data || {}) };
+    } else {
+      const parser = TYPE_PARSERS[documentType] || parseOtherReceiptDraft;
+      const heuristicData = parser(rawText, params.filename);
+      extractedData = mergePreferNonEmpty(heuristicData, llmResult?.extracted_data || null);
     }
 
     if (!extractedData.raw_text && rawText) extractedData.raw_text = rawText.slice(0, 12000);
+    extractedData = normalizeByType(documentType, extractedData);
 
     missingFields = getMissingFields(documentType, extractedData);
     status = documentType === 'unknown'
@@ -801,14 +960,18 @@ export async function confirmDocumentProcessingDraft(params: {
   if (!draft) throw new Error('Document draft not found');
 
   const documentType = normalizeDocumentType(params.documentType || draft.document_type);
-  const extractedData = {
+  const extractedData = normalizeByType(documentType, {
     ...params.extractedData,
     gallons: toNumber(params.extractedData.gallons),
     liters: toNumber(params.extractedData.liters),
+    def_gallons: toNumber(params.extractedData.def_gallons),
+    def_liters: toNumber(params.extractedData.def_liters),
+    def_amount_usd: toNumber(params.extractedData.def_amount_usd),
+    def_price_per_unit: toNumber(params.extractedData.def_price_per_unit),
     price_per_unit: toNumber(params.extractedData.price_per_unit),
     amount_usd: toNumber(params.extractedData.amount_usd),
     odometer: toNumber(params.extractedData.odometer),
-  };
+  });
 
   const missingFields = getMissingFields(documentType, extractedData);
   if (missingFields.length > 0) {
@@ -866,11 +1029,13 @@ export async function confirmDocumentProcessingDraft(params: {
   }
 
   if (documentType === 'fuel') {
+    const defLiters = extractedData.def_liters ?? (extractedData.def_gallons != null ? Number(extractedData.def_gallons) * 3.78541 : null);
+
     const insert = await db().run(
       `INSERT INTO fuel (
          trip_number, date, location, gallons, liters, price_per_unit, amount_usd,
-         unit, odometer, fuel_type, currency, user_id
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+         unit, odometer, fuel_type, def_liters, def_cost, def_price_per_unit, currency, user_id
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
        RETURNING id`,
       [
         params.tripNumber || draft.trip_number || null,
@@ -883,6 +1048,9 @@ export async function confirmDocumentProcessingDraft(params: {
         extractedData.liters ? 'Litres' : 'Gallons',
         extractedData.odometer || null,
         extractedData.fuel_type || 'diesel',
+        defLiters,
+        extractedData.def_amount_usd ?? null,
+        extractedData.def_price_per_unit ?? null,
         extractedData.currency || 'USD',
         params.userId,
       ]

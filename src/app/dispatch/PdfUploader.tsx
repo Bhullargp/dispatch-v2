@@ -63,7 +63,11 @@ const TYPE_OPTIONS: Array<{ value: Exclude<DraftType, 'receipt' | 'unknown'>; la
 
 const FIELD_LABELS: Record<string, string> = {
   amount_usd: 'Amount (USD)',
+  def_amount_usd: 'DEF amount (USD)',
   date: 'Date',
+  def_gallons: 'DEF gallons',
+  def_liters: 'DEF litres',
+  def_price_per_unit: 'DEF price / unit',
   gallons: 'Gallons',
   liters: 'Litres',
   location: 'Location',
@@ -110,25 +114,37 @@ const BASE_RECEIPT_FIELDS: FieldConfig[] = [
 const RECEIPT_FIELDS: Record<'fuel' | 'toll' | 'reimbursement' | 'other', FieldConfig[]> = {
   fuel: [
     { key: 'location', label: 'Location', placeholder: 'TA, Flying J, Petro, etc.', fullWidth: true },
+    { key: 'fuel_type', label: 'Fuel type', placeholder: 'diesel | def | both' },
+    { key: 'currency', label: 'Currency', placeholder: 'USD or CAD' },
     { key: 'gallons', label: 'Gallons', type: 'number', step: '0.001' },
     { key: 'liters', label: 'Litres', type: 'number', step: '0.01' },
     { key: 'price_per_unit', label: 'Price / unit', type: 'number', step: '0.001' },
+    { key: 'def_gallons', label: 'DEF gallons', type: 'number', step: '0.001' },
+    { key: 'def_liters', label: 'DEF litres', type: 'number', step: '0.01' },
+    { key: 'def_price_per_unit', label: 'DEF price / unit', type: 'number', step: '0.001' },
+    { key: 'def_amount_usd', label: 'DEF amount (USD)', type: 'number', step: '0.01' },
     { key: 'odometer', label: 'Odometer', type: 'number', step: '1' },
     { key: 'notes', label: 'Notes', type: 'textarea', fullWidth: true, placeholder: 'Optional fuel notes' },
   ],
   toll: [
     { key: 'name', label: 'Charge name', placeholder: 'Toll road or bridge name' },
     { key: 'location', label: 'Location', placeholder: 'Where this charge happened' },
+    { key: 'currency', label: 'Currency', placeholder: 'USD or CAD' },
+    { key: 'category', label: 'Category', placeholder: 'toll' },
     { key: 'notes', label: 'Notes', type: 'textarea', fullWidth: true, placeholder: 'Lane, bridge, road, or extra context' },
   ],
   reimbursement: [
     { key: 'name', label: 'Reimbursement name', placeholder: 'Meal, hotel, parking, etc.' },
     { key: 'location', label: 'Location', placeholder: 'Store, city, or stop' },
+    { key: 'currency', label: 'Currency', placeholder: 'USD or CAD' },
+    { key: 'category', label: 'Category', placeholder: 'reimbursement' },
     { key: 'notes', label: 'Notes', type: 'textarea', fullWidth: true, placeholder: 'What this reimbursement is for' },
   ],
   other: [
     { key: 'name', label: 'Expense name', placeholder: 'Lumper, parking, supplies, etc.' },
     { key: 'location', label: 'Location', placeholder: 'Vendor or location' },
+    { key: 'currency', label: 'Currency', placeholder: 'USD or CAD' },
+    { key: 'category', label: 'Category', placeholder: 'misc' },
     { key: 'notes', label: 'Notes', type: 'textarea', fullWidth: true, placeholder: 'Any extra context for dispatch/accounting' },
   ],
 };
@@ -200,10 +216,18 @@ function buildSuccessMessage(params: {
   return `Receipt saved as expense #${linkedRecordId}${tripNumber ? ` for trip ${tripNumber}` : ''}.`;
 }
 
-function buildBasicReceiptSummary(values: Record<string, any>) {
+function buildTypeSummary(type: DraftType, values: Record<string, any>) {
   const toText = (value: any) => {
     if (value === null || value === undefined || value === '') return null;
     return String(value).trim() || null;
+  };
+
+  const toAmount = (value: any, currency?: any) => {
+    if (value === null || value === undefined || value === '') return null;
+    const number = Number(value);
+    const currencyText = toText(currency) || 'USD';
+    if (Number.isFinite(number)) return `${currencyText} ${number.toFixed(2)}`;
+    return toText(value);
   };
 
   const amountRaw = values.amount_usd;
@@ -214,12 +238,31 @@ function buildBasicReceiptSummary(values: Record<string, any>) {
   const amountText = amountNumber !== null ? `$${amountNumber.toFixed(2)}` : toText(amountRaw);
 
   const notes = toText(values.notes);
-
-  return [
+  const summaryBase = [
     { label: 'Date', value: toText(values.date) },
     { label: 'Amount', value: amountText },
-    { label: 'Name', value: toText(values.name) },
     { label: 'Location', value: toText(values.location) },
+    { label: 'Currency', value: toText(values.currency) },
+  ];
+
+  if (type === 'fuel') {
+    return [
+      ...summaryBase,
+      { label: 'Fuel type', value: toText(values.fuel_type) },
+      { label: 'Gallons', value: toText(values.gallons) },
+      { label: 'Litres', value: toText(values.liters) },
+      { label: 'PPU', value: toText(values.price_per_unit) },
+      { label: 'Odometer', value: toText(values.odometer) },
+      { label: 'DEF gallons', value: toText(values.def_gallons) },
+      { label: 'DEF litres', value: toText(values.def_liters) },
+      { label: 'DEF amount', value: toAmount(values.def_amount_usd, values.currency) },
+      { label: 'DEF PPU', value: toText(values.def_price_per_unit) },
+    ].filter((item) => item.value);
+  }
+
+  return [
+    ...summaryBase,
+    { label: 'Name', value: toText(values.name) },
     { label: 'Category', value: toText(values.category) },
     { label: 'Notes', value: notes ? (notes.length > 80 ? `${notes.slice(0, 80)}…` : notes) : null },
   ].filter((item) => item.value);
@@ -261,8 +304,8 @@ export default function PdfUploader({
     : {};
   const reviewFields = getReviewFields(activeType);
   const requiresTripAssignment = !!reviewDraft && activeType !== 'itinerary';
-  const showBasicReceiptSummary = activeType === 'toll' || activeType === 'reimbursement' || activeType === 'other';
-  const basicReceiptSummary = buildBasicReceiptSummary(activeValues);
+  const showTypeSummary = activeType === 'fuel' || activeType === 'toll' || activeType === 'reimbursement' || activeType === 'other' || activeType === 'receipt';
+  const typeSummary = buildTypeSummary(activeType, activeValues);
 
   const updateDraftField = useCallback((field: string, value: any) => {
     setDraftEdits((current) => ({
@@ -617,10 +660,10 @@ export default function PdfUploader({
                         <p className="mt-1 text-xs text-zinc-400 sm:text-sm">{getTypeDetails(activeType).helper}</p>
                       </div>
 
-                      {showBasicReceiptSummary && (
+                      {showTypeSummary && (
                         <div className="rounded-2xl border border-zinc-800 bg-black/20 p-4">
                           <div className="flex items-center justify-between gap-2">
-                            <p className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Basic extracted info</p>
+                            <p className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">{activeType} extracted summary</p>
                             {reviewDraft.status === 'error' && (
                               <button
                                 type="button"
@@ -632,11 +675,11 @@ export default function PdfUploader({
                               </button>
                             )}
                           </div>
-                          {basicReceiptSummary.length === 0 ? (
+                          {typeSummary.length === 0 ? (
                             <p className="mt-2 text-xs text-zinc-500">No basic fields were extracted yet. You can fill them below.</p>
                           ) : (
                             <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                              {basicReceiptSummary.map((item) => (
+                              {typeSummary.map((item) => (
                                 <div key={item.label} className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-3 py-2">
                                   <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-500">{item.label}</p>
                                   <p className="mt-1 text-xs font-semibold text-zinc-200">{item.value}</p>

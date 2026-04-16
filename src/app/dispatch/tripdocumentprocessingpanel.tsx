@@ -49,7 +49,11 @@ const TYPE_OPTIONS: Array<{ value: DraftType; label: string; helper: string }> =
 
 const FIELD_LABELS: Record<string, string> = {
   amount_usd: 'Amount (USD)',
+  def_amount_usd: 'DEF amount (USD)',
   date: 'Date',
+  def_gallons: 'DEF gallons',
+  def_liters: 'DEF litres',
+  def_price_per_unit: 'DEF price / unit',
   gallons: 'Gallons',
   liters: 'Litres',
   location: 'Location',
@@ -98,25 +102,37 @@ const TYPE_FIELDS: Record<'itinerary' | 'fuel' | 'toll' | 'reimbursement' | 'oth
   ],
   fuel: [
     { key: 'location', label: 'Location', placeholder: 'TA, Flying J, Petro, etc.', fullWidth: true },
+    { key: 'fuel_type', label: 'Fuel type', placeholder: 'diesel | def | both' },
+    { key: 'currency', label: 'Currency', placeholder: 'USD or CAD' },
     { key: 'gallons', label: 'Gallons', type: 'number', step: '0.001' },
     { key: 'liters', label: 'Litres', type: 'number', step: '0.01' },
     { key: 'price_per_unit', label: 'Price / unit', type: 'number', step: '0.001' },
+    { key: 'def_gallons', label: 'DEF gallons', type: 'number', step: '0.001' },
+    { key: 'def_liters', label: 'DEF litres', type: 'number', step: '0.01' },
+    { key: 'def_price_per_unit', label: 'DEF price / unit', type: 'number', step: '0.001' },
+    { key: 'def_amount_usd', label: 'DEF amount (USD)', type: 'number', step: '0.01' },
     { key: 'odometer', label: 'Odometer', type: 'number', step: '1' },
     { key: 'notes', label: 'Notes', type: 'textarea', fullWidth: true, placeholder: 'Optional fuel notes' },
   ],
   toll: [
     { key: 'name', label: 'Charge name', placeholder: 'Toll road or bridge name' },
     { key: 'location', label: 'Location', placeholder: 'Where this charge happened' },
+    { key: 'currency', label: 'Currency', placeholder: 'USD or CAD' },
+    { key: 'category', label: 'Category', placeholder: 'toll' },
     { key: 'notes', label: 'Notes', type: 'textarea', fullWidth: true, placeholder: 'Lane, bridge, road, or extra context' },
   ],
   reimbursement: [
     { key: 'name', label: 'Reimbursement name', placeholder: 'Meal, hotel, parking, etc.' },
     { key: 'location', label: 'Location', placeholder: 'Store, city, or stop' },
+    { key: 'currency', label: 'Currency', placeholder: 'USD or CAD' },
+    { key: 'category', label: 'Category', placeholder: 'reimbursement' },
     { key: 'notes', label: 'Notes', type: 'textarea', fullWidth: true, placeholder: 'What this reimbursement is for' },
   ],
   other: [
     { key: 'name', label: 'Expense name', placeholder: 'Lumper, parking, supplies, etc.' },
     { key: 'location', label: 'Location', placeholder: 'Vendor or location' },
+    { key: 'currency', label: 'Currency', placeholder: 'USD or CAD' },
+    { key: 'category', label: 'Category', placeholder: 'misc' },
     { key: 'notes', label: 'Notes', type: 'textarea', fullWidth: true, placeholder: 'Any extra context for dispatch/accounting' },
   ],
 };
@@ -161,6 +177,50 @@ function getPreviewKind(draft: Draft) {
 function getPreferredPreviewUrl(draft: Draft) {
   if (draft.file_key?.startsWith('documents/') && draft.url) return draft.url;
   return draft.sourceUrl || draft.url;
+}
+
+function buildTypeSummary(type: DraftType, values: Record<string, any>) {
+  const toText = (value: any) => {
+    if (value === null || value === undefined || value === '') return null;
+    const text = String(value).trim();
+    return text || null;
+  };
+
+  const toAmount = (value: any, currency?: any) => {
+    if (value === null || value === undefined || value === '') return null;
+    const number = Number(value);
+    const currencyText = toText(currency) || 'USD';
+    if (Number.isFinite(number)) return `${currencyText} ${number.toFixed(2)}`;
+    return toText(value);
+  };
+
+  const base = [
+    { label: 'Date', value: toText(values.date) },
+    { label: 'Amount', value: toAmount(values.amount_usd, values.currency) },
+    { label: 'Location', value: toText(values.location) },
+    { label: 'Currency', value: toText(values.currency) },
+  ];
+
+  if (type === 'fuel') {
+    return [
+      ...base,
+      { label: 'Fuel type', value: toText(values.fuel_type) },
+      { label: 'Gallons', value: toText(values.gallons) },
+      { label: 'Litres', value: toText(values.liters) },
+      { label: 'PPU', value: toText(values.price_per_unit) },
+      { label: 'Odometer', value: toText(values.odometer) },
+      { label: 'DEF gallons', value: toText(values.def_gallons) },
+      { label: 'DEF litres', value: toText(values.def_liters) },
+      { label: 'DEF amount', value: toAmount(values.def_amount_usd, values.currency) },
+      { label: 'DEF PPU', value: toText(values.def_price_per_unit) },
+    ].filter((item) => item.value);
+  }
+
+  return [
+    ...base,
+    { label: 'Name', value: toText(values.name) },
+    { label: 'Category', value: toText(values.category) },
+  ].filter((item) => item.value);
 }
 
 export default function TripDocumentProcessingPanel({
@@ -218,6 +278,8 @@ export default function TripDocumentProcessingPanel({
   const activeValues = activeDraft
     ? { ...(activeDraft.extracted_data || {}), ...(draftEdits[activeDraft.id] || {}) }
     : {};
+  const showTypeSummary = activeType === 'fuel' || activeType === 'toll' || activeType === 'reimbursement' || activeType === 'other' || activeType === 'receipt';
+  const typeSummary = buildTypeSummary(activeType, activeValues);
 
   const formatFieldValue = (value: any) => {
     if (value === null || value === undefined) return '';
@@ -510,6 +572,24 @@ export default function TripDocumentProcessingPanel({
                     <p className="mt-2 text-sm font-black text-white break-all">{activeDraft.original_filename}</p>
                     <p className="mt-1 text-xs text-zinc-400">{getTypeDetails(activeType).helper}</p>
                   </div>
+
+                  {showTypeSummary && (
+                    <div className="rounded-2xl border border-zinc-800 bg-black/20 p-4">
+                      <p className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">{activeType} extracted summary</p>
+                      {typeSummary.length === 0 ? (
+                        <p className="mt-2 text-xs text-zinc-500">No structured fields extracted yet. You can fill them below.</p>
+                      ) : (
+                        <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                          {typeSummary.map((item) => (
+                            <div key={item.label} className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-3 py-2">
+                              <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-500">{item.label}</p>
+                              <p className="mt-1 text-xs font-semibold text-zinc-200">{item.value}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   <div className="grid gap-3 md:grid-cols-2">
                     <label className="space-y-1 md:col-span-2">
