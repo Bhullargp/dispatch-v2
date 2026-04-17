@@ -22,6 +22,7 @@ type DraftType = 'itinerary' | 'fuel' | 'toll' | 'reimbursement' | 'other' | 're
 type UploadDraft = {
   id: number;
   user_document_id?: number;
+  trace_id?: string | null;
   trip_number: string | null;
   document_type: DraftType;
   status: DraftStatus;
@@ -83,6 +84,7 @@ const FIELD_LABELS: Record<string, string> = {
   vendor: 'Vendor',
   invoice_number: 'Invoice #',
   tax_amount: 'Tax amount',
+  receipt_type: 'Receipt type',
   currency: 'Currency',
   category: 'Category',
   description: 'Description',
@@ -118,8 +120,11 @@ const BASE_RECEIPT_FIELDS: FieldConfig[] = [
 
 const RECEIPT_FIELDS: Record<'fuel' | 'toll' | 'reimbursement' | 'other', FieldConfig[]> = {
   fuel: [
+    { key: 'vendor', label: 'Vendor', placeholder: 'Love\'s, Flying J, Petro, etc.', fullWidth: true },
+    { key: 'invoice_number', label: 'Invoice #' },
     { key: 'location', label: 'Location', placeholder: 'TA, Flying J, Petro, etc.', fullWidth: true },
     { key: 'fuel_type', label: 'Fuel type', placeholder: 'diesel | def | both' },
+    { key: 'receipt_type', label: 'Receipt type', placeholder: 'fuel' },
     { key: 'currency', label: 'Currency', placeholder: 'USD or CAD' },
     { key: 'gallons', label: 'Gallons', type: 'number', step: '0.001' },
     { key: 'liters', label: 'Litres', type: 'number', step: '0.01' },
@@ -128,28 +133,41 @@ const RECEIPT_FIELDS: Record<'fuel' | 'toll' | 'reimbursement' | 'other', FieldC
     { key: 'def_liters', label: 'DEF litres', type: 'number', step: '0.01' },
     { key: 'def_price_per_unit', label: 'DEF price / unit', type: 'number', step: '0.001' },
     { key: 'def_amount_usd', label: 'DEF amount (USD)', type: 'number', step: '0.01' },
+    { key: 'tax_amount', label: 'Tax amount', type: 'number', step: '0.01' },
     { key: 'odometer', label: 'Odometer', type: 'number', step: '1' },
     { key: 'notes', label: 'Notes', type: 'textarea', fullWidth: true, placeholder: 'Optional fuel notes' },
   ],
   toll: [
+    { key: 'vendor', label: 'Vendor', placeholder: 'Bridge, toll road, or issuer' },
+    { key: 'invoice_number', label: 'Invoice #' },
     { key: 'name', label: 'Charge name', placeholder: 'Toll road or bridge name' },
     { key: 'location', label: 'Location', placeholder: 'Where this charge happened' },
+    { key: 'receipt_type', label: 'Receipt type', placeholder: 'toll' },
     { key: 'currency', label: 'Currency', placeholder: 'USD or CAD' },
     { key: 'category', label: 'Category', placeholder: 'toll' },
+    { key: 'tax_amount', label: 'Tax amount', type: 'number', step: '0.01' },
     { key: 'notes', label: 'Notes', type: 'textarea', fullWidth: true, placeholder: 'Lane, bridge, road, or extra context' },
   ],
   reimbursement: [
+    { key: 'vendor', label: 'Vendor', placeholder: 'Store, hotel, printer, parking, etc.' },
+    { key: 'invoice_number', label: 'Invoice #' },
     { key: 'name', label: 'Reimbursement name', placeholder: 'Meal, hotel, parking, etc.' },
     { key: 'location', label: 'Location', placeholder: 'Store, city, or stop' },
+    { key: 'receipt_type', label: 'Receipt type', placeholder: 'reimbursement' },
     { key: 'currency', label: 'Currency', placeholder: 'USD or CAD' },
     { key: 'category', label: 'Category', placeholder: 'reimbursement' },
+    { key: 'tax_amount', label: 'Tax amount', type: 'number', step: '0.01' },
     { key: 'notes', label: 'Notes', type: 'textarea', fullWidth: true, placeholder: 'What this reimbursement is for' },
   ],
   other: [
+    { key: 'vendor', label: 'Vendor', placeholder: 'Vendor or issuer' },
+    { key: 'invoice_number', label: 'Invoice #' },
     { key: 'name', label: 'Expense name', placeholder: 'Lumper, parking, supplies, etc.' },
     { key: 'location', label: 'Location', placeholder: 'Vendor or location' },
+    { key: 'receipt_type', label: 'Receipt type', placeholder: 'other' },
     { key: 'currency', label: 'Currency', placeholder: 'USD or CAD' },
     { key: 'category', label: 'Category', placeholder: 'misc' },
+    { key: 'tax_amount', label: 'Tax amount', type: 'number', step: '0.01' },
     { key: 'notes', label: 'Notes', type: 'textarea', fullWidth: true, placeholder: 'Any extra context for dispatch/accounting' },
   ],
 };
@@ -180,6 +198,11 @@ function getPreferredPreviewUrl(draft: UploadDraft) {
   return draft.sourceUrl || draft.url;
 }
 
+function getAdminTraceHref(traceId?: string | null) {
+  if (!traceId) return null;
+  return `/dispatch/admin?trace=${encodeURIComponent(traceId)}`;
+}
+
 function getReviewFields(type: DraftType): FieldConfig[] {
   if (type === 'itinerary') return ITINERARY_FIELDS;
   const normalizedType = (type === 'fuel' || type === 'toll' || type === 'reimbursement' || type === 'other'
@@ -194,13 +217,13 @@ const TYPE_ALLOWED_KEYS: Record<DraftType, string[]> = {
     'co_driver', 'truck_number', 'trailer_number', 'stops', 'raw_text', 'notes',
   ],
   fuel: [
-    'date', 'location', 'gallons', 'liters', 'def_gallons', 'def_liters', 'def_amount_usd', 'def_price_per_unit',
+    'date', 'location', 'vendor', 'invoice_number', 'tax_amount', 'receipt_type', 'gallons', 'liters', 'def_gallons', 'def_liters', 'def_amount_usd', 'def_price_per_unit',
     'price_per_unit', 'amount_usd', 'odometer', 'fuel_type', 'currency', 'name', 'category', 'notes', 'raw_text',
   ],
-  toll: ['date', 'location', 'amount_usd', 'currency', 'name', 'category', 'notes', 'raw_text'],
-  reimbursement: ['date', 'location', 'amount_usd', 'currency', 'name', 'category', 'notes', 'raw_text'],
-  other: ['date', 'location', 'amount_usd', 'currency', 'name', 'category', 'notes', 'raw_text'],
-  receipt: ['date', 'location', 'amount_usd', 'currency', 'name', 'category', 'notes', 'raw_text'],
+  toll: ['date', 'location', 'vendor', 'invoice_number', 'tax_amount', 'receipt_type', 'amount_usd', 'currency', 'name', 'category', 'notes', 'raw_text'],
+  reimbursement: ['date', 'location', 'vendor', 'invoice_number', 'tax_amount', 'receipt_type', 'amount_usd', 'currency', 'name', 'category', 'notes', 'raw_text'],
+  other: ['date', 'location', 'vendor', 'invoice_number', 'tax_amount', 'receipt_type', 'amount_usd', 'currency', 'name', 'category', 'notes', 'raw_text'],
+  receipt: ['date', 'location', 'vendor', 'invoice_number', 'tax_amount', 'receipt_type', 'amount_usd', 'currency', 'name', 'category', 'notes', 'raw_text'],
   unknown: ['raw_text', 'notes'],
 };
 
@@ -293,10 +316,54 @@ function buildTypeSummary(type: DraftType, values: Record<string, any>) {
 
   return [
     ...summaryBase,
+    { label: 'Vendor', value: toText(values.vendor) },
+    { label: 'Invoice #', value: toText(values.invoice_number) },
+    { label: 'Tax', value: toAmount(values.tax_amount, values.currency) },
     { label: 'Name', value: toText(values.name) },
     { label: 'Category', value: toText(values.category) },
     { label: 'Notes', value: notes ? (notes.length > 80 ? `${notes.slice(0, 80)}…` : notes) : null },
   ].filter((item) => item.value);
+}
+
+function toUtcDay(value?: string | null) {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const [year, month, day] = value.split('-').map(Number);
+  const utc = Date.UTC(year, month - 1, day);
+  return Number.isFinite(utc) ? utc : null;
+}
+
+function pickTripByReceiptDate(trips: TripOption[], receiptDate?: string | null) {
+  const targetUtc = toUtcDay(receiptDate || null);
+  if (targetUtc === null) return null;
+
+  const candidates = trips
+    .map((trip) => {
+      const startRaw = toUtcDay(trip.start_date || null);
+      const endRaw = toUtcDay(trip.end_date || null);
+      const start = startRaw ?? endRaw;
+      const end = endRaw ?? startRaw;
+      if (start === null || end === null) return null;
+      const rangeStart = Math.min(start, end);
+      const rangeEnd = Math.max(start, end);
+      const inWindow = targetUtc >= rangeStart && targetUtc <= rangeEnd;
+      const distance = inWindow ? 0 : Math.min(Math.abs(targetUtc - rangeStart), Math.abs(targetUtc - rangeEnd));
+      const span = Math.abs(rangeEnd - rangeStart);
+      const centerDistance = Math.abs(targetUtc - (rangeStart + span / 2));
+      return { tripNumber: trip.trip_number, inWindow, distance, span, centerDistance };
+    })
+    .filter(Boolean) as Array<{ tripNumber: string; inWindow: boolean; distance: number; span: number; centerDistance: number }>;
+
+  if (!candidates.length) return null;
+
+  candidates.sort((a, b) => {
+    if (a.inWindow !== b.inWindow) return a.inWindow ? -1 : 1;
+    if (a.distance !== b.distance) return a.distance - b.distance;
+    if (a.span !== b.span) return a.span - b.span;
+    if (a.centerDistance !== b.centerDistance) return a.centerDistance - b.centerDistance;
+    return b.tripNumber.localeCompare(a.tripNumber);
+  });
+
+  return candidates[0]?.tripNumber || null;
 }
 
 export default function PdfUploader({
@@ -373,9 +440,10 @@ export default function PdfUploader({
     if (nextDraft.status !== 'ready') return false;
 
     const documentType = nextDraft.document_type;
+    const matchedByDate = pickTripByReceiptDate(orderedTrips, nextDraft.extracted_data?.date || null);
     const selectedTrip = documentType === 'itinerary'
       ? null
-      : nextDraft.trip_number || orderedTrips[0]?.trip_number || null;
+      : nextDraft.trip_number || matchedByDate || null;
 
     if (documentType !== 'itinerary' && !selectedTrip) return false;
 
@@ -443,7 +511,7 @@ export default function PdfUploader({
         if (!autoRouted) {
           setReviewDraft(nextDraft);
           setDraftEdits({ ...sanitizeByType(nextDraft.document_type, nextDraft.extracted_data || {}), document_type: nextDraft.document_type });
-          setAssignedTripNumber(nextDraft.trip_number || orderedTrips[0]?.trip_number || '');
+          setAssignedTripNumber(nextDraft.trip_number || pickTripByReceiptDate(orderedTrips, nextDraft.extracted_data?.date || null) || '');
           setStatus('done');
           setMessage(nextDraft.status === 'ambiguous'
             ? 'Low confidence classification detected. Quick correction prompt opened.'
@@ -539,7 +607,7 @@ export default function PdfUploader({
         if (!autoRouted) {
           setReviewDraft(nextDraft);
           setDraftEdits({ ...sanitizeByType(nextDraft.document_type, nextDraft.extracted_data || {}), document_type: nextDraft.document_type });
-          setAssignedTripNumber(nextDraft.trip_number || orderedTrips[0]?.trip_number || '');
+          setAssignedTripNumber(nextDraft.trip_number || pickTripByReceiptDate(orderedTrips, nextDraft.extracted_data?.date || null) || '');
           setStatus('done');
           setMessage(nextDraft.status === 'ambiguous'
             ? 'Retry complete. Low confidence classification needs a quick correction.'
@@ -591,7 +659,7 @@ export default function PdfUploader({
           if (!autoRouted) {
             setReviewDraft(nextDraft);
             setDraftEdits({ ...sanitizeByType(nextDraft.document_type, nextDraft.extracted_data || {}), document_type: nextDraft.document_type });
-            setAssignedTripNumber(nextDraft.trip_number || orderedTrips[0]?.trip_number || '');
+            setAssignedTripNumber(nextDraft.trip_number || pickTripByReceiptDate(orderedTrips, nextDraft.extracted_data?.date || null) || '');
             setStatus('done');
             setMessage(nextDraft.status === 'ambiguous'
               ? 'Retry complete. Low confidence classification needs a quick correction.'
@@ -817,9 +885,25 @@ export default function PdfUploader({
                   <div className="flex-1 overflow-auto px-4 py-4 sm:px-5 sm:py-5 xl:px-6 xl:py-6">
                     <div className="space-y-4 pb-2">
                       <div className="rounded-2xl border border-zinc-800 bg-black/20 p-4">
-                        <p className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Document</p>
-                        <p className="mt-2 break-all text-sm font-black text-white sm:text-base">{reviewDraft.original_filename}</p>
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Document</p>
+                            <p className="mt-2 break-all text-sm font-black text-white sm:text-base">{reviewDraft.original_filename}</p>
+                          </div>
+                          {getAdminTraceHref(reviewDraft.trace_id) && (
+                            <Link
+                              href={getAdminTraceHref(reviewDraft.trace_id)!}
+                              target="_blank"
+                              className="rounded-xl border border-fuchsia-500/30 bg-fuchsia-500/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-fuchsia-200 hover:bg-fuchsia-500/20"
+                            >
+                              View Trace
+                            </Link>
+                          )}
+                        </div>
                         <p className="mt-1 text-xs text-zinc-400 sm:text-sm">{getTypeDetails(activeType).helper}</p>
+                        {reviewDraft.trace_id && (
+                          <p className="mt-2 break-all text-[10px] font-mono text-zinc-600">{reviewDraft.trace_id}</p>
+                        )}
                       </div>
 
                       {showTypeSummary && (

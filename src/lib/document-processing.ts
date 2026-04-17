@@ -1,8 +1,15 @@
-import { readFile } from 'fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'fs/promises';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { db } from '@/lib/db';
+import { writeAdminDebugLog } from '@/lib/admin-debug-logs';
 import { buildDocumentDownloadUrl, buildSourcePathUrl, ensureUserDocumentsTable, getDocumentSourceFileType, resolveDocumentSourcePath } from '@/lib/dispatch-documents';
 import { downloadFromR2 } from '@/lib/r2-storage';
+import { ensureTripExpensesReceiptColumns } from '@/lib/trip-expenses';
 import Anthropic from '@anthropic-ai/sdk';
+import { getRuntimeMethodOrder, isOpenRouterVisionModel } from '@/lib/llm-config';
 import {
   extractTextFromImage,
   extractTextFromPdf,
@@ -26,11 +33,18 @@ import {
   type SmartIntakeLlmResult,
 } from '@/lib/document-classifier';
 
+const execFileAsync = promisify(execFile);
+const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
+
 export type DocumentDraftStatus = 'processing' | 'needs_review' | 'ready' | 'saved' | 'error' | 'ambiguous';
 
 export type DocumentDraftData = {
   date?: string | null;
   location?: string | null;
+  vendor?: string | null;
+  invoice_number?: string | null;
+  tax_amount?: number | null;
+  receipt_type?: string | null;
   gallons?: number | null;
   liters?: number | null;
   def_gallons?: number | null;
@@ -45,6 +59,7 @@ export type DocumentDraftData = {
   name?: string | null;
   category?: string | null;
   notes?: string | null;
+  source?: string | null;
   trip_number?: string | null;
   start_date?: string | null;
   end_date?: string | null;
@@ -63,6 +78,7 @@ export type DocumentDraftData = {
 export type DocumentProcessingDraft = {
   id: number;
   user_document_id: number;
+  trace_id: string | null;
   trip_number: string | null;
   document_type: DocumentDraftType;
   status: DocumentDraftStatus;
@@ -216,7 +232,7 @@ function pickAmount(text: string) {
     .trim();
 
   const numberPattern = /((?:USD|CAD|C\$|\$)\s*)?([0-9][0-9\s,.:;]{0,20}[0-9])/gi;
-  const candidates: Array<{ value: number; score: number }> = [];
+  const candidates: Array<{ value: number; score: number; index: number; explicitCurrency: boolean }> = [];
 
   for (const match of normalized.matchAll(numberPattern)) {
     const numeric = parseMoneyCandidate(match[2]);
@@ -229,11 +245,13 @@ function pickAmount(text: string) {
     let score = 0;
     if (/grand\s*total|total\s*(?:due|paid)?|amount\s*(?:due|paid)?|sale\s*total|net\s*amount|balance\s*due/.test(context)) score += 7;
     else if (/\btotal\b|\bamount\b|\bdue\b|\bpaid\b/.test(context)) score += 4;
-    if (match[1] || /\b(?:usd|cad|c\$)\b|\$/.test(context)) score += 2;
+    const explicitCurrency = Boolean(match[1] || /\b(?:usd|cad|c\$)\b|\$/.test(context));
+    if (explicitCurrency) score += 2;
     if (/([.,:]\s*\d{2,3})(?:\D|$)/.test(match[2])) score += 2;
-    if (/price\s*(?:\/|per)?\s*(?:unit|gal|gallon|l|liter|litre)|\bppu\b|\/(?:gal|gallon|l|liter|litre)|\bodometer\b|\bgallons?\b|\bliters?\b|\blitres?\b|\bqty\b|\bquantity\b|\btax\s*rate\b/.test(context)) score -= 4;
+    if (/\breceived\b|\bcharged\b|\bpayment\b|\bpaid by\b/.test(context)) score += 1;
+    if (/price\s*(?:\/|per)?\s*(?:unit|gal|gallon|l|liter|litre)|\bppu\b|\/(?:gal|gallon|l|liter|litre)|\bodometer\b|\bgallons?\b|\bliters?\b|\blitres?\b|\bqty\b|\bquantity\b|\btax\s*rate\b|\bamt\/vol\b|\bvol\.\s*corrected\b/.test(context)) score -= 4;
 
-    candidates.push({ value: numeric, score });
+    candidates.push({ value: numeric, score, index: match.index || 0, explicitCurrency });
   }
 
   if (candidates.length === 0) return null;
@@ -243,8 +261,11 @@ function pickAmount(text: string) {
 
   return candidates
     .filter((candidate) => candidate.score === bestScore)
-    .map((candidate) => candidate.value)
-    .sort((a, b) => b - a)[0] || null;
+    .sort((a, b) => (
+      Number(b.explicitCurrency) - Number(a.explicitCurrency)
+      || b.index - a.index
+      || a.value - b.value
+    ))[0]?.value || null;
 }
 
 function pickLocation(text: string, fallbackName: string) {
@@ -264,6 +285,113 @@ function pickLocation(text: string, fallbackName: string) {
   return candidate || fallbackName || null;
 }
 
+function isLikelyFilenameValue(value: string) {
+  const trimmed = value.trim();
+  return /^[a-z0-9._-]+\.(?:pdf|jpe?g|png|webp|heic|heif)$/i.test(trimmed)
+    || /^\d{4}-\d{2}-\d{2}[-_a-z0-9.]+$/i.test(trimmed);
+}
+
+function pickVendor(text: string, fallbackName: string, location?: string | null) {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const candidate = lines.find((line) => {
+    const compact = line.toLowerCase();
+    if (compact.length < 2 || compact.length > 60) return false;
+    if (!/[a-z]/i.test(line)) return false;
+    if (isLikelyFilenameValue(line)) return false;
+    if (location && compact === location.trim().toLowerCase()) return false;
+    if (/receipt|invoice|transaction|ticket|thank you|subtotal|total|tax|date|card|auth|pump|gallons?|liters?|price|amount|due|paid|fleet data|store\s*\d+/i.test(compact)) return false;
+    if (/^\d/.test(line) && /,/.test(line)) return false;
+    return true;
+  });
+
+  if (candidate) return candidate;
+  if (location && !isLikelyFilenameValue(location)) return location;
+  return isLikelyFilenameValue(fallbackName) ? null : fallbackName || null;
+}
+
+const CAD_LOCATION_PATTERN = /\b(ontario|quebec|alberta|british columbia|manitoba|saskatchewan|new brunswick|nova scotia|prince edward island|newfoundland|labrador|yukon|nunavut|northwest territories|toronto|sarnia|windsor|ottawa|mississauga|brampton|vaughan|hamilton|montreal|calgary|edmonton|winnipeg|regina|saskatoon)\b/i;
+const US_LOCATION_PATTERN = /\b(al|ak|az|ar|ca|co|ct|de|fl|ga|ia|id|il|in|ks|ky|la|ma|md|me|mi|mn|mo|ms|mt|nc|nd|ne|nh|nj|nm|nv|ny|oh|ok|or|pa|ri|sc|sd|tn|tx|ut|va|vt|wa|wi|wv|wy|district of columbia|alabama|alaska|arizona|arkansas|california|colorado|connecticut|delaware|florida|georgia|iowa|idaho|illinois|indiana|kansas|kentucky|louisiana|massachusetts|maryland|maine|michigan|minnesota|missouri|mississippi|montana|north carolina|north dakota|nebraska|new hampshire|new jersey|new mexico|nevada|new york|ohio|oklahoma|oregon|pennsylvania|rhode island|south carolina|south dakota|tennessee|texas|utah|virginia|vermont|washington|wisconsin|west virginia|wyoming)\b/i;
+
+function inferCurrency(text: string, location?: string | null) {
+  const locationText = location || '';
+  const geoHint = `${locationText}\n${text.slice(0, 2000)}`;
+  if (/\bCAD\b|C\$/i.test(text)) return 'CAD';
+  if (/\bcanada\b/i.test(geoHint)) return 'CAD';
+  if (/\b(?:united\s+states|usa|u\.s\.a\.?|u\.s\.?)\b/i.test(geoHint)) return 'USD';
+  if (US_LOCATION_PATTERN.test(locationText) || /,\s*(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|IA|ID|IL|IN|KS|KY|LA|MA|MD|ME|MI|MN|MO|MS|MT|NC|ND|NE|NH|NJ|NM|NV|NY|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VA|VT|WA|WI|WV|WY)\b/.test(geoHint)) return 'USD';
+  if (CAD_LOCATION_PATTERN.test(locationText) || /,\s*(?:ON|QC|AB|BC|MB|SK|NB|NS|PE|NL)\b/i.test(geoHint)) return 'CAD';
+  if (CAD_LOCATION_PATTERN.test(geoHint)) return 'CAD';
+  return 'USD';
+}
+
+function parseIsoDateOnly(value: string | null | undefined) {
+  if (!value) return null;
+  const match = String(value).trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const utc = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  if (!Number.isFinite(utc)) return null;
+  return utc;
+}
+
+async function resolveTripByReceiptDate(params: {
+  userId: number;
+  explicitTripNumber?: string | null;
+  receiptDate?: string | null;
+}) {
+  const explicitTripNumber = String(params.explicitTripNumber || '').trim().toUpperCase();
+  if (explicitTripNumber) return explicitTripNumber;
+
+  const receiptUtc = parseIsoDateOnly(params.receiptDate || null);
+  if (receiptUtc === null) return null;
+
+  const trips = await db().query(
+    `SELECT trip_number, start_date::text AS start_date, end_date::text AS end_date
+     FROM trips
+     WHERE user_id = $1
+       AND (start_date IS NOT NULL OR end_date IS NOT NULL)`,
+    [params.userId]
+  ) as Array<{ trip_number: string; start_date: string | null; end_date: string | null }>;
+
+  const candidates = trips
+    .map((trip) => {
+      const startUtcRaw = parseIsoDateOnly(trip.start_date);
+      const endUtcRaw = parseIsoDateOnly(trip.end_date);
+      const startUtc = startUtcRaw ?? endUtcRaw;
+      const endUtc = endUtcRaw ?? startUtcRaw;
+      if (startUtc === null || endUtc === null) return null;
+      const rangeStart = Math.min(startUtc, endUtc);
+      const rangeEnd = Math.max(startUtc, endUtc);
+      const inWindow = receiptUtc >= rangeStart && receiptUtc <= rangeEnd;
+      const distance = inWindow ? 0 : Math.min(Math.abs(receiptUtc - rangeStart), Math.abs(receiptUtc - rangeEnd));
+      const span = Math.abs(rangeEnd - rangeStart);
+      const center = rangeStart + span / 2;
+      return {
+        tripNumber: trip.trip_number,
+        inWindow,
+        distance,
+        span,
+        centerDistance: Math.abs(receiptUtc - center),
+      };
+    })
+    .filter(Boolean) as Array<{ tripNumber: string; inWindow: boolean; distance: number; span: number; centerDistance: number }>;
+
+  if (!candidates.length) return null;
+
+  candidates.sort((a, b) => {
+    if (a.inWindow !== b.inWindow) return a.inWindow ? -1 : 1;
+    if (a.distance !== b.distance) return a.distance - b.distance;
+    if (a.span !== b.span) return a.span - b.span;
+    if (a.centerDistance !== b.centerDistance) return a.centerDistance - b.centerDistance;
+    return b.tripNumber.localeCompare(a.tripNumber);
+  });
+
+  return candidates[0]?.tripNumber || null;
+}
+
 function sanitizeJsonResponse(content: string) {
   return content
     .replace(/^```json\s*/i, '')
@@ -279,14 +407,14 @@ const TYPE_ALLOWED_FIELDS: Record<DocumentDraftType, string[]> = {
     'classification_confidence', 'classification_rationale', 'classification_stage',
   ],
   fuel: [
-    'date', 'location', 'gallons', 'liters', 'def_gallons', 'def_liters', 'def_amount_usd', 'def_price_per_unit',
-    'price_per_unit', 'amount_usd', 'odometer', 'fuel_type', 'currency', 'name', 'category', 'notes', 'raw_text',
+    'date', 'location', 'vendor', 'invoice_number', 'tax_amount', 'receipt_type', 'gallons', 'liters', 'def_gallons', 'def_liters', 'def_amount_usd', 'def_price_per_unit',
+    'price_per_unit', 'amount_usd', 'odometer', 'fuel_type', 'currency', 'name', 'category', 'notes', 'source', 'raw_text',
     'classification_confidence', 'classification_rationale', 'classification_stage',
   ],
-  toll: ['date', 'location', 'amount_usd', 'currency', 'name', 'category', 'notes', 'raw_text', 'classification_confidence', 'classification_rationale', 'classification_stage'],
-  reimbursement: ['date', 'location', 'amount_usd', 'currency', 'name', 'category', 'notes', 'raw_text', 'classification_confidence', 'classification_rationale', 'classification_stage'],
-  other: ['date', 'location', 'amount_usd', 'currency', 'name', 'category', 'notes', 'raw_text', 'classification_confidence', 'classification_rationale', 'classification_stage'],
-  receipt: ['date', 'location', 'amount_usd', 'currency', 'name', 'category', 'notes', 'raw_text', 'classification_confidence', 'classification_rationale', 'classification_stage'],
+  toll: ['date', 'location', 'vendor', 'invoice_number', 'tax_amount', 'receipt_type', 'amount_usd', 'currency', 'name', 'category', 'notes', 'source', 'raw_text', 'classification_confidence', 'classification_rationale', 'classification_stage'],
+  reimbursement: ['date', 'location', 'vendor', 'invoice_number', 'tax_amount', 'receipt_type', 'amount_usd', 'currency', 'name', 'category', 'notes', 'source', 'raw_text', 'classification_confidence', 'classification_rationale', 'classification_stage'],
+  other: ['date', 'location', 'vendor', 'invoice_number', 'tax_amount', 'receipt_type', 'amount_usd', 'currency', 'name', 'category', 'notes', 'source', 'raw_text', 'classification_confidence', 'classification_rationale', 'classification_stage'],
+  receipt: ['date', 'location', 'vendor', 'invoice_number', 'tax_amount', 'receipt_type', 'amount_usd', 'currency', 'name', 'category', 'notes', 'source', 'raw_text', 'classification_confidence', 'classification_rationale', 'classification_stage'],
   unknown: ['raw_text', 'notes', 'classification_confidence', 'classification_rationale', 'classification_stage'],
 };
 
@@ -303,11 +431,87 @@ function isMeaningfulValue(value: unknown): boolean {
   return true;
 }
 
+function isValidIsoDateString(value: string) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) && parseDate(value) === value;
+}
+
+function scoreStringValue(key: string, value: string) {
+  const normalized = value.trim();
+  const lower = normalized.toLowerCase();
+  if (!normalized) return -100;
+  if (['null', 'undefined', 'n/a', 'na', 'none', 'unknown'].includes(lower)) return -80;
+
+  let score = Math.min(normalized.length, 40);
+
+  if (key === 'date') {
+    if (isValidIsoDateString(normalized)) return 100;
+    if (/^\d{4}-\d{2}-$/.test(normalized) || /^\d{4}-$/.test(normalized)) return -20;
+    if (/^\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4}$/.test(normalized)) return 70;
+  }
+
+  if (key === 'currency') {
+    if (normalized === 'USD' || normalized === 'CAD') return 90;
+    return -20;
+  }
+
+  if (key === 'location' || key === 'vendor' || key === 'name') {
+    if (/^img[_-]?\d+|vendor\s*\d|receipt\s*\d/i.test(normalized) || isLikelyFilenameValue(normalized)) score -= 35;
+    if (/[a-z]/i.test(normalized)) score += 12;
+    if (/\d{3,}/.test(normalized) && !/[a-z]/i.test(normalized)) score -= 10;
+    if ((key === 'vendor' || key === 'name') && /^\d+/.test(normalized) && /\b(st|street|rd|road|ave|avenue|dr|drive|hwy|highway|interstate|blvd|boulevard)\b/i.test(normalized)) score -= 18;
+    if ((key === 'vendor' || key === 'name') && !/\d/.test(normalized)) score += 10;
+  }
+
+  if (key === 'receipt_type') {
+    if (['fuel', 'toll', 'reimbursement', 'other'].includes(lower)) return 85;
+    return -10;
+  }
+
+  return score;
+}
+
+function scoreValue(key: string, value: unknown) {
+  if (!isMeaningfulValue(value)) return -100;
+
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return -100;
+    if (key === 'amount_usd' || key === 'tax_amount' || key === 'price_per_unit' || key === 'def_amount_usd' || key === 'def_price_per_unit') {
+      if (value <= 0) return -10;
+      return value >= 1 ? 90 : 75;
+    }
+    if (key === 'gallons' || key === 'liters' || key === 'def_gallons' || key === 'def_liters') {
+      if (value <= 0) return -10;
+      return 80;
+    }
+    if (key === 'odometer') {
+      if (!Number.isInteger(value)) return -100;
+      return value >= 1000 ? 85 : 25;
+    }
+    return 60;
+  }
+
+  if (typeof value === 'string') {
+    return scoreStringValue(key, value);
+  }
+
+  if (Array.isArray(value)) return value.length ? 70 : -100;
+  if (typeof value === 'object') return Object.keys(value as Record<string, unknown>).length ? 70 : -100;
+  return 50;
+}
+
 function mergePreferNonEmpty<T extends Record<string, unknown>>(base: T, override?: Record<string, unknown> | null): T {
   if (!override) return { ...base };
   const merged: Record<string, unknown> = { ...base };
   for (const [key, value] of Object.entries(override)) {
-    if (isMeaningfulValue(value)) merged[key] = value;
+    if (!isMeaningfulValue(value)) continue;
+
+    const current = merged[key];
+    const overrideScore = scoreValue(key, value);
+    const currentScore = scoreValue(key, current);
+
+    if (overrideScore > currentScore) {
+      merged[key] = value;
+    }
   }
   return merged as T;
 }
@@ -320,6 +524,7 @@ function normalizeByType(type: DocumentDraftType, data: DocumentDraftData): Docu
   }
 
   if (type === 'fuel') {
+    normalized.tax_amount = toNumber(normalized.tax_amount);
     normalized.gallons = toNumber(normalized.gallons);
     normalized.liters = toNumber(normalized.liters);
     normalized.def_gallons = toNumber(normalized.def_gallons);
@@ -331,6 +536,14 @@ function normalizeByType(type: DocumentDraftType, data: DocumentDraftData): Docu
     normalized.odometer = toNumber(normalized.odometer);
   } else if (type === 'toll' || type === 'reimbursement' || type === 'other' || type === 'receipt') {
     normalized.amount_usd = toNumber(normalized.amount_usd);
+    normalized.tax_amount = toNumber(normalized.tax_amount);
+  }
+
+  if (!normalized.name && typeof normalized.vendor === 'string' && normalized.vendor.trim()) {
+    normalized.name = normalized.vendor.trim();
+  }
+  if (!normalized.location && typeof normalized.vendor === 'string' && normalized.vendor.trim()) {
+    normalized.location = normalized.vendor.trim();
   }
 
   return normalized;
@@ -338,8 +551,10 @@ function normalizeByType(type: DocumentDraftType, data: DocumentDraftData): Docu
 
 function parseFuelDraft(text: string, fallbackName: string): DocumentDraftData {
   const cleaned = text || '';
-  const gallonsMatch = cleaned.match(/\b([0-9]+(?:\.[0-9]+)?)\s*(?:gal|gallons?)\b/i);
-  const litersMatch = cleaned.match(/\b([0-9]+(?:\.[0-9]+)?)\s*(?:l|liters?|litres?)\b/i);
+  const labeledGallonsMatch = cleaned.match(/\bgallons?\s*[:#]?\s*([0-9]+(?:\.[0-9]+)?)/i);
+  const inlineGallonsMatch = cleaned.match(/\b([0-9]+(?:\.[0-9]+)?)\s*(?:gal|gallons?)\b/i);
+  const labeledLitersMatch = cleaned.match(/(?:\bliters?\b|\blitres?\b|\bamt\/vol\b)\s*[:#]?\s*([0-9]+(?:\.[0-9]+)?)/i);
+  const inlineLitersMatch = cleaned.match(/\b([0-9]+(?:\.[0-9]+)?)\s*(?:l|liters?|litres?)\b/i);
   const priceMatch = text.match(/(?:price\s*(?:\/|per)?\s*(?:unit|gal|gallon|l|liter|litre)|ppu)\s*[: ]\s*\$?\s*([0-9]+(?:\.[0-9]{2,3})?)/i)
     || text.match(/\$\s*([0-9]+(?:\.[0-9]{2,3})?)\s*\/(?:gal|gallon|l|liter|litre)/i);
   const odometerMatch = text.match(/odo(?:meter)?\s*[:# ]\s*(\d{4,8})/i);
@@ -353,12 +568,15 @@ function parseFuelDraft(text: string, fallbackName: string): DocumentDraftData {
   const defAmountMatch = cleaned.match(/(?:def|diesel\s*exhaust\s*fluid)[\s\S]{0,60}(?:total|amount|sale)?\s*[: ]?\$\s*([0-9]+(?:\.[0-9]{2})?)/i);
   const defPriceMatch = cleaned.match(/(?:def|diesel\s*exhaust\s*fluid)[\s\S]{0,60}(?:price\s*(?:\/|per)?\s*(?:unit|gal|gallon|l|liter|litre)|ppu)?\s*[: ]?\$\s*([0-9]+(?:\.[0-9]{2,3})?)\s*(?:\/(?:gal|gallon|l|liter|litre))?/i);
   const hasDef = /\bdef\b|diesel\s*exhaust\s*fluid/i.test(cleaned);
+  const location = pickLocation(text, fallbackName);
+  const vendor = pickVendor(text, fallbackName, location);
 
   return {
     date: parseDate(text),
-    location: pickLocation(text, fallbackName),
-    gallons: gallonsMatch ? Number(gallonsMatch[1]) : null,
-    liters: litersMatch ? Number(litersMatch[1]) : null,
+    location,
+    vendor,
+    gallons: labeledGallonsMatch ? Number(labeledGallonsMatch[1]) : inlineGallonsMatch ? Number(inlineGallonsMatch[1]) : null,
+    liters: labeledLitersMatch ? Number(labeledLitersMatch[1]) : inlineLitersMatch ? Number(inlineLitersMatch[1]) : null,
     def_gallons: defGallonsMatch ? Number(defGallonsMatch[1]) : null,
     def_liters: defLitersMatch ? Number(defLitersMatch[1]) : null,
     def_amount_usd: defAmountMatch ? Number(defAmountMatch[1]) : null,
@@ -367,45 +585,55 @@ function parseFuelDraft(text: string, fallbackName: string): DocumentDraftData {
     amount_usd: pickAmount(text),
     odometer: odometerMatch ? Number(odometerMatch[1]) : null,
     fuel_type: hasDef && /\bdiesel\b/i.test(cleaned) ? 'both' : hasDef ? 'def' : 'diesel',
-    currency: /\bCAD\b|C\$/i.test(text) ? 'CAD' : 'USD',
+    currency: inferCurrency(text, location),
     category: 'fuel',
     name: 'Fuel receipt',
+    receipt_type: 'fuel',
     notes: text ? text.slice(0, 1000) : null,
   };
 }
 
 function parseTollDraft(text: string, fallbackName: string): DocumentDraftData {
+  const location = pickLocation(text, fallbackName);
   return {
     date: parseDate(text),
-    location: pickLocation(text, fallbackName),
+    location,
+    vendor: pickVendor(text, fallbackName, location),
     amount_usd: pickAmount(text),
     name: 'Toll receipt',
     category: 'toll',
-    currency: /\bCAD\b|C\$/i.test(text) ? 'CAD' : 'USD',
+    receipt_type: 'toll',
+    currency: inferCurrency(text, location),
     notes: text ? text.slice(0, 1000) : null,
   };
 }
 
 function parseReimbursementDraft(text: string, fallbackName: string): DocumentDraftData {
+  const location = pickLocation(text, fallbackName);
   return {
     date: parseDate(text),
-    location: pickLocation(text, fallbackName),
+    location,
+    vendor: pickVendor(text, fallbackName, location),
     amount_usd: pickAmount(text),
-    name: fallbackName || 'Reimbursement receipt',
+    name: pickVendor(text, fallbackName, location) || 'Reimbursement receipt',
     category: 'reimbursement',
-    currency: /\bCAD\b|C\$/i.test(text) ? 'CAD' : 'USD',
+    receipt_type: 'reimbursement',
+    currency: inferCurrency(text, location),
     notes: text ? text.slice(0, 1000) : null,
   };
 }
 
 function parseOtherReceiptDraft(text: string, fallbackName: string): DocumentDraftData {
+  const location = pickLocation(text, fallbackName);
   return {
     date: parseDate(text),
-    location: pickLocation(text, fallbackName),
+    location,
+    vendor: pickVendor(text, fallbackName, location),
     amount_usd: pickAmount(text),
-    name: fallbackName || 'Other receipt',
+    name: pickVendor(text, fallbackName, location) || 'Other receipt',
     category: 'misc',
-    currency: /\bCAD\b|C\$/i.test(text) ? 'CAD' : 'USD',
+    receipt_type: 'other',
+    currency: inferCurrency(text, location),
     notes: text ? text.slice(0, 1000) : null,
   };
 }
@@ -473,6 +701,48 @@ type ModelTestOptions = {
   model?: string | null;
 };
 
+type DebugLogContext = {
+  traceId: string;
+  userId?: number | null;
+  tripNumber?: string | null;
+  documentId?: number | null;
+  draftId?: number | null;
+  fileName?: string | null;
+};
+
+function createTraceId(prefix = 'intake') {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+async function logDocumentProcessingEvent(
+  context: DebugLogContext | undefined,
+  entry: {
+    event: string;
+    level?: 'info' | 'warn' | 'error';
+    message?: string | null;
+    provider?: string | null;
+    model?: string | null;
+    data?: Record<string, unknown> | null;
+  }
+) {
+  if (!context?.traceId) return;
+  await writeAdminDebugLog({
+    category: 'document-processing',
+    event: entry.event,
+    level: entry.level,
+    message: entry.message,
+    userId: context.userId || null,
+    tripNumber: context.tripNumber || null,
+    provider: entry.provider || null,
+    model: entry.model || null,
+    documentId: context.documentId || null,
+    draftId: context.draftId || null,
+    fileName: context.fileName || null,
+    traceId: context.traceId,
+    data: entry.data || null,
+  }).catch(() => {});
+}
+
 async function callAnthropicJson(system: string, prompt: string, apiKey: string) {
   const client = new Anthropic({ apiKey });
   const response = await client.messages.create({
@@ -537,32 +807,565 @@ async function callZaiJson(system: string, prompt: string, apiKey: string) {
   return JSON.parse(sanitizeJsonResponse(text)) as SmartIntakeLlmResult;
 }
 
-async function classifyAndExtractWithLlm(
-  rawText: string,
-  filename: string,
-  description?: string | null,
-  options?: ModelTestOptions
-) {
-  const cfg = await getLlmConfig();
-  const selectedProvider = options?.provider || 'auto';
-  const selectedModel = (options?.model || '').trim();
-  const system = `You classify trucking dispatch uploads and extract structured data. Return JSON only with this exact shape:\n{\n  "document_type": "dispatch_itinerary" | "fuel_receipt" | "toll_receipt" | "reimbursement" | "other",\n  "confidence": 0.0-1.0,\n  "rationale": "short reason",\n  "extracted_data": { ... }\n}\n\nRules:\n- Use dispatch_itinerary only for trip itinerary / load itinerary documents.\n- Use fuel_receipt, toll_receipt, reimbursement, or other for receipts and expense documents.\n- Fuel must have strong evidence (for example gallons/liters, odometer, price per unit, diesel/DEF line items). Avoid fuel if only weak keywords appear.\n- For receipts, extract only fields you can support from the text: date, location, gallons, liters, def_gallons, def_liters, def_amount_usd, def_price_per_unit, price_per_unit, amount_usd, odometer, fuel_type, currency, name, category, notes.\n- Do not decide where to save the document. Only classify and extract.`;
-  const prompt = `Filename: ${filename}\nDescription: ${description || ''}\n\nDocument text:\n${rawText.slice(0, 12000)}`;
+async function buildVisionInputs(buffer: Buffer, fileType: string, maxPages = 3): Promise<Array<{ type: 'image_url'; image_url: { url: string } }>> {
+  if (fileType.startsWith('image/')) {
+    if (fileType === 'image/heic' || fileType === 'image/heif') {
+      const tmp = await mkdtemp(join(tmpdir(), 'dispatch-smart-intake-image-'));
+      const input = join(tmp, fileType === 'image/heic' ? 'input.heic' : 'input.heif');
+      const output = join(tmp, 'input.png');
+      try {
+        await writeFile(input, buffer);
+        await execFileAsync('sips', ['-s', 'format', 'png', input, '--out', output]);
+        const png = await readFile(output);
+        return [{
+          type: 'image_url',
+          image_url: { url: `data:image/png;base64,${png.toString('base64')}` },
+        }];
+      } catch {
+        // Fall back to the original HEIC/HEIF payload if conversion is unavailable.
+      } finally {
+        await rm(tmp, { recursive: true, force: true });
+      }
+    }
 
+    return [{
+      type: 'image_url',
+      image_url: { url: `data:${fileType};base64,${buffer.toString('base64')}` },
+    }];
+  }
+
+  if (fileType !== 'application/pdf') return [];
+
+  const tmp = await mkdtemp(join(tmpdir(), 'dispatch-smart-intake-'));
+  const input = join(tmp, 'input.pdf');
+  const prefix = join(tmp, 'page');
+  try {
+    await writeFile(input, buffer);
+    await execFileAsync('pdftoppm', ['-png', '-f', '1', '-l', String(maxPages), '-r', '220', input, prefix]);
+    const files = (await readdir(tmp))
+      .filter((name) => /^page-\d+\.png$/i.test(name))
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+    const inputs: Array<{ type: 'image_url'; image_url: { url: string } }> = [];
+    for (const file of files) {
+      const png = await readFile(join(tmp, file));
+      inputs.push({
+        type: 'image_url',
+        image_url: { url: `data:image/png;base64,${png.toString('base64')}` },
+      });
+    }
+    return inputs;
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+}
+
+async function callOpenRouterVisionJson(
+  system: string,
+  prompt: string,
+  buffer: Buffer,
+  fileType: string,
+  apiKey: string,
+  model: string
+) {
+  const images = await buildVisionInputs(buffer, fileType);
+  if (!images.length) throw new Error('No vision inputs available for OpenRouter');
+
+  const response = await fetch(OPENROUTER_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+      'HTTP-Referer': 'http://localhost:3000',
+      'X-Title': 'Dispatch',
+    },
+    body: JSON.stringify({
+      model,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: system },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            ...images,
+          ],
+        },
+      ],
+      temperature: 0,
+      max_tokens: 2000,
+    }),
+  });
+
+  if (!response.ok) throw new Error(`OpenRouter vision classification failed: ${response.status}`);
+  const data = await response.json();
+  const content = data?.choices?.[0]?.message?.content;
+  const text = Array.isArray(content)
+    ? content.map((part: any) => (typeof part?.text === 'string' ? part.text : '')).join('\n')
+    : content;
+  if (!text || typeof text !== 'string') throw new Error('Empty response from OpenRouter vision');
+  return JSON.parse(sanitizeJsonResponse(text)) as SmartIntakeLlmResult;
+}
+
+async function callAnthropicVisionJson(
+  system: string,
+  prompt: string,
+  buffer: Buffer,
+  fileType: string,
+  apiKey: string
+) {
+  const client = new Anthropic({ apiKey });
+  const source = fileType === 'application/pdf'
+    ? {
+        type: 'document' as const,
+        source: {
+          type: 'base64' as const,
+          media_type: 'application/pdf' as const,
+          data: buffer.toString('base64'),
+        },
+      }
+    : {
+        type: 'image' as const,
+        source: {
+          type: 'base64' as const,
+          media_type: (fileType || 'image/jpeg') as any,
+          data: buffer.toString('base64'),
+        },
+      };
+
+  const response = await client.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 2000,
+    temperature: 0,
+    system,
+    messages: [{
+      role: 'user',
+      content: [
+        source as any,
+        { type: 'text', text: prompt },
+      ],
+    }],
+  });
+
+  const text = response.content
+    .map((part: any) => (part?.type === 'text' ? part.text : ''))
+    .join('\n')
+    .trim();
+  if (!text) throw new Error('Empty response from Anthropic vision');
+  return JSON.parse(sanitizeJsonResponse(text)) as SmartIntakeLlmResult;
+}
+
+async function callOpenRouterTextJson(system: string, prompt: string, apiKey: string, model: string) {
+  const response = await fetch(OPENROUTER_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+      'HTTP-Referer': 'http://localhost:3000',
+      'X-Title': 'Dispatch',
+    },
+    body: JSON.stringify({
+      model,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: prompt },
+      ],
+      temperature: 0,
+      max_tokens: 2000,
+    }),
+  });
+
+  if (!response.ok) throw new Error(`OpenRouter classification failed: ${response.status}`);
+  const data = await response.json();
+  const content = data?.choices?.[0]?.message?.content;
+  const text = Array.isArray(content)
+    ? content.map((part: any) => (typeof part?.text === 'string' ? part.text : '')).join('\n')
+    : content;
+  if (!text || typeof text !== 'string') throw new Error('Empty response from OpenRouter');
+  return JSON.parse(sanitizeJsonResponse(text)) as SmartIntakeLlmResult;
+}
+
+function hasStrongAmountEvidence(rawText: string) {
+  const normalized = normalizeOcrNumerals(rawText)
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return /(?:grand\s*total|sale\s*total|amount\s*(?:due|paid)?|total|received|paid)[^0-9$cadus]{0,24}(?:USD|CAD|C\$|\$)?\s*[0-9]/i.test(normalized);
+}
+
+function hasDecimalMoneyEvidence(rawText: string) {
+  const normalized = normalizeOcrNumerals(rawText)
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return /(?:USD|CAD|C\$|\$)?\s*[0-9][0-9\s,.:;]{0,20}[.,:]\s*\d{2,3}\b/i.test(normalized);
+}
+
+function isSuspiciousAmountForType(documentType: DocumentDraftType, amount: number | null, rawText: string) {
+  if (!amount || !Number.isFinite(amount) || documentType === 'itinerary' || documentType === 'unknown') return false;
+
+  const normalized = normalizeOcrNumerals(rawText)
+    .replace(/\s+/g, ' ')
+    .trim();
+  const strongAmountEvidence = hasStrongAmountEvidence(normalized);
+  const decimalMoneyEvidence = hasDecimalMoneyEvidence(normalized);
+
+  if (documentType === 'fuel') {
+    if (!strongAmountEvidence && /\bamt\/vol\b|\bvol\.\s*corrected\b/i.test(normalized)) return true;
+    if (amount >= 1000 && !strongAmountEvidence) return true;
+    return false;
+  }
+
+  if ((documentType === 'reimbursement' || documentType === 'toll' || documentType === 'other' || documentType === 'receipt')
+    && amount >= 100
+    && !strongAmountEvidence
+    && !decimalMoneyEvidence) {
+    return true;
+  }
+
+  if (amount >= 10000 && !strongAmountEvidence) return true;
+  return false;
+}
+
+function isSuspiciousLlmResult(result: SmartIntakeLlmResult | null | undefined, rawText: string) {
+  const documentType = normalizeDocumentType(result?.document_type);
+  const amount = toNumber(result?.extracted_data?.amount_usd);
+  return isSuspiciousAmountForType(documentType, amount, rawText);
+}
+
+function sanitizeSuspiciousExtractedData(documentType: DocumentDraftType, data: DocumentDraftData, rawText: string) {
+  const sanitized = { ...data };
+  const amount = toNumber(sanitized.amount_usd);
+  if (isSuspiciousAmountForType(documentType, amount, rawText)) {
+    sanitized.amount_usd = null;
+  }
+  return sanitized;
+}
+
+async function classifyAndExtractWithLlm(params: {
+  rawText: string;
+  filename: string;
+  description?: string | null;
+  buffer?: Buffer | null;
+  fileType?: string | null;
+  options?: ModelTestOptions;
+  debugLogContext?: DebugLogContext;
+}) {
+  const cfg = await getLlmConfig();
+  const selectedProvider = params.options?.provider || 'auto';
+  const selectedModel = (params.options?.model || '').trim();
+  const buffer = params.buffer || null;
+  const fileType = params.fileType || null;
+  const hasVisionInput = Boolean(buffer && fileType && (fileType === 'application/pdf' || fileType.startsWith('image/')));
+  const system = `You classify trucking dispatch uploads and extract structured data. Return JSON only with this exact shape:\n{\n  "document_type": "dispatch_itinerary" | "fuel_receipt" | "toll_receipt" | "reimbursement" | "other",\n  "confidence": 0.0-1.0,\n  "rationale": "short reason",\n  "extracted_data": { ... }\n}\n\nRules:\n- Use dispatch_itinerary only for trip itinerary / load itinerary documents.\n- Use fuel_receipt, toll_receipt, reimbursement, or other for receipts and expense documents.\n- Fuel must have strong evidence (for example gallons/liters, odometer, price per unit, diesel/DEF line items). Prefer the actual document contents over noisy OCR when they disagree.\n- Printed invoices or receipts for parking, lumper, scales, printouts, copies, fax, scan, supplies, office services, or similar trip costs should usually be reimbursement, not other.\n- When a receipt shows a subtotal, tax, and total, set amount_usd to the final total actually charged, not 0.\n- Set currency from clear receipt clues such as $, USD, CAD, C$, province/state, or merchant location. Default to USD only when the receipt gives no better clue.\n- For receipts, extract only fields you can support from the document: date, location, vendor, invoice_number, tax_amount, receipt_type, gallons, liters, def_gallons, def_liters, def_amount_usd, def_price_per_unit, price_per_unit, amount_usd, odometer, fuel_type, currency, name, category, notes.\n- Do not emit placeholder values like 0, 0.00, Vendor 01, Unknown, or partial dates unless the document explicitly shows them.\n- Do not decide where to save the document. Only classify and extract.`;
+  const prompt = `Filename: ${params.filename}\nDescription: ${params.description || ''}\n\nUse the attached file as the primary source of truth when available. OCR text is fallback context only.\n\nDocument text fallback:\n${params.rawText.slice(0, 12000)}`;
+
+  const autoOrder = getRuntimeMethodOrder(cfg.primary, cfg.customProviders);
   const attempts = selectedProvider === 'auto'
-    ? [cfg.primary, 'minimax', 'claude', 'zai'].filter((value, index, list) => list.indexOf(value) === index)
-    : [selectedProvider === 'openrouter-vision' ? 'openrouter' : selectedProvider];
+    ? [
+        ...(hasVisionInput ? ['openrouter-vision', 'claude'] : []),
+        ...autoOrder,
+      ].filter((value, index, list) => value && list.indexOf(value) === index)
+    : [selectedProvider];
+
+  await logDocumentProcessingEvent(params.debugLogContext, {
+    event: 'llm_attempt_plan',
+    provider: selectedProvider,
+    model: selectedModel || null,
+    data: {
+      fileType,
+      hasVisionInput,
+      attemptOrder: attempts,
+      rawTextLength: params.rawText.length,
+    },
+  });
 
   for (const method of attempts) {
     try {
-      if (method === 'minimax' && cfg.minimaxApiKey) return await callMinimaxJson(system, prompt, cfg.minimaxApiKey, selectedModel || cfg.minimaxModel);
-      if (method === 'claude' && cfg.anthropicApiKey) return await callAnthropicJson(system, prompt, cfg.anthropicApiKey);
-      if (method === 'zai' && cfg.zaiApiKey) return await callZaiJson(system, prompt, cfg.zaiApiKey);
-    } catch {
+      await logDocumentProcessingEvent(params.debugLogContext, {
+        event: 'llm_attempt_start',
+        provider: method,
+        model: selectedModel || null,
+        data: { fileType, hasVisionInput },
+      });
+      if (method === 'openrouter-vision' && hasVisionInput && cfg.openrouterApiKey && fileType) {
+        const openRouterModels = [
+          selectedModel || cfg.openrouterVisionModel,
+          cfg.openrouterFallbackModel,
+        ].filter((value, index, list) => value && list.indexOf(value) === index);
+
+        for (const modelName of openRouterModels) {
+          try {
+            const result = isOpenRouterVisionModel(modelName)
+              ? await callOpenRouterVisionJson(system, prompt, buffer as Buffer, fileType, cfg.openrouterApiKey, modelName)
+              : await callOpenRouterTextJson(system, prompt, cfg.openrouterApiKey, modelName);
+            if (isSuspiciousLlmResult(result, params.rawText)) {
+              await logDocumentProcessingEvent(params.debugLogContext, {
+                event: 'llm_attempt_failed',
+                level: 'warn',
+                provider: method,
+                model: modelName,
+                message: 'Suspicious extracted amount; trying fallback model/provider',
+                data: { documentType: result?.document_type || null, amount_usd: result?.extracted_data?.amount_usd ?? null },
+              });
+              continue;
+            }
+            await logDocumentProcessingEvent(params.debugLogContext, {
+              event: 'llm_attempt_success',
+              provider: method,
+              model: modelName,
+              data: { documentType: result?.document_type || null, confidence: result?.confidence || null },
+            });
+            return result;
+          } catch (error: any) {
+            await logDocumentProcessingEvent(params.debugLogContext, {
+              event: 'llm_attempt_failed',
+              level: 'error',
+              provider: method,
+              model: modelName,
+              message: String(error?.message || `OpenRouter model ${modelName} failed`),
+              data: { fileType, hasVisionInput },
+            });
+          }
+        }
+        continue;
+      }
+      if (method === 'minimax' && cfg.minimaxApiKey) {
+        const result = await callMinimaxJson(system, prompt, cfg.minimaxApiKey, selectedModel || cfg.minimaxModel);
+        if (isSuspiciousLlmResult(result, params.rawText)) {
+          await logDocumentProcessingEvent(params.debugLogContext, {
+            event: 'llm_attempt_failed',
+            level: 'warn',
+            provider: method,
+            model: selectedModel || cfg.minimaxModel,
+            message: 'Suspicious extracted amount; trying fallback model/provider',
+            data: { documentType: result?.document_type || null, amount_usd: result?.extracted_data?.amount_usd ?? null },
+          });
+          continue;
+        }
+        await logDocumentProcessingEvent(params.debugLogContext, {
+          event: 'llm_attempt_success',
+          provider: method,
+          model: selectedModel || cfg.minimaxModel,
+          data: { documentType: result?.document_type || null, confidence: result?.confidence || null },
+        });
+        return result;
+      }
+      if (method === 'claude' && cfg.anthropicApiKey) {
+        if (hasVisionInput && fileType) {
+          const result = await callAnthropicVisionJson(system, prompt, buffer as Buffer, fileType, cfg.anthropicApiKey);
+          if (isSuspiciousLlmResult(result, params.rawText)) {
+            await logDocumentProcessingEvent(params.debugLogContext, {
+              event: 'llm_attempt_failed',
+              level: 'warn',
+              provider: method,
+              model: 'claude-sonnet-4-6',
+              message: 'Suspicious extracted amount; trying fallback model/provider',
+              data: { documentType: result?.document_type || null, amount_usd: result?.extracted_data?.amount_usd ?? null },
+            });
+            continue;
+          }
+          await logDocumentProcessingEvent(params.debugLogContext, {
+            event: 'llm_attempt_success',
+            provider: method,
+            model: 'claude-sonnet-4-6',
+            data: { documentType: result?.document_type || null, confidence: result?.confidence || null },
+          });
+          return result;
+        }
+        const result = await callAnthropicJson(system, prompt, cfg.anthropicApiKey);
+        if (isSuspiciousLlmResult(result, params.rawText)) {
+          await logDocumentProcessingEvent(params.debugLogContext, {
+            event: 'llm_attempt_failed',
+            level: 'warn',
+            provider: method,
+            model: 'claude-sonnet-4-20250514',
+            message: 'Suspicious extracted amount; trying fallback model/provider',
+            data: { documentType: result?.document_type || null, amount_usd: result?.extracted_data?.amount_usd ?? null },
+          });
+          continue;
+        }
+        await logDocumentProcessingEvent(params.debugLogContext, {
+          event: 'llm_attempt_success',
+          provider: method,
+          model: 'claude-sonnet-4-20250514',
+          data: { documentType: result?.document_type || null, confidence: result?.confidence || null },
+        });
+        return result;
+      }
+      if (method === 'zai' && cfg.zaiApiKey) {
+        const result = await callZaiJson(system, prompt, cfg.zaiApiKey);
+        if (isSuspiciousLlmResult(result, params.rawText)) {
+          await logDocumentProcessingEvent(params.debugLogContext, {
+            event: 'llm_attempt_failed',
+            level: 'warn',
+            provider: method,
+            model: 'glm-4.5-air',
+            message: 'Suspicious extracted amount; trying fallback model/provider',
+            data: { documentType: result?.document_type || null, amount_usd: result?.extracted_data?.amount_usd ?? null },
+          });
+          continue;
+        }
+        await logDocumentProcessingEvent(params.debugLogContext, {
+          event: 'llm_attempt_success',
+          provider: method,
+          model: 'glm-4.5-air',
+          data: { documentType: result?.document_type || null, confidence: result?.confidence || null },
+        });
+        return result;
+      }
+      if (method === 'openrouter' && cfg.openrouterApiKey && selectedModel) {
+        const openRouterModels = [
+          selectedModel,
+          cfg.openrouterFallbackModel,
+        ].filter((value, index, list) => value && list.indexOf(value) === index);
+
+        for (const modelName of openRouterModels) {
+          try {
+            const result = isOpenRouterVisionModel(modelName) && hasVisionInput && fileType
+              ? await callOpenRouterVisionJson(system, prompt, buffer as Buffer, fileType, cfg.openrouterApiKey, modelName)
+              : await callOpenRouterTextJson(system, prompt, cfg.openrouterApiKey, modelName);
+            if (isSuspiciousLlmResult(result, params.rawText)) {
+              await logDocumentProcessingEvent(params.debugLogContext, {
+                event: 'llm_attempt_failed',
+                level: 'warn',
+                provider: method,
+                model: modelName,
+                message: 'Suspicious extracted amount; trying fallback model/provider',
+                data: { documentType: result?.document_type || null, amount_usd: result?.extracted_data?.amount_usd ?? null },
+              });
+              continue;
+            }
+            await logDocumentProcessingEvent(params.debugLogContext, {
+              event: 'llm_attempt_success',
+              provider: method,
+              model: modelName,
+              data: { documentType: result?.document_type || null, confidence: result?.confidence || null },
+            });
+            return result;
+          } catch (error: any) {
+            await logDocumentProcessingEvent(params.debugLogContext, {
+              event: 'llm_attempt_failed',
+              level: 'error',
+              provider: method,
+              model: modelName,
+              message: String(error?.message || `OpenRouter model ${modelName} failed`),
+              data: { fileType, hasVisionInput },
+            });
+          }
+        }
+        continue;
+      }
+      if (typeof method === 'string' && method.startsWith('custom:')) {
+        const id = method.slice('custom:'.length);
+        const entry = cfg.customProviders.find((provider) => provider.id === id && provider.enabled);
+        if (!entry) continue;
+
+        if (entry.provider === 'openrouter-vision' && hasVisionInput && entry.api_key && fileType) {
+          const result = await callOpenRouterVisionJson(system, prompt, buffer as Buffer, fileType, entry.api_key, entry.model || cfg.openrouterVisionModel);
+          if (isSuspiciousLlmResult(result, params.rawText)) {
+            await logDocumentProcessingEvent(params.debugLogContext, {
+              event: 'llm_attempt_failed',
+              level: 'warn',
+              provider: method,
+              model: entry.model || cfg.openrouterVisionModel,
+              message: 'Suspicious extracted amount; trying fallback model/provider',
+              data: { documentType: result?.document_type || null, amount_usd: result?.extracted_data?.amount_usd ?? null },
+            });
+            continue;
+          }
+          await logDocumentProcessingEvent(params.debugLogContext, {
+            event: 'llm_attempt_success',
+            provider: method,
+            model: entry.model || cfg.openrouterVisionModel,
+            data: { documentType: result?.document_type || null, confidence: result?.confidence || null },
+          });
+          return result;
+        }
+        if (entry.provider === 'openrouter' && entry.api_key && entry.model) {
+          const result = await callOpenRouterTextJson(system, prompt, entry.api_key, entry.model);
+          if (isSuspiciousLlmResult(result, params.rawText)) {
+            await logDocumentProcessingEvent(params.debugLogContext, {
+              event: 'llm_attempt_failed',
+              level: 'warn',
+              provider: method,
+              model: entry.model,
+              message: 'Suspicious extracted amount; trying fallback model/provider',
+              data: { documentType: result?.document_type || null, amount_usd: result?.extracted_data?.amount_usd ?? null },
+            });
+            continue;
+          }
+          await logDocumentProcessingEvent(params.debugLogContext, {
+            event: 'llm_attempt_success',
+            provider: method,
+            model: entry.model,
+            data: { documentType: result?.document_type || null, confidence: result?.confidence || null },
+          });
+          return result;
+        }
+        if (entry.provider === 'minimax' && entry.api_key) {
+          const result = await callMinimaxJson(system, prompt, entry.api_key, entry.model || cfg.minimaxModel);
+          if (isSuspiciousLlmResult(result, params.rawText)) {
+            await logDocumentProcessingEvent(params.debugLogContext, {
+              event: 'llm_attempt_failed',
+              level: 'warn',
+              provider: method,
+              model: entry.model || cfg.minimaxModel,
+              message: 'Suspicious extracted amount; trying fallback model/provider',
+              data: { documentType: result?.document_type || null, amount_usd: result?.extracted_data?.amount_usd ?? null },
+            });
+            continue;
+          }
+          await logDocumentProcessingEvent(params.debugLogContext, {
+            event: 'llm_attempt_success',
+            provider: method,
+            model: entry.model || cfg.minimaxModel,
+            data: { documentType: result?.document_type || null, confidence: result?.confidence || null },
+          });
+          return result;
+        }
+        if (entry.provider === 'zai' && entry.api_key) {
+          const result = await callZaiJson(system, prompt, entry.api_key);
+          if (isSuspiciousLlmResult(result, params.rawText)) {
+            await logDocumentProcessingEvent(params.debugLogContext, {
+              event: 'llm_attempt_failed',
+              level: 'warn',
+              provider: method,
+              model: 'glm-4.5-air',
+              message: 'Suspicious extracted amount; trying fallback model/provider',
+              data: { documentType: result?.document_type || null, amount_usd: result?.extracted_data?.amount_usd ?? null },
+            });
+            continue;
+          }
+          await logDocumentProcessingEvent(params.debugLogContext, {
+            event: 'llm_attempt_success',
+            provider: method,
+            model: 'glm-4.5-air',
+            data: { documentType: result?.document_type || null, confidence: result?.confidence || null },
+          });
+          return result;
+        }
+      }
+    } catch (error: any) {
+      await logDocumentProcessingEvent(params.debugLogContext, {
+        event: 'llm_attempt_failed',
+        level: 'error',
+        provider: method,
+        model: selectedModel || null,
+        message: String(error?.message || `Provider ${method} failed`),
+        data: { fileType, hasVisionInput },
+      });
       continue;
     }
   }
 
+  await logDocumentProcessingEvent(params.debugLogContext, {
+    event: 'llm_all_attempts_exhausted',
+    level: 'warn',
+    provider: selectedProvider,
+    model: selectedModel || null,
+  });
   return null;
 }
 
@@ -575,7 +1378,12 @@ async function extractItineraryDraft(
   const cfg = await getLlmConfig();
   const selectedProvider = options?.provider || 'auto';
   const selectedModel = (options?.model || '').trim();
-  let parsed: ParsedTrip | null = null;
+  const regexParsed = parseDriverItinerary(rawText);
+  if (regexParsed?.tripNumber && ((regexParsed.stops?.length || 0) > 0 || regexParsed.route || regexParsed.totalMiles)) {
+    return parsedTripToDraftData(regexParsed);
+  }
+
+  let parsed: ParsedTrip | null = regexParsed;
   const isPdf = fileType === 'application/pdf';
 
   const customMethods = cfg.customProviders
@@ -592,11 +1400,24 @@ async function extractItineraryDraft(
       if (method === 'minimax' && cfg.minimaxApiKey) parsed = llmResultToParsedTrip(await extractWithMinimax(rawText, cfg.minimaxApiKey, selectedModel || cfg.minimaxModel), rawText);
       else if (method === 'claude' && cfg.anthropicApiKey && buffer && isPdf) parsed = llmResultToParsedTrip(await extractWithClaude(buffer, cfg.anthropicApiKey), rawText);
       else if (method === 'zai' && cfg.zaiApiKey) parsed = llmResultToParsedTrip(await extractWithLlm(rawText, cfg.zaiApiKey), rawText);
-      else if ((method === 'openrouter' || method === 'openrouter-vision') && buffer && isPdf && cfg.openrouterApiKey) {
-        parsed = llmResultToParsedTrip(await extractWithOpenRouterVision(buffer, cfg.openrouterApiKey, selectedModel || cfg.openrouterVisionModel), rawText);
-      }
-      else if (method === 'openrouter' && cfg.openrouterApiKey && (selectedModel || '').trim()) {
-        parsed = llmResultToParsedTrip(await extractWithOpenRouterText(rawText, cfg.openrouterApiKey, selectedModel.trim()), rawText);
+      else if ((method === 'openrouter' || method === 'openrouter-vision') && cfg.openrouterApiKey) {
+        const openRouterModels = [
+          (selectedModel || cfg.openrouterVisionModel).trim(),
+          cfg.openrouterFallbackModel,
+        ].filter((value, index, list) => value && list.indexOf(value) === index);
+
+        for (const modelName of openRouterModels) {
+          try {
+            if (isOpenRouterVisionModel(modelName) && buffer && isPdf) {
+              parsed = llmResultToParsedTrip(await extractWithOpenRouterVision(buffer, cfg.openrouterApiKey, modelName), rawText);
+            } else {
+              parsed = llmResultToParsedTrip(await extractWithOpenRouterText(rawText, cfg.openrouterApiKey, modelName), rawText);
+            }
+            if (parsed) break;
+          } catch {
+            continue;
+          }
+        }
       }
       else if (typeof method === 'string' && method.startsWith('custom:')) {
         const id = method.slice('custom:'.length);
@@ -651,6 +1472,8 @@ export const SMART_INTAKE_TEST_HELPERS = {
   getMissingFields,
   inferDocumentType,
   classifyDocumentWithValidation,
+  inferCurrency,
+  parseFuelDraft,
 };
 
 async function loadDocumentBinary(params: {
@@ -711,6 +1534,15 @@ export async function generateDocumentProcessingPreview(params: {
   buffer: Buffer;
   options?: ModelTestOptions;
 }) {
+  const debugLogContext: DebugLogContext = {
+    traceId: createTraceId('preview'),
+    fileName: params.filename,
+  };
+  await logDocumentProcessingEvent(debugLogContext, {
+    event: 'preview_started',
+    data: { fileType: params.fileType || null, provider: params.options?.provider || 'auto' },
+  });
+
   const loaded = await loadDocumentBinary({
     buffer: params.buffer,
     filename: params.filename,
@@ -718,9 +1550,21 @@ export async function generateDocumentProcessingPreview(params: {
   });
 
   const rawText = await extractDocumentText(loaded.buffer as Buffer, loaded.fileType).catch(() => '');
+  await logDocumentProcessingEvent(debugLogContext, {
+    event: 'text_extracted',
+    data: { detectedFileType: loaded.fileType, rawTextLength: rawText.length },
+  });
 
-  const llmResult = rawText.trim()
-    ? await classifyAndExtractWithLlm(rawText, params.filename, params.description, params.options).catch(() => null)
+  const llmResult = (rawText.trim() || loaded.buffer)
+    ? await classifyAndExtractWithLlm({
+        rawText,
+        filename: params.filename,
+        description: params.description,
+        buffer: loaded.buffer,
+        fileType: loaded.fileType,
+        options: params.options,
+        debugLogContext,
+      }).catch(() => null)
     : null;
 
   const classification = classifyDocumentWithValidation({
@@ -738,6 +1582,7 @@ export async function generateDocumentProcessingPreview(params: {
     const parser = TYPE_PARSERS[documentType] || parseOtherReceiptDraft;
     const heuristicData = parser(rawText, params.filename);
     extractedData = mergePreferNonEmpty(heuristicData, llmResult?.extracted_data || null);
+    extractedData = sanitizeSuspiciousExtractedData(documentType, extractedData, rawText);
   }
 
   if (!extractedData.raw_text && rawText) extractedData.raw_text = rawText.slice(0, 12000);
@@ -754,6 +1599,17 @@ export async function generateDocumentProcessingPreview(params: {
       : missingFields.length === 0
         ? 'ready'
         : 'needs_review';
+
+  await logDocumentProcessingEvent(debugLogContext, {
+    event: 'preview_completed',
+    data: {
+      documentType,
+      status,
+      missingFields,
+      usedLlmClassification: Boolean(llmResult),
+      classificationConfidence: classification.confidence,
+    },
+  });
 
   return {
     mode: 'dry-run' as const,
@@ -775,12 +1631,14 @@ export async function generateDocumentProcessingPreview(params: {
 
 export async function ensureDocumentProcessingTables() {
   await ensureUserDocumentsTable();
+  await ensureTripExpensesReceiptColumns();
 
   await db().run(`
     CREATE TABLE IF NOT EXISTS document_processing_drafts (
       id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
       user_document_id INTEGER NOT NULL UNIQUE,
       user_id INTEGER NOT NULL,
+      trace_id TEXT,
       trip_number TEXT,
       document_type TEXT NOT NULL DEFAULT 'unknown',
       status TEXT NOT NULL DEFAULT 'needs_review',
@@ -805,6 +1663,7 @@ export async function ensureDocumentProcessingTables() {
   await db().run('ALTER TABLE document_processing_drafts ADD COLUMN IF NOT EXISTS linked_record_key TEXT').catch(() => {});
   await db().run('ALTER TABLE document_processing_drafts ADD COLUMN IF NOT EXISTS extracted_data JSONB').catch(() => {});
   await db().run('ALTER TABLE document_processing_drafts ADD COLUMN IF NOT EXISTS missing_fields JSONB NOT NULL DEFAULT \'' + '[]' + '\'::jsonb').catch(() => {});
+  await db().run('ALTER TABLE document_processing_drafts ADD COLUMN IF NOT EXISTS trace_id TEXT').catch(() => {});
 }
 
 export async function createDocumentProcessingDraftFromUpload(params: {
@@ -819,13 +1678,30 @@ export async function createDocumentProcessingDraftFromUpload(params: {
   s3Key?: string | null;
 }) {
   await ensureDocumentProcessingTables();
+  const debugLogContext: DebugLogContext = {
+    traceId: createTraceId('upload'),
+    userId: params.userId,
+    tripNumber: params.tripNumber || null,
+    documentId: params.userDocumentId,
+    fileName: params.filename,
+  };
   let documentType: DocumentDraftType = 'unknown';
   let status: DocumentDraftStatus = 'needs_review';
   let extractedData: DocumentDraftData = {};
   let missingFields: string[] = [];
   let extractionError: string | null = null;
+  let resolvedTripNumber = params.tripNumber || null;
 
   try {
+    await logDocumentProcessingEvent(debugLogContext, {
+      event: 'upload_processing_started',
+      data: {
+        sourcePath: params.sourcePath || null,
+        hasBuffer: Boolean(params.buffer),
+        hasS3Key: Boolean(params.s3Key),
+        fileType: params.fileType || null,
+      },
+    });
     const loaded = await loadDocumentBinary({
       buffer: params.buffer,
       sourcePath: params.sourcePath,
@@ -838,14 +1714,31 @@ export async function createDocumentProcessingDraftFromUpload(params: {
     if (loaded.buffer) {
       try {
         rawText = await extractDocumentText(loaded.buffer, loaded.fileType);
+        await logDocumentProcessingEvent(debugLogContext, {
+          event: 'text_extracted',
+          data: { detectedFileType: loaded.fileType, rawTextLength: rawText.length },
+        });
       } catch {
         extractionError = 'Smart intake could not read this file automatically. Please review and confirm manually.';
         rawText = '';
+        await logDocumentProcessingEvent(debugLogContext, {
+          event: 'text_extraction_failed',
+          level: 'warn',
+          message: extractionError,
+          data: { detectedFileType: loaded.fileType },
+        });
       }
     }
 
-    const llmResult = rawText.trim()
-      ? await classifyAndExtractWithLlm(rawText, params.filename, params.description).catch(() => null)
+    const llmResult = (rawText.trim() || loaded.buffer)
+      ? await classifyAndExtractWithLlm({
+          rawText,
+          filename: params.filename,
+          description: params.description,
+          buffer: loaded.buffer,
+          fileType: loaded.fileType,
+          debugLogContext,
+        }).catch(() => null)
       : null;
     const classification = classifyDocumentWithValidation({
       filename: params.filename,
@@ -861,13 +1754,24 @@ export async function createDocumentProcessingDraftFromUpload(params: {
       const parser = TYPE_PARSERS[documentType] || parseOtherReceiptDraft;
       const heuristicData = parser(rawText, params.filename);
       extractedData = mergePreferNonEmpty(heuristicData, llmResult?.extracted_data || null);
+      extractedData = sanitizeSuspiciousExtractedData(documentType, extractedData, rawText);
     }
 
     if (!extractedData.raw_text && rawText) extractedData.raw_text = rawText.slice(0, 12000);
     extractedData.classification_confidence = classification.confidence;
     extractedData.classification_rationale = classification.rationale;
     extractedData.classification_stage = classification.stage;
+    if (!extractedData.source) {
+      extractedData.source = loaded.buffer ? 'smart-intake' : 'stored-document';
+    }
     extractedData = normalizeByType(documentType, extractedData);
+
+    const draftReceiptDate = typeof extractedData.date === 'string' ? extractedData.date : null;
+    resolvedTripNumber = await resolveTripByReceiptDate({
+      userId: params.userId,
+      explicitTripNumber: params.tripNumber || null,
+      receiptDate: documentType === 'itinerary' ? null : draftReceiptDate,
+    });
 
     missingFields = getMissingFields(documentType, extractedData);
     status = classification.askUserToConfirm
@@ -875,21 +1779,38 @@ export async function createDocumentProcessingDraftFromUpload(params: {
       : documentType === 'unknown'
         ? 'needs_review'
         : missingFields.length === 0
-          ? 'ready'
-          : 'needs_review';
+        ? 'ready'
+        : 'needs_review';
+    await logDocumentProcessingEvent(debugLogContext, {
+      event: 'upload_processing_completed',
+      data: {
+        documentType,
+        status,
+        missingFields,
+        usedLlmClassification: Boolean(llmResult),
+        classificationConfidence: classification.confidence,
+      },
+    });
   } catch (error: any) {
     documentType = normalizeDocumentType(inferDocumentType(params.filename, params.description, null));
     status = 'error';
     missingFields = [];
     extractionError = String(error?.message || 'Smart intake failed to process this file. Retry extraction or review manually.');
+    await logDocumentProcessingEvent(debugLogContext, {
+      event: 'upload_processing_failed',
+      level: 'error',
+      message: extractionError,
+      data: { fallbackDocumentType: documentType },
+    });
   }
 
   await db().run(
     `INSERT INTO document_processing_drafts (
-       user_document_id, user_id, trip_number, document_type, status, extracted_data, missing_fields, error_message, updated_at
-     ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, NOW())
+       user_document_id, user_id, trace_id, trip_number, document_type, status, extracted_data, missing_fields, error_message, updated_at
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, NOW())
      ON CONFLICT (user_document_id) DO UPDATE
-     SET trip_number = EXCLUDED.trip_number,
+     SET trace_id = EXCLUDED.trace_id,
+         trip_number = EXCLUDED.trip_number,
          document_type = EXCLUDED.document_type,
          status = EXCLUDED.status,
          extracted_data = EXCLUDED.extracted_data,
@@ -899,7 +1820,8 @@ export async function createDocumentProcessingDraftFromUpload(params: {
     [
       params.userDocumentId,
       params.userId,
-      params.tripNumber || null,
+      debugLogContext.traceId,
+      resolvedTripNumber,
       documentType,
       status,
       JSON.stringify(extractedData || {}),
@@ -907,6 +1829,15 @@ export async function createDocumentProcessingDraftFromUpload(params: {
       extractionError,
     ]
   );
+
+  if (resolvedTripNumber) {
+    await db().run(
+      `UPDATE user_documents
+       SET trip_number = COALESCE(trip_number, $1)
+       WHERE id = $2`,
+      [resolvedTripNumber, params.userDocumentId]
+    ).catch(() => {});
+  }
 
   return { documentType, status, extractedData, missingFields, extractionError };
 }
@@ -916,6 +1847,13 @@ export async function retryDocumentProcessingDraft(params: {
   userId: number;
 }) {
   await ensureDocumentProcessingTables();
+  await writeAdminDebugLog({
+    category: 'document-processing',
+    event: 'draft_retry_requested',
+    userId: params.userId,
+    draftId: params.draftId,
+    traceId: createTraceId('retry'),
+  }).catch(() => {});
 
   const draft = await db().get(
     `SELECT d.id,
@@ -946,7 +1884,7 @@ export async function retryDocumentProcessingDraft(params: {
   await createDocumentProcessingDraftFromUpload({
     userDocumentId: draft.user_document_id,
     userId: params.userId,
-    tripNumber: draft.trip_number,
+    tripNumber: null,
     filename: draft.filename,
     description: draft.description,
     fileType: draft.file_type || undefined,
@@ -964,6 +1902,7 @@ export async function getDocumentProcessingDrafts(userId: string | number, tripN
   const rows = await db().query(
     `SELECT d.id,
             d.user_document_id,
+            d.trace_id,
             d.trip_number,
             d.document_type,
             d.status,
@@ -1005,6 +1944,7 @@ export async function confirmDocumentProcessingDraft(params: {
   extractedData: DocumentDraftData;
 }) {
   await ensureDocumentProcessingTables();
+  const traceId = createTraceId('confirm');
 
   const draft = await db().get(
     `SELECT d.id, d.user_document_id, d.document_type, d.trip_number, u.description, u.s3_key, u.source_path
@@ -1015,6 +1955,16 @@ export async function confirmDocumentProcessingDraft(params: {
   ) as { id: number; user_document_id: number; document_type: DocumentDraftType; trip_number: string | null; description: string | null; s3_key: string | null; source_path: string | null } | undefined;
 
   if (!draft) throw new Error('Document draft not found');
+  await writeAdminDebugLog({
+    category: 'document-processing',
+    event: 'draft_confirm_started',
+    userId: params.userId,
+    tripNumber: params.tripNumber || draft.trip_number || null,
+    draftId: params.draftId,
+    documentId: draft.user_document_id,
+    traceId,
+    data: { requestedDocumentType: params.documentType, originalDocumentType: draft.document_type },
+  }).catch(() => {});
 
   const documentType = normalizeDocumentType(params.documentType || draft.document_type);
   const extractedData = normalizeByType(documentType, {
@@ -1032,6 +1982,18 @@ export async function confirmDocumentProcessingDraft(params: {
 
   const missingFields = getMissingFields(documentType, extractedData);
   if (missingFields.length > 0) {
+    await writeAdminDebugLog({
+      category: 'document-processing',
+      event: 'draft_confirm_blocked',
+      level: 'warn',
+      userId: params.userId,
+      tripNumber: params.tripNumber || draft.trip_number || null,
+      draftId: params.draftId,
+      documentId: draft.user_document_id,
+      traceId,
+      message: `Missing required fields: ${missingFields.join(', ')}`,
+      data: { documentType, missingFields },
+    }).catch(() => {});
     throw new Error(`Missing required fields: ${missingFields.join(', ')}`);
   }
 
@@ -1082,6 +2044,16 @@ export async function confirmDocumentProcessingDraft(params: {
       ]
     );
 
+    await writeAdminDebugLog({
+      category: 'document-processing',
+      event: 'draft_confirm_saved',
+      userId: params.userId,
+      tripNumber: effectiveTripNumber,
+      draftId: params.draftId,
+      documentId: draft.user_document_id,
+      traceId,
+      data: { documentType: 'itinerary', linkedRecordType: 'trip', linkedRecordKey: effectiveTripNumber },
+    }).catch(() => {});
     return { linkedRecordType: 'trip', linkedRecordId: null, linkedRecordKey: effectiveTripNumber, tripNumber: effectiveTripNumber };
   }
 
@@ -1148,17 +2120,28 @@ export async function confirmDocumentProcessingDraft(params: {
       [params.tripNumber || draft.trip_number || null, JSON.stringify(extractedData), fuelId, String(fuelId), draft.id]
     );
 
+    await writeAdminDebugLog({
+      category: 'document-processing',
+      event: 'draft_confirm_saved',
+      userId: params.userId,
+      tripNumber: params.tripNumber || draft.trip_number || null,
+      draftId: params.draftId,
+      documentId: draft.user_document_id,
+      traceId,
+      data: { documentType: 'fuel', linkedRecordType: 'fuel', linkedRecordKey: String(fuelId) },
+    }).catch(() => {});
     return { linkedRecordType: 'fuel', linkedRecordId: fuelId, linkedRecordKey: String(fuelId) };
   }
 
+  const expenseCurrency = extractedData.currency || inferCurrency(String(extractedData.raw_text || ''), extractedData.location || null);
   const insert = await db().run(
-    `INSERT INTO trip_expenses (user_id, trip_number, name, amount, expense_type, category, notes)
-     VALUES ($1, $2, $3, $4, 'trip', $5, $6)
+    `INSERT INTO trip_expenses (user_id, trip_number, name, amount, expense_type, category, notes, expense_date, location, currency, source)
+     VALUES ($1, $2, $3, $4, 'trip', $5, $6, $7, $8, $9, $10)
      RETURNING id`,
     [
       params.userId,
       params.tripNumber || draft.trip_number || null,
-      extractedData.name || (documentType === 'toll'
+      extractedData.name || extractedData.vendor || (documentType === 'toll'
         ? 'Toll receipt'
         : documentType === 'reimbursement'
           ? 'Reimbursement receipt'
@@ -1169,7 +2152,11 @@ export async function confirmDocumentProcessingDraft(params: {
         : documentType === 'reimbursement'
           ? 'reimbursement'
           : 'misc'),
-      extractedData.notes || extractedData.location || null,
+      extractedData.notes || null,
+      extractedData.date || null,
+      extractedData.location || null,
+      expenseCurrency,
+      extractedData.source || 'smart-intake',
     ]
   );
 
@@ -1211,5 +2198,15 @@ export async function confirmDocumentProcessingDraft(params: {
     [params.tripNumber || draft.trip_number || null, documentType, JSON.stringify(extractedData), expenseId, String(expenseId), draft.id]
   );
 
+  await writeAdminDebugLog({
+    category: 'document-processing',
+    event: 'draft_confirm_saved',
+    userId: params.userId,
+    tripNumber: params.tripNumber || draft.trip_number || null,
+    draftId: params.draftId,
+    documentId: draft.user_document_id,
+    traceId,
+    data: { documentType, linkedRecordType: 'expense', linkedRecordKey: String(expenseId) },
+  }).catch(() => {});
   return { linkedRecordType: 'expense', linkedRecordId: expenseId, linkedRecordKey: String(expenseId) };
 }

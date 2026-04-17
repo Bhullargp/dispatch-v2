@@ -51,6 +51,10 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
   const [reimbAmount, setReimbAmount] = useState('');
   const [reimbCurrency, setReimbCurrency] = useState<'CAD' | 'USD'>('CAD');
   const [reimbNotes, setReimbNotes] = useState('');
+  const [reimbDate, setReimbDate] = useState('');
+  const [reimbLocation, setReimbLocation] = useState('');
+  const [reimbSource, setReimbSource] = useState('manual');
+  const [reimbCategory, setReimbCategory] = useState('reimbursement');
   const [reimbSaving, setReimbSaving] = useState(false);
   const [editingReimbId, setEditingReimbId] = useState<number | null>(null);
   const [prevReimbNames, setPrevReimbNames] = useState<string[]>([]);
@@ -151,6 +155,27 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
       }
       return dateStr;
     } catch { return dateStr; }
+  };
+
+  const getExpenseCurrency = (expense: any): 'CAD' | 'USD' => {
+    const explicit = String(expense?.currency || '').toUpperCase();
+    if (explicit === 'USD' || explicit === 'CAD') return explicit;
+    const category = String(expense?.category || '').toUpperCase();
+    if (category === 'USD' || category === 'CAD') return category;
+    if (/\[USD\]/i.test(String(expense?.notes || ''))) return 'USD';
+    return 'CAD';
+  };
+
+  const resetReimbForm = () => {
+    setEditingReimbId(null);
+    setReimbName('');
+    setReimbAmount('');
+    setReimbCurrency('CAD');
+    setReimbNotes('');
+    setReimbDate('');
+    setReimbLocation('');
+    setReimbSource('manual');
+    setReimbCategory('reimbursement');
   };
 
   const getStopNumber = (index: number) => index + 1;
@@ -1133,7 +1158,11 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
               <div className="flex justify-between items-center mb-6">
                 <h2 className="text-[10px] font-black uppercase text-zinc-500 tracking-[0.3em]">Reimbursements</h2>
                 <button
-                  onClick={() => { setShowReimbForm(!showReimbForm); setEditingReimbId(null); setReimbName(''); setReimbAmount(''); setReimbCurrency('CAD'); setReimbNotes(''); }}
+                  onClick={() => {
+                    const next = !showReimbForm;
+                    setShowReimbForm(next);
+                    if (next) resetReimbForm();
+                  }}
                   className="bg-orange-600/20 hover:bg-orange-600/40 text-orange-400 text-[9px] font-black uppercase px-4 py-2 rounded-lg border border-orange-500/30 transition-all"
                 >
                   {showReimbForm && !editingReimbId ? 'Cancel' : '+ Add Reimbursement'}
@@ -1173,7 +1202,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                       />
                     </div>
                   </div>
-                  <div className="flex items-center gap-3 flex-wrap">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div className="flex items-center gap-2">
                       <label className="text-[9px] font-black text-zinc-500 uppercase tracking-widest">Currency:</label>
                       <div className="flex bg-zinc-900 rounded-xl border border-zinc-800 overflow-hidden">
@@ -1189,7 +1218,36 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                         >USD</button>
                       </div>
                     </div>
-                    <div className="flex-1 min-w-[120px]">
+                    <div>
+                      <label className="text-[9px] font-black text-zinc-500 uppercase tracking-widest block mb-1">Expense Date</label>
+                      <input
+                        type="date"
+                        value={reimbDate}
+                        onChange={(e) => setReimbDate(e.target.value)}
+                        className="w-full bg-black/40 border border-zinc-800 rounded-xl p-2 text-sm font-mono outline-none focus:border-orange-500 transition-all"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[9px] font-black text-zinc-500 uppercase tracking-widest block mb-1">Location</label>
+                      <input
+                        type="text"
+                        value={reimbLocation}
+                        onChange={(e) => setReimbLocation(e.target.value)}
+                        placeholder="City, ST / Province"
+                        className="w-full bg-black/40 border border-zinc-800 rounded-xl p-2 text-sm font-mono outline-none focus:border-orange-500 transition-all"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[9px] font-black text-zinc-500 uppercase tracking-widest block mb-1">Source</label>
+                      <input
+                        type="text"
+                        value={reimbSource}
+                        onChange={(e) => setReimbSource(e.target.value)}
+                        placeholder="manual / smart-intake / OCR"
+                        className="w-full bg-black/40 border border-zinc-800 rounded-xl p-2 text-sm font-mono outline-none focus:border-orange-500 transition-all"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
                       <label className="text-[9px] font-black text-zinc-500 uppercase tracking-widest block mb-1">Notes (optional)</label>
                       <input
                         type="text"
@@ -1206,27 +1264,31 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                         if (!reimbName.trim() || !reimbAmount) return;
                         setReimbSaving(true);
                         try {
-                          const noteStr = reimbNotes.trim()
-                            ? `${reimbNotes.trim()}${reimbCurrency === 'USD' ? ' [USD]' : ''}`
-                            : (reimbCurrency === 'USD' ? '[USD]' : null);
+                          const payload = {
+                            name: reimbName.trim(),
+                            amount: reimbAmount,
+                            category: reimbCategory || 'reimbursement',
+                            notes: reimbNotes.trim() || null,
+                            expense_date: reimbDate || null,
+                            location: reimbLocation.trim() || null,
+                            currency: reimbCurrency,
+                            source: reimbSource.trim() || null,
+                          };
                           if (editingReimbId) {
                             await fetch('/api/dispatch/expenses', {
                               method: 'PUT',
                               headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ id: editingReimbId, name: reimbName.trim(), amount: reimbAmount, notes: noteStr, category: reimbCurrency })
+                              body: JSON.stringify({ id: editingReimbId, ...payload })
                             });
                           } else {
                             await fetch('/api/dispatch/expenses', {
                               method: 'POST',
                               headers: { 'Content-Type': 'application/json' },
                               body: JSON.stringify({
-                                name: reimbName.trim(),
-                                amount: reimbAmount,
+                                ...payload,
                                 expense_type: 'trip',
-                                category: reimbCurrency,
                                 trip_number: currentTrip.trip_number,
                                 pay_period: currentTrip.pay_period,
-                                notes: noteStr
                               })
                             });
                           }
@@ -1238,8 +1300,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                           const names = [...new Set<string>((data.expenses || []).map((e: any) => e.name as string))];
                           setPrevReimbNames(names);
                           setShowReimbForm(false);
-                          setEditingReimbId(null);
-                          setReimbName(''); setReimbAmount(''); setReimbCurrency('CAD'); setReimbNotes('');
+                          resetReimbForm();
                         } catch (err) { console.error('Reimb save error:', err); }
                         setReimbSaving(false);
                       }}
@@ -1250,7 +1311,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                     </button>
                     {editingReimbId && (
                       <button
-                        onClick={() => { setShowReimbForm(false); setEditingReimbId(null); setReimbName(''); setReimbAmount(''); setReimbCurrency('CAD'); setReimbNotes(''); }}
+                        onClick={() => { setShowReimbForm(false); resetReimbForm(); }}
                         className="bg-zinc-900 hover:bg-zinc-800 px-6 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest border border-zinc-800 text-zinc-400 transition-all"
                       >Cancel</button>
                     )}
@@ -1268,27 +1329,47 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="text-sm font-black text-zinc-200 truncate">{r.name}</span>
-                          {r.category === 'USD' && (
-                            <span className="text-[9px] font-black uppercase bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-md border border-emerald-500/30">USD</span>
+                          <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-md border ${getExpenseCurrency(r) === 'USD' ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' : 'bg-zinc-700/30 text-zinc-500 border-zinc-700/30'}`}>
+                            {getExpenseCurrency(r)}
+                          </span>
+                          {r.category && !['USD', 'CAD'].includes(String(r.category).toUpperCase()) && (
+                            <span className="text-[9px] font-black uppercase bg-orange-500/20 text-orange-300 px-2 py-0.5 rounded-md border border-orange-500/30">{r.category}</span>
                           )}
-                          {r.category === 'CAD' && (
-                            <span className="text-[9px] font-black uppercase bg-zinc-700/30 text-zinc-500 px-2 py-0.5 rounded-md border border-zinc-700/30">CAD</span>
+                          {(r.document_url || r.document_source_url) && (
+                            <a
+                              href={r.document_url || r.document_source_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-[9px] font-black uppercase bg-amber-700 hover:bg-amber-600 text-white px-2 py-0.5 rounded-md border border-amber-500/40"
+                            >
+                              Open receipt
+                            </a>
                           )}
                         </div>
-                        {r.notes && !r.notes.match(/^\[USD\]$/) && (
-                          <p className="text-[11px] text-zinc-600 mt-1 truncate">{r.notes.replace(/ ?\[USD\]$/, '')}</p>
+                        <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-[10px] text-zinc-500">
+                          {r.expense_date && <span>Date: {r.expense_date}</span>}
+                          {r.location && <span>Location: {r.location}</span>}
+                          {r.source && <span>Source: {r.source}</span>}
+                        </div>
+                        {r.notes && (
+                          <p className="text-[11px] text-zinc-600 mt-1 truncate">{r.notes}</p>
                         )}
                       </div>
                       <div className="flex items-center gap-3 ml-3">
-                        <span className="text-sm font-mono font-black text-orange-400">+${parseFloat(r.amount).toFixed(2)}</span>
+                        <span className="text-sm font-mono font-black text-orange-400">
+                          +{getExpenseCurrency(r) === 'CAD' ? 'C$' : '$'}{parseFloat(r.amount).toFixed(2)}
+                        </span>
                         <button
                           onClick={() => {
                             setEditingReimbId(r.id);
                             setReimbName(r.name);
                             setReimbAmount(r.amount);
-                            setReimbCurrency(r.category === 'USD' ? 'USD' : 'CAD');
-                            const cleanNotes = (r.notes || '').replace(/ ?\[USD\]$/, '');
-                            setReimbNotes(cleanNotes || '');
+                            setReimbCurrency(getExpenseCurrency(r));
+                            setReimbCategory((r.category && !['USD', 'CAD'].includes(String(r.category).toUpperCase())) ? r.category : 'reimbursement');
+                            setReimbNotes(r.notes || '');
+                            setReimbDate(r.expense_date || '');
+                            setReimbLocation(r.location || '');
+                            setReimbSource(r.source || (r.document_url || r.document_source_url ? 'smart-intake' : 'manual'));
                             setShowReimbForm(true);
                           }}
                           className="opacity-0 group-hover/reimb:opacity-100 bg-zinc-900/80 hover:bg-zinc-800 p-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 text-[10px] font-black transition-all border border-zinc-800"

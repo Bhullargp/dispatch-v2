@@ -2,12 +2,16 @@ import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { ensureDispatchAuthSchemaAndSeed } from '@/lib/dispatch-auth';
 import { requireAccess } from '@/lib/ownership';
+import { buildDocumentDownloadUrl, buildSourcePathUrl, ensureUserDocumentsTable } from '@/lib/dispatch-documents';
+import { ensureTripExpensesReceiptColumns } from '@/lib/trip-expenses';
 
 export async function GET(request: Request) {
   try {
     await ensureDispatchAuthSchemaAndSeed();
     const { access, response } = requireAccess(request);
     if (response || !access) return response;
+    await ensureTripExpensesReceiptColumns();
+    await ensureUserDocumentsTable();
 
     const url = new URL(request.url);
     const tripNumber = url.searchParams.get('trip_number');
@@ -19,29 +23,51 @@ export async function GET(request: Request) {
     let idx = 1;
 
     if (!access.adminMode) {
-      conditions.push(`user_id = $${idx++}`);
+      conditions.push(`e.user_id = $${idx++}`);
       params.push(access.session.userId);
     }
     if (tripNumber) {
-      conditions.push(`trip_number = $${idx++}`);
+      conditions.push(`e.trip_number = $${idx++}`);
       params.push(tripNumber);
     }
     if (payPeriod) {
-      conditions.push(`pay_period = $${idx++}`);
+      conditions.push(`e.pay_period = $${idx++}`);
       params.push(payPeriod);
     }
     if (expenseType) {
-      conditions.push(`expense_type = $${idx++}`);
+      conditions.push(`e.expense_type = $${idx++}`);
       params.push(expenseType);
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     const rows = await db().query(
-      `SELECT * FROM trip_expenses ${where} ORDER BY created_at DESC`,
+      `SELECT e.*, 
+              d.id AS linked_document_id,
+              d.filename AS linked_document_filename,
+              d.s3_key AS linked_document_s3_key,
+              d.source_path AS linked_document_source_path
+       FROM trip_expenses e
+       LEFT JOIN LATERAL (
+         SELECT ud.id, ud.filename, ud.s3_key, ud.source_path
+         FROM user_documents ud
+         WHERE ud.linked_record_type = 'expense'
+           AND ud.linked_record_id = e.id
+           AND ud.user_id = e.user_id
+         ORDER BY ud.uploaded_at DESC, ud.id DESC
+         LIMIT 1
+       ) d ON TRUE
+       ${where}
+       ORDER BY e.created_at DESC`,
       params
     );
 
-    return NextResponse.json({ expenses: rows });
+    const expenses = (rows as any[]).map((row) => ({
+      ...row,
+      document_url: row.linked_document_s3_key ? buildDocumentDownloadUrl(row.linked_document_s3_key) : null,
+      document_source_url: row.linked_document_source_path ? buildSourcePathUrl(row.linked_document_source_path) : null,
+    }));
+
+    return NextResponse.json({ expenses });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -52,18 +78,32 @@ export async function POST(request: Request) {
     await ensureDispatchAuthSchemaAndSeed();
     const { access, response } = requireAccess(request);
     if (response || !access) return response;
+    await ensureTripExpensesReceiptColumns();
 
     const body = await request.json();
-    const { name, amount, expense_type, category, trip_number, pay_period, notes } = body;
+    const { name, amount, expense_type, category, trip_number, pay_period, notes, expense_date, location, currency, source } = body;
 
     if (!name || amount === undefined || amount === null) {
       return NextResponse.json({ error: 'name and amount required' }, { status: 400 });
     }
 
     const result = await db().run(
-      `INSERT INTO trip_expenses (user_id, trip_number, pay_period, name, amount, expense_type, category, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-      [access.session.userId, trip_number || null, pay_period || null, name, parseFloat(amount), expense_type || 'trip', category || 'misc', notes || null]
+      `INSERT INTO trip_expenses (user_id, trip_number, pay_period, name, amount, expense_type, category, notes, expense_date, location, currency, source)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      [
+        access.session.userId,
+        trip_number || null,
+        pay_period || null,
+        name,
+        parseFloat(amount),
+        expense_type || 'trip',
+        category || 'misc',
+        notes || null,
+        expense_date || null,
+        location || null,
+        currency || null,
+        source || null,
+      ]
     );
 
     // Get the inserted row id
@@ -80,9 +120,10 @@ export async function PUT(request: Request) {
     await ensureDispatchAuthSchemaAndSeed();
     const { access, response } = requireAccess(request);
     if (response || !access) return response;
+    await ensureTripExpensesReceiptColumns();
 
     const body = await request.json();
-    const { id, name, amount, expense_type, category, trip_number, pay_period, notes } = body;
+    const { id, name, amount, expense_type, category, trip_number, pay_period, notes, expense_date, location, currency, source } = body;
 
     if (!id) {
       return NextResponse.json({ error: 'id required' }, { status: 400 });
@@ -99,6 +140,10 @@ export async function PUT(request: Request) {
     if (trip_number !== undefined) { sets.push(`trip_number = $${idx++}`); params.push(trip_number); }
     if (pay_period !== undefined) { sets.push(`pay_period = $${idx++}`); params.push(pay_period); }
     if (notes !== undefined) { sets.push(`notes = $${idx++}`); params.push(notes); }
+    if (expense_date !== undefined) { sets.push(`expense_date = $${idx++}`); params.push(expense_date); }
+    if (location !== undefined) { sets.push(`location = $${idx++}`); params.push(location); }
+    if (currency !== undefined) { sets.push(`currency = $${idx++}`); params.push(currency); }
+    if (source !== undefined) { sets.push(`source = $${idx++}`); params.push(source); }
 
     if (sets.length === 0) {
       return NextResponse.json({ error: 'No fields to update' }, { status: 400 });
