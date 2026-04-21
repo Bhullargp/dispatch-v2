@@ -12,7 +12,7 @@ const pool = new Pool({
 
 export default pool;
 
-// Helper that mimics better-sqlite3's synchronous API but async
+// Small compatibility helper for older call sites, backed by PostgreSQL.
 export function db() {
   return {
     async query(sql: string, params: any[] = []) {
