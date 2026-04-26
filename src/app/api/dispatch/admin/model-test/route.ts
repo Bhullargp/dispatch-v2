@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { writeAdminDebugLog } from '@/lib/admin-debug-logs';
 import { ensureDispatchAuthSchemaAndSeed } from '@/lib/dispatch-auth';
 import { requireAccess } from '@/lib/ownership';
 import { generateDocumentProcessingPreview, type ModelTestProvider } from '@/lib/document-processing';
@@ -47,6 +48,21 @@ export async function POST(request: Request) {
         model: model || null,
       },
     });
+
+    await writeAdminDebugLog({
+      category: 'admin',
+      event: 'model_test_ran',
+      userId: access.session.userId,
+      provider: providerValue,
+      model: model || null,
+      fileName: fileValue.name,
+      traceId: `model-test-${Date.now().toString(36)}`,
+      data: {
+        documentType: preview.documentType,
+        status: preview.status,
+        detectedFileType: preview.meta.detectedFileType,
+      },
+    }).catch(() => {});
 
     return NextResponse.json({ success: true, preview });
   } catch (error: any) {

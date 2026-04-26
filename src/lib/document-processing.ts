@@ -546,6 +546,13 @@ function normalizeByType(type: DocumentDraftType, data: DocumentDraftData): Docu
     normalized.location = normalized.vendor.trim();
   }
 
+  if (type === 'itinerary') {
+    const driverName = typeof normalized.driver_name === 'string' ? normalized.driver_name.trim() : '';
+    const leadDriver = typeof normalized.lead_driver === 'string' ? normalized.lead_driver.trim() : '';
+    if (!driverName && leadDriver) normalized.driver_name = leadDriver;
+    if (!leadDriver && driverName) normalized.lead_driver = driverName;
+  }
+
   return normalized;
 }
 

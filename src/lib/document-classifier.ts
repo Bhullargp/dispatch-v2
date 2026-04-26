@@ -24,9 +24,9 @@ const ITINERARY_EVENT_PATTERN = /\b(?:pickup|deliver|drop|hook|acquire|release|b
 const ITINERARY_CONTEXT_PATTERN = /\b(?:trip|itinerary|dispatch|driver|load|consignee|shipper|trailer|tractor|bol|pickup #|delivery #)\b/gi;
 const FUEL_SIGNAL_PATTERN = /\b(fuel|diesel|def|pump|gallons?|gal\b|liters?|litres?|odometer|price\s*(?:\/|per)?\s*(?:unit|gal|gallon|l|liter|litre)|ppu)\b/gi;
 const FUEL_STRONG_SIGNAL_PATTERN = /\b(diesel|def|diesel\s*#?\s*1|diesel\s*#?\s*2|unleaded|pump\s*#?\s*\d+|odometer|\d+(?:\.\d+)?\s*(?:gal|gallons?|liters?|litres?)|\$\s*\d+(?:\.\d{2,3})?\s*\/(?:gal|gallon|l|liter|litre)|price\s*(?:\/|per)?\s*(?:unit|gal|gallon|l|liter|litre)|ppu)\b/gi;
-const NON_FUEL_RECEIPT_PATTERN = /\b(toll|ez\s*pass|ezpass|bridge|parking|plate\s*pass|turnpike|highway|reimb(?:ursement)?|expense|hotel|meal|food|repair|maintenance|wash|scale|weigh|lumper)\b/gi;
+const NON_FUEL_RECEIPT_PATTERN = /\b(toll|ez\s*pass|ezpass|bridge|parking|plate\s*pass|turnpike|highway|reimb(?:ursement)?|expense|hotel|meal|food|repair|maintenance|wash|scale|weigh|lumper|print|prints|copy|copies|fax|scan|invoice)\b/gi;
 const TOLL_SIGNAL_PATTERN = /\b(toll|ez\s*pass|ezpass|plate\s*pass|bridge|turnpike|highway\s*toll|407)\b/i;
-const REIMBURSEMENT_SIGNAL_PATTERN = /\b(reimb(?:ursement)?|expense\s*report|out\s*of\s*pocket|per\s*diem|hotel|meal|taxi|uber|lyft|parking)\b/i;
+const REIMBURSEMENT_SIGNAL_PATTERN = /\b(reimb(?:ursement)?|expense\s*report|out\s*of\s*pocket|per\s*diem|hotel|meal|taxi|uber|lyft|parking|lumper|scale|weigh|print|prints|copy|copies|fax|scan|invoice)\b/i;
 
 export const AMBIGUITY_CONFIDENCE_THRESHOLD = 0.72;
 
@@ -109,13 +109,18 @@ export function inferDocumentType(filename: string, description?: string | null,
   const haystack = createHaystack(filename, description, rawText);
   const strongFuel = fuelStrongSignalScore(haystack);
 
+  const hasToll = TOLL_SIGNAL_PATTERN.test(haystack);
+  const hasReimbursement = REIMBURSEMENT_SIGNAL_PATTERN.test(haystack);
+  const nonFuel = nonFuelSignalScore(haystack);
+
   if (hasItineraryStructure(haystack)) return 'itinerary';
-  if (TOLL_SIGNAL_PATTERN.test(haystack) && strongFuel === 0) return 'toll';
-  if (REIMBURSEMENT_SIGNAL_PATTERN.test(haystack) && strongFuel === 0) return 'reimbursement';
-  if (strongFuel >= 1 && nonFuelSignalScore(haystack) === 0) return 'fuel';
-  if (TOLL_SIGNAL_PATTERN.test(haystack)) return 'toll';
-  if (REIMBURSEMENT_SIGNAL_PATTERN.test(haystack)) return 'reimbursement';
-  if (/receipt|parking|scale|lumper|repair|wash/.test(haystack)) return 'other';
+  if (hasToll && strongFuel === 0) return 'toll';
+  if (strongFuel >= 2 && !hasToll) return 'fuel';
+  if (hasReimbursement && strongFuel === 0) return 'reimbursement';
+  if (strongFuel >= 1 && nonFuel === 0) return 'fuel';
+  if (hasToll) return 'toll';
+  if (hasReimbursement) return 'reimbursement';
+  if (/receipt|parking|scale|lumper|repair|wash|print|prints|copy|copies|fax|scan|invoice/.test(haystack)) return 'other';
   return 'unknown';
 }
 
@@ -154,14 +159,24 @@ export function classifyDocumentWithValidation(params: {
   const hasToll = TOLL_SIGNAL_PATTERN.test(haystack);
   const hasReimbursement = REIMBURSEMENT_SIGNAL_PATTERN.test(haystack);
   const fuelHints = hasFuelFieldHints(params.llm?.extracted_data || null);
+  const llmHasStructuredFields = Boolean(
+    params.llm?.extracted_data &&
+    Object.values(params.llm.extracted_data).some((value) => isMeaningfulValue(value))
+  );
+  const llmPreferred = llmType !== 'unknown' && (llmConfidence === null || llmConfidence >= 0.55 || llmHasStructuredFields);
 
-  let documentType = llmType !== 'unknown' ? llmType : inferredType;
+  let documentType = llmPreferred ? llmType : inferredType;
   let confidence = llmConfidence ?? confidenceFromSignals(documentType, haystack);
   const rationaleBits: string[] = [];
 
   if (params.llm?.rationale) rationaleBits.push(String(params.llm.rationale));
   if (llmType !== 'unknown') rationaleBits.push(`LLM proposed ${llmType}`);
   rationaleBits.push(`rules inferred ${inferredType}`);
+  if (llmPreferred) rationaleBits.push('LLM-first classification enabled');
+
+  if (llmPreferred && llmHasStructuredFields) {
+    confidence = Math.max(confidence, 0.78);
+  }
 
   if (documentType === 'fuel' && strongFuel === 0 && !fuelHints) {
     documentType = inferredType === 'fuel' ? 'other' : inferredType;
@@ -175,21 +190,28 @@ export function classifyDocumentWithValidation(params: {
   }
 
   if (documentType === 'fuel' && (hasToll || hasReimbursement || nonFuel >= 2) && strongFuel === 0) {
-    if (hasToll) documentType = 'toll';
-    else if (hasReimbursement) documentType = 'reimbursement';
-    else documentType = inferredType === 'unknown' ? 'other' : inferredType;
-    confidence = Math.min(confidence, 0.6);
-    rationaleBits.push('fuel proposal conflicted with stronger non-fuel signals');
+    if (!llmPreferred || !fuelHints) {
+      if (hasToll) documentType = 'toll';
+      else if (hasReimbursement) documentType = 'reimbursement';
+      else documentType = inferredType === 'unknown' ? 'other' : inferredType;
+      confidence = Math.min(confidence, llmPreferred ? 0.68 : 0.6);
+      rationaleBits.push('fuel proposal conflicted with stronger non-fuel signals');
+    } else {
+      confidence = Math.min(Math.max(confidence, 0.7), 0.8);
+      rationaleBits.push('kept fuel classification because extracted fuel fields support it');
+    }
   }
 
-  if ((llmType === 'toll' || llmType === 'reimbursement' || llmType === 'other') && strongFuel >= 2 && nonFuel === 0) {
+  if (!llmPreferred && (llmType === 'toll' || llmType === 'reimbursement' || llmType === 'other') && strongFuel >= 2 && nonFuel === 0) {
     documentType = 'fuel';
     confidence = Math.max(confidence, 0.82);
     rationaleBits.push('upgraded to fuel due to multiple strong fuel signals');
   }
 
   if (llmType !== 'unknown' && inferredType !== 'unknown' && llmType !== inferredType) {
-    confidence = Math.min(confidence, 0.68);
+    confidence = llmPreferred
+      ? Math.min(Math.max(confidence, 0.66), 0.76)
+      : Math.min(confidence, 0.68);
     rationaleBits.push(`LLM/rules conflict (${llmType} vs ${inferredType})`);
   }
 

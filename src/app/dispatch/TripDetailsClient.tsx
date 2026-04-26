@@ -1,9 +1,11 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { calcTripPay, PAYABLE_DEFAULTS, type PayableItem, type MileRates, type TripPayInput } from '@/lib/trip-pay';
+import { shouldShowTripSmartIntakePanel } from '@/lib/trip-details-ui';
+import { normalizeTripStatus, statusDotClass, statusTextClass } from '@/lib/trip-status';
 import TripDocumentProcessingPanel from './tripdocumentprocessingpanel';
 
 // User-configurable extra pay items (fetched from settings)
@@ -61,6 +63,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
   const [tripPdfs, setTripPdfs] = useState<any[]>([]);
   const [showPdfMenu, setShowPdfMenu] = useState(false);
   const [openingReceiptEnvelope, setOpeningReceiptEnvelope] = useState(false);
+  const datePickerOpenedValue = useRef<{ start_date?: string; end_date?: string }>({});
 
   useEffect(() => { setMounted(true); }, []);
 
@@ -215,6 +218,28 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
     setActionSuccess('Payable linked to stop');
     setTimeout(() => setActionSuccess(null), 2000);
   };
+
+  const rememberDatePickerValue = (field: 'start_date' | 'end_date') => {
+    datePickerOpenedValue.current[field] = currentTrip?.[field] || '';
+  };
+
+  const saveDateField = (field: 'start_date' | 'end_date', value: string) => {
+    // Opening a native date picker can emit a change event without a real date change.
+    // Only persist when the value differs from both the current and opening values.
+    const currentValue = currentTrip?.[field] || '';
+    const openedValue = datePickerOpenedValue.current[field] ?? currentValue;
+    if (!value || value === currentValue || value === openedValue) return;
+    updateField(field, value);
+  };
+
+  const dateInputProps = (field: 'start_date' | 'end_date') => ({
+    type: 'date' as const,
+    value: currentTrip?.[field] || '',
+    className: 'absolute inset-0 opacity-0 cursor-pointer',
+    onPointerDown: () => rememberDatePickerValue(field),
+    onFocus: () => rememberDatePickerValue(field),
+    onChange: (e: React.ChangeEvent<HTMLInputElement>) => saveDateField(field, e.target.value),
+  });
 
   const updateField = async (field: string, value: any) => {
     setIsSaving(true);
@@ -421,14 +446,8 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
             <h1 className="text-4xl font-black font-mono tracking-tighter">{currentTrip.trip_number}</h1>
             <div className="flex items-center gap-4 mt-2">
               <div className="flex items-center gap-2">
-                <span className={`w-2 h-2 rounded-full ${
-                  currentTrip.status === 'Active' ? 'bg-emerald-500 animate-pulse' :
-                  currentTrip.status === 'Completed' ? 'bg-green-500' :
-                  currentTrip.status === 'Not Started' ? 'bg-yellow-500' :
-                  currentTrip.status === 'Incomplete' ? 'bg-red-500' :
-                  currentTrip.status === 'Cancelled' ? 'bg-orange-500' :
-                  'bg-zinc-500'}`} />
-                <span className="text-[10px] font-bold uppercase text-zinc-500 tracking-widest">{currentTrip.status}</span>
+                <span className={`w-2 h-2 rounded-full ${statusDotClass(currentTrip.status)}`} />
+                <span className={`text-[10px] font-bold uppercase tracking-widest ${statusTextClass(currentTrip.status)}`}>{normalizeTripStatus(currentTrip.status) || currentTrip.status}</span>
               </div>
               <select
                 value={currentTrip.status || 'Active'}
@@ -437,6 +456,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
               >
                 <option value="Active">Active</option>
                 <option value="Completed">Completed</option>
+                <option value="Started">Started</option>
                 <option value="Not Started">Not Started</option>
                 <option value="Incomplete">Incomplete</option>
                 <option value="Cancelled">Cancelled</option>
@@ -767,14 +787,16 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
           </div>
         )}
 
-        <TripDocumentProcessingPanel
-          tripNumber={currentTrip.trip_number}
-          onSaved={(message) => {
-            setActionError(null);
-            setActionSuccess(message);
-            setTimeout(() => setActionSuccess(null), 3000);
-          }}
-        />
+        {shouldShowTripSmartIntakePanel() && (
+          <TripDocumentProcessingPanel
+            tripNumber={currentTrip.trip_number}
+            onSaved={(message) => {
+              setActionError(null);
+              setActionSuccess(message);
+              setTimeout(() => setActionSuccess(null), 3000);
+            }}
+          />
+        )}
 
         {/* ── Crew & Equipment Card ── */}
         <div className="grid grid-cols-3 gap-3">
@@ -818,7 +840,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                 <p className="text-lg font-black font-mono">{formatDateDisplay(currentTrip.start_date)}</p>
                 <button className="text-emerald-400 text-xs">✎</button>
               </div>
-              <input type="date" className="absolute inset-0 opacity-0 cursor-pointer" onChange={(e) => updateField('start_date', e.target.value)} />
+              <input {...dateInputProps('start_date')} />
             </div>
             <div className="group relative bg-black/20 p-4 rounded-3xl border border-zinc-900 transition-all hover:border-zinc-800">
               <label className="text-[10px] font-bold text-zinc-600 uppercase block mb-2">End Date</label>
@@ -826,7 +848,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                 <p className="text-lg font-black font-mono">{formatDateDisplay(currentTrip.end_date)}</p>
                 <button className="text-emerald-400 text-xs">✎</button>
               </div>
-              <input type="date" className="absolute inset-0 opacity-0 cursor-pointer" onChange={(e) => updateField('end_date', e.target.value)} />
+              <input {...dateInputProps('end_date')} />
             </div>
             <div className="bg-black/20 p-4 rounded-3xl border border-zinc-900">
               <label className="text-[10px] font-bold text-zinc-600 uppercase block mb-2">PDF Miles</label>
@@ -884,7 +906,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                   <p className="text-xl font-black font-mono text-zinc-200">{formatDateDisplay(currentTrip.start_date)}</p>
                   <button className="text-emerald-400 text-xs hover:text-emerald-400 transition-colors">✎</button>
                 </div>
-                <input type="date" className="absolute inset-0 opacity-0 cursor-pointer" onChange={(e) => updateField('start_date', e.target.value)} />
+              <input {...dateInputProps('start_date')} />
               </div>
 
               <div className="group relative bg-black/40 p-5 rounded-2xl border border-zinc-800/60 hover:border-emerald-500/40 transition-all duration-300">
@@ -896,7 +918,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                   <p className="text-xl font-black font-mono text-zinc-200">{formatDateDisplay(currentTrip.end_date)}</p>
                   <button className="text-emerald-400 text-xs hover:text-emerald-400 transition-colors">✎</button>
                 </div>
-                <input type="date" className="absolute inset-0 opacity-0 cursor-pointer" onChange={(e) => updateField('end_date', e.target.value)} />
+              <input {...dateInputProps('end_date')} />
               </div>
             </div>
 

@@ -691,20 +691,6 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
             </button>
           </div>
 
-
-          {/* Documents tab entry point */}
-          <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.03] p-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <p className="text-[10px] font-black uppercase tracking-[0.25em] text-emerald-400">Documents</p>
-              <p className="mt-1 text-xs text-zinc-400">Upload PDFs and receipt images from the dedicated Documents tab for smart intake review.</p>
-            </div>
-            <Link
-              href="/dispatch/documents"
-              className="inline-flex items-center justify-center rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-2 text-[10px] font-black uppercase tracking-[0.22em] text-emerald-300 transition hover:bg-emerald-500/20"
-            >
-              Open Documents →
-            </Link>
-          </div>
         </section>
 
         {/* ── Big stat cards ── */}

@@ -2,6 +2,12 @@ import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { ensureDispatchAuthSchemaAndSeed } from '@/lib/dispatch-auth';
 import { ensureTripOwnership, requireAccess } from '@/lib/ownership';
+import {
+  dedupeTripDocuments,
+  getTripDocumentsForTrips,
+  pickFuelReceiptDocument,
+  resolveDocumentSourceUrl,
+} from '@/lib/dispatch-documents';
 
 export async function POST(request: Request) {
   try {
@@ -144,64 +150,28 @@ export async function GET(request: Request) {
       );
     }
 
+    const tripNumbers = Array.from(new Set(
+      fuel
+        .map((entry: any) => entry.trip_number)
+        .filter((value: string | null) => !!value && value !== 'UNLINKED') as string[]
+    ));
+    const documents = dedupeTripDocuments(await getTripDocumentsForTrips(access.session.userId, tripNumbers));
+
     // Attach the matching receipt URL for each fuel entry.
     // IMPORTANT APP RULE: this must stay per-entry, not per-trip. Date alone is not sufficient
     // when multiple fuel-ups happen on the same day. Prefer stronger matching signals over weak fallbacks.
-    const enriched = await Promise.all(fuel.map(async (entry: any) => {
-      const receiptRow = await db().get(
-        `SELECT
-          CASE WHEN source_path IS NOT NULL AND source_path <> ''
-            THEN '/api/dispatch/documents/source?path=' || REPLACE(source_path, ' ', '%20')
-            ELSE '/api/dispatch/documents/download/' || REPLACE(s3_key, '/', '%2F') || '?redirect=true'
-          END AS receipt_url,
-          filename AS receipt_filename
-        FROM user_documents
-        WHERE user_id = $1
-          AND linked_record_type = 'fuel'
-          AND linked_record_id = $2
-        ORDER BY uploaded_at DESC, id DESC
-        LIMIT 1`,
-        [access.session.userId, entry.id]
-      ) || await db().get(
-        `SELECT
-          CASE WHEN source_path IS NOT NULL AND source_path <> ''
-            THEN '/api/dispatch/documents/source?path=' || REPLACE(source_path, ' ', '%20')
-            ELSE '/api/dispatch/documents/download/' || REPLACE(s3_key, '/', '%2F') || '?redirect=true'
-          END AS receipt_url,
-          filename AS receipt_filename
-        FROM user_documents
-        WHERE trip_number = $1
-          AND user_id = $2
-          AND (lower(description) LIKE '%fuel%' OR lower(description) LIKE '%receipt%' OR lower(filename) LIKE '%fuel%' OR lower(filename) LIKE '%receipt%')
-          AND (
-            filename ILIKE $3 OR
-            COALESCE(description, '') ILIKE $3 OR
-            COALESCE(source_path, '') ILIKE $3
-          )
-        ORDER BY uploaded_at DESC, id DESC
-        LIMIT 1`,
-        [entry.trip_number || 'UNLINKED', access.session.userId, `%${entry.date || ''}%`]
-      ) || await db().get(
-        `SELECT
-          CASE WHEN source_path IS NOT NULL AND source_path <> ''
-            THEN '/api/dispatch/documents/source?path=' || REPLACE(source_path, ' ', '%20')
-            ELSE '/api/dispatch/documents/download/' || REPLACE(s3_key, '/', '%2F') || '?redirect=true'
-          END AS receipt_url,
-          filename AS receipt_filename
-        FROM user_documents
-        WHERE trip_number = $1
-          AND user_id = $2
-          AND (lower(description) LIKE '%fuel%' OR lower(description) LIKE '%receipt%' OR lower(filename) LIKE '%fuel%' OR lower(filename) LIKE '%receipt%')
-        ORDER BY uploaded_at DESC, id DESC
-        LIMIT 1`,
-        [entry.trip_number || 'UNLINKED', access.session.userId]
+    const enriched = fuel.map((entry: any) => {
+      const receipt = pickFuelReceiptDocument(
+        entry,
+        documents.filter((document) => document.trip_number === entry.trip_number)
       );
+
       return {
         ...entry,
-        receiptUrl: receiptRow?.receipt_url || null,
-        receiptFilename: receiptRow?.receipt_filename || null,
+        receiptUrl: receipt ? resolveDocumentSourceUrl(receipt) : null,
+        receiptFilename: receipt?.original_filename || null,
       };
-    }));
+    });
 
     return NextResponse.json(enriched);
   } catch (error: any) {

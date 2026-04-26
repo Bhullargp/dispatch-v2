@@ -11,11 +11,14 @@ import RunUploadWorkerButton from './RunUploadWorkerButton';
 import AdminUserPasswordReset from './AdminUserPasswordReset';
 import AdminLlmSettings from './AdminLlmSettings';
 import AdminModelTestUtility from './AdminModelTestUtility';
+import AdminDebugLogs from './AdminDebugLogs';
+import { ensureAdminDebugLogsTable } from '@/lib/admin-debug-logs';
 import { ensureDocumentProcessingTables } from '@/lib/document-processing';
 
 export default async function AdminInspectionPage() {
   await ensureDispatchAuthSchemaAndSeed();
   await ensureDocumentProcessingTables();
+  await ensureAdminDebugLogsTable();
   const access = await getServerAccess();
   if (!access) redirect('/dispatch/login');
   if (access.mustChangePassword) redirect('/dispatch/login?forcePasswordChange=1');
@@ -133,6 +136,9 @@ export default async function AdminInspectionPage() {
           <AdminLlmSettings />
           <div className="mt-8 pt-6 border-t border-zinc-800/70">
             <AdminModelTestUtility />
+          </div>
+          <div className="mt-8 pt-6 border-t border-zinc-800/70">
+            <AdminDebugLogs />
           </div>
         </section>
 

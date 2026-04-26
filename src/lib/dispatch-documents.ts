@@ -19,7 +19,107 @@ export type TripDocument = {
   sourceUrl: string | null;
 };
 
+export type FuelEntryLike = {
+  id: number;
+  trip_number?: string | null;
+  date?: string | null;
+  location?: string | null;
+  odometer?: string | number | null;
+};
+
 export const RECEIPTS_DIR = path.resolve(process.cwd(), 'receipts');
+
+function documentHaystack(document: Partial<TripDocument>) {
+  return `${document.original_filename || ''} ${document.description || ''} ${document.source_path || ''}`.toLowerCase();
+}
+
+function normalizeLocationToken(location: string | null | undefined) {
+  return String(location || '')
+    .split(',')[0]
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function documentIdentity(document: Partial<TripDocument>) {
+  return document.file_key || document.source_path || `${document.trip_number || ''}:${document.original_filename || ''}`;
+}
+
+export function isFuelReceiptDocument(document: Partial<TripDocument>) {
+  if (document.linked_record_type === 'fuel') return true;
+
+  const haystack = documentHaystack(document);
+  const hasFuelSignal =
+    haystack.includes('fuel') ||
+    haystack.includes("love") ||
+    haystack.includes('diesel') ||
+    haystack.includes('petro') ||
+    haystack.includes('truck stop');
+  const hasNonFuelSignal = haystack.includes('toll') || haystack.includes('lumper') || haystack.includes('scale');
+
+  return hasFuelSignal && !hasNonFuelSignal;
+}
+
+export function dedupeTripDocuments(documents: TripDocument[]) {
+  const seen = new Set<string>();
+  const deduped: TripDocument[] = [];
+
+  for (const document of documents) {
+    const identity = documentIdentity(document);
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    deduped.push(document);
+  }
+
+  return deduped;
+}
+
+export function pickFuelReceiptDocument(entry: FuelEntryLike, documents: TripDocument[]) {
+  let best: TripDocument | null = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
+
+  for (const document of documents) {
+    if (!isFuelReceiptDocument(document)) continue;
+
+    let score = 0;
+    const haystack = documentHaystack(document);
+    const entryId = String(entry.id);
+    const entryDate = String(entry.date || '');
+    const locationToken = normalizeLocationToken(entry.location);
+    const odometerToken = entry.odometer == null || entry.odometer === '' ? '' : String(Math.trunc(Number(entry.odometer)));
+
+    if (document.linked_record_type === 'fuel' && String(document.linked_record_id || '') === entryId) score += 1000;
+    if (String(document.linked_record_key || '') === entryId) score += 900;
+    if (document.trip_number && entry.trip_number && document.trip_number === entry.trip_number) score += 50;
+    if (entryDate && haystack.includes(entryDate.toLowerCase())) score += 120;
+    if (locationToken && haystack.includes(locationToken)) score += 80;
+    if (odometerToken && haystack.includes(odometerToken)) score += 40;
+    if (document.linked_record_type === 'fuel') score += 25;
+
+    if (score > bestScore) {
+      best = document;
+      bestScore = score;
+    }
+  }
+
+  return best;
+}
+
+export function resolveDocumentSourceUrl(document: Partial<TripDocument>) {
+  if (document.source_path) return buildSourcePathUrl(document.source_path);
+  if (document.file_key) return buildDocumentDownloadUrl(document.file_key);
+  return null;
+}
+
+export function mapTripDocumentRow(document: Omit<TripDocument, 'url' | 'sourceUrl'>): TripDocument {
+  return {
+    ...document,
+    url: document.file_key ? buildDocumentDownloadUrl(document.file_key) : null,
+    sourceUrl: document.source_path ? buildSourcePathUrl(document.source_path) : null,
+  };
+}
 
 export function resolveDocumentSourcePath(sourcePath: string) {
   const resolvedPath = path.resolve(String(sourcePath || ''));
@@ -93,18 +193,42 @@ export async function getTripDocuments(userId: string | number, tripNumber: stri
     [userId, tripNumber]
   ) as Array<Omit<TripDocument, 'url' | 'sourceUrl'>>;
 
-  return documents.map((document) => ({
-    ...document,
-    url: document.file_key ? buildDocumentDownloadUrl(document.file_key) : null,
-    sourceUrl: document.source_path ? buildSourcePathUrl(document.source_path) : null,
-  }));
+  return documents.map(mapTripDocumentRow);
+}
+
+export async function getTripDocumentsForTrips(userId: string | number, tripNumbers: string[]): Promise<TripDocument[]> {
+  await ensureUserDocumentsTable();
+  if (!tripNumbers.length) return [];
+
+  const documents = await db().query(
+    `SELECT id,
+            s3_key AS file_key,
+            filename AS original_filename,
+            file_type,
+            file_size,
+            description,
+            trip_number,
+            source_path,
+            linked_record_type,
+            linked_record_id,
+            linked_record_key,
+            uploaded_at::text AS uploaded_at
+     FROM user_documents
+     WHERE user_id = $1 AND trip_number = ANY($2::text[])
+     ORDER BY uploaded_at DESC, id DESC`,
+    [userId, tripNumbers]
+  ) as Array<Omit<TripDocument, 'url' | 'sourceUrl'>>;
+
+  return documents.map(mapTripDocumentRow);
 }
 
 export async function getTripReceiptDocuments(userId: string | number, tripNumber: string) {
-  const documents = await getTripDocuments(userId, tripNumber);
+  const documents = dedupeTripDocuments(await getTripDocuments(userId, tripNumber));
+  const linkedFuelDocuments = documents.filter((document) => document.linked_record_type === 'fuel');
 
-  return documents.filter((document) => {
-    const haystack = `${document.original_filename || ''} ${document.description || ''}`.toLowerCase();
-    return haystack.includes('fuel') || haystack.includes('receipt');
-  });
+  if (linkedFuelDocuments.length) {
+    return linkedFuelDocuments.sort((a, b) => (a.linked_record_id || 0) - (b.linked_record_id || 0) || a.id - b.id);
+  }
+
+  return documents.filter(isFuelReceiptDocument);
 }

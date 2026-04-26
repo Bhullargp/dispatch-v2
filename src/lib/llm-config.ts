@@ -7,6 +7,13 @@ export type BuiltinModelId =
 
 export type CustomProviderKind = 'openrouter' | 'openrouter-vision' | 'minimax' | 'zai';
 
+export type OpenRouterModelOption = {
+  value: string;
+  label: string;
+  provider: Extract<CustomProviderKind, 'openrouter' | 'openrouter-vision'>;
+  description: string;
+};
+
 export type CustomLlmProvider = {
   id: string;
   name: string;
@@ -15,6 +22,47 @@ export type CustomLlmProvider = {
   api_key: string;
   enabled: boolean;
 };
+
+export const OPENROUTER_MODEL_OPTIONS: OpenRouterModelOption[] = [
+  {
+    value: 'qwen/qwen3-vl-235b-a22b-thinking',
+    label: 'Qwen3 VL 235B A22B Thinking',
+    provider: 'openrouter-vision',
+    description: 'Primary multimodal reasoning model',
+  },
+  {
+    value: 'qwen/qwen2.5-vl-72b-instruct',
+    label: 'Qwen2.5 VL 72B Instruct',
+    provider: 'openrouter-vision',
+    description: 'High-capacity vision fallback',
+  },
+  {
+    value: 'qwen/qwen3-vl-32b-instruct',
+    label: 'Qwen3 VL 32B Instruct',
+    provider: 'openrouter-vision',
+    description: 'Smaller vision fallback',
+  },
+  {
+    value: 'mistralai/ministral-14b-2512',
+    label: 'Ministral 14B 2512',
+    provider: 'openrouter',
+    description: 'Mistral text model',
+  },
+  {
+    value: 'mistralai/mistral-7b-instruct-v0.1',
+    label: 'Mistral 7B Instruct v0.1',
+    provider: 'openrouter',
+    description: 'Small text fallback',
+  },
+];
+
+export function getOpenRouterModelOption(model: string | null | undefined) {
+  return OPENROUTER_MODEL_OPTIONS.find((entry) => entry.value === (model || '').trim()) || null;
+}
+
+export function isOpenRouterVisionModel(model: string | null | undefined) {
+  return getOpenRouterModelOption(model)?.provider === 'openrouter-vision';
+}
 
 export const BUILTIN_PROVIDER_ORDER: BuiltinProviderId[] = [
   'minimax',

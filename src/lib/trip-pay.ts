@@ -119,7 +119,7 @@ export function detectCanada(trip: TripPayInput): boolean {
       const stops = Array.isArray(trip.stops_json) ? trip.stops_json : JSON.parse(trip.stops_json as string);
       const delStops = stops.filter((s: any) => {
         const t = (s.stop_type || '').toUpperCase();
-        return t === 'DELIVERY' || t === 'PICKUP' || t === 'PICK UP';
+        return t === 'DELIVERY' || t === 'DELIVER' || t === 'PICKUP' || t === 'PICK UP';
       });
       if (delStops.length > 0) {
         const locs = delStops.map((s: any) => s.location || '').filter(Boolean);

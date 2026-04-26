@@ -5,8 +5,10 @@ import {
   BUILTIN_PROVIDER_DETAILS,
   BUILTIN_PROVIDER_ORDER,
   getRuntimeMethodOrder,
+  OPENROUTER_MODEL_OPTIONS,
   getSelectableBuiltinProviders,
   getSelectablePrimaryOptions,
+  getOpenRouterModelOption,
   normalizeSelectablePrimary,
   type BuiltinModelId,
   type BuiltinProviderId,
@@ -26,6 +28,7 @@ type LlmSettings = {
   llm_minimax_model: string;
   llm_minimax_api_key: string;
   llm_openrouter_vision_model: string;
+  llm_openrouter_fallback_model: string;
   llm_openrouter_api_key: string;
   llm_anthropic_api_key: string;
   llm_zai_api_key: string;
@@ -60,6 +63,18 @@ function createCustomProvider(): CustomProvider {
     name: 'Custom Provider',
     provider: 'openrouter',
     model: '',
+    api_key: '',
+    enabled: true,
+  };
+}
+
+function createPresetProvider(preset: typeof OPENROUTER_MODEL_OPTIONS[number]): CustomProvider {
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return {
+    id,
+    name: preset.label,
+    provider: preset.provider,
+    model: preset.value,
     api_key: '',
     enabled: true,
   };
@@ -177,6 +192,18 @@ export default function AdminLlmSettings() {
       ...f,
       llm_custom_providers: [...(Array.isArray(f.llm_custom_providers) ? f.llm_custom_providers : []), createCustomProvider()],
     }));
+  };
+
+  const addOpenRouterPreset = (preset: typeof OPENROUTER_MODEL_OPTIONS[number]) => {
+    setForm((f) => {
+      const current = Array.isArray(f.llm_custom_providers) ? f.llm_custom_providers : [];
+      const exists = current.some((entry) => entry.provider === preset.provider && entry.model === preset.value);
+      if (exists) return f;
+      return {
+        ...f,
+        llm_custom_providers: [...current, createPresetProvider(preset)],
+      };
+    });
   };
 
   if (!settings) {
@@ -396,14 +423,41 @@ export default function AdminLlmSettings() {
             </div>
           </div>
           <div>
-            <label className="text-[10px] text-zinc-500 uppercase mb-1 block">Vision Model</label>
-            <input
-              type="text"
+            <label className="text-[10px] text-zinc-500 uppercase mb-1 block">Primary OpenRouter Model</label>
+            <select
               value={form.llm_openrouter_vision_model || ''}
               onChange={(e) => setForm((f) => ({ ...f, llm_openrouter_vision_model: e.target.value }))}
-              placeholder="qwen/qwen3-vl-32b-instruct"
-              className="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-sm font-mono text-zinc-300 focus:outline-none focus:border-fuchsia-500/60"
-            />
+              className="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-sm text-zinc-300 focus:outline-none focus:border-fuchsia-500/60"
+            >
+              {OPENROUTER_MODEL_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label} · {option.value}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-[10px] text-zinc-500">
+              {getOpenRouterModelOption(form.llm_openrouter_vision_model || '')?.description || 'Choose which OpenRouter model runs first.'}
+            </p>
+          </div>
+          <div>
+            <label className="text-[10px] text-zinc-500 uppercase mb-1 block">Fallback OpenRouter Model</label>
+            <select
+              value={form.llm_openrouter_fallback_model || ''}
+              onChange={(e) => setForm((f) => ({ ...f, llm_openrouter_fallback_model: e.target.value }))}
+              className="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-sm text-zinc-300 focus:outline-none focus:border-fuchsia-500/60"
+            >
+              <option value="">No fallback</option>
+              {OPENROUTER_MODEL_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label} · {option.value}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-[10px] text-zinc-500">
+              {form.llm_openrouter_fallback_model
+                ? (getOpenRouterModelOption(form.llm_openrouter_fallback_model || '')?.description || 'Second OpenRouter attempt if the primary model fails.')
+                : 'Leave empty to skip OpenRouter fallback.'}
+            </p>
           </div>
         </div>
 
@@ -464,6 +518,32 @@ export default function AdminLlmSettings() {
             <button onClick={addCustomProvider} className="px-3 py-2 text-xs rounded-xl border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10">
               + Add Provider
             </button>
+          </div>
+
+          <div className="space-y-2">
+            <p className="text-[10px] uppercase tracking-widest font-black text-zinc-500">Quick OpenRouter presets</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              {OPENROUTER_MODEL_OPTIONS.map((preset) => {
+                const exists = customProviders.some((entry) => entry.provider === preset.provider && entry.model === preset.value);
+                return (
+                  <button
+                    key={`${preset.provider}-${preset.value}`}
+                    type="button"
+                    onClick={() => addOpenRouterPreset(preset)}
+                    disabled={exists}
+                    className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 px-3 py-3 text-left transition hover:bg-cyan-500/10 disabled:opacity-50"
+                  >
+                    <p className="text-xs font-black text-cyan-200">{preset.label}</p>
+                    <p className="mt-1 text-[10px] font-mono text-zinc-400">{preset.value}</p>
+                    <p className="mt-1 text-[10px] text-zinc-500">{preset.description}</p>
+                    <p className="mt-2 text-[10px] font-bold text-zinc-500">
+                      {exists ? 'Already added' : 'Add preset'}
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[10px] text-zinc-600">OpenRouter presets inherit the main OpenRouter key when saved.</p>
           </div>
 
           {customProviders.length === 0 && (

@@ -10,6 +10,7 @@ import { useAuth } from './auth';
 import AuthGuard from './AuthGuard';
 
 import { calcTripPay as sharedCalcTripPay, PAYABLE_DEFAULTS, type PayableItem, type MileRates } from '@/lib/trip-pay';
+import { normalizeTripStatus, statusDotClass, statusPillClass } from '@/lib/trip-status';
 import { SUPPORTED_DOCUMENT_ACCEPT } from '@/lib/upload-file-types';
 
 const PAYABLE_TYPES = PAYABLE_DEFAULTS;
@@ -331,23 +332,9 @@ export default function TripSheet({ initialTrips, isAdmin = false }: { initialTr
                     <td className="px-8 py-8 font-mono font-black text-base tracking-tighter group-hover:text-emerald-400 transition-colors relative">
                       <Link href={tripUrl} className="absolute inset-0 z-10" />
                       <div className="flex items-center gap-3">
-                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[8px] font-black uppercase tracking-wider border ${
-                          trip.status === 'Active'      ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' :
-                          trip.status === 'Completed'   ? 'bg-green-500/10 text-green-400 border-green-500/30' :
-                          trip.status === 'Incomplete'  ? 'bg-red-500/10 text-red-400 border-red-500/30' :
-                          trip.status === 'Not Started' ? 'bg-zinc-500/10 text-zinc-400 border-zinc-600/30' :
-                          trip.status === 'Cancelled'   ? 'bg-amber-500/10 text-amber-400 border-amber-500/30' :
-                          'bg-zinc-800/30 text-zinc-600 border-zinc-700/30'
-                        }`}>
-                          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                            trip.status === 'Active'      ? 'bg-emerald-400 animate-pulse' :
-                            trip.status === 'Completed'   ? 'bg-green-400' :
-                            trip.status === 'Incomplete'  ? 'bg-red-400' :
-                            trip.status === 'Not Started' ? 'bg-zinc-400' :
-                            trip.status === 'Cancelled'   ? 'bg-amber-400' :
-                            'bg-zinc-600'
-                          }`} />
-                          {trip.status || 'Unknown'}
+                        <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[8px] font-black uppercase tracking-wider border ${statusPillClass(trip.status)}`}>
+                          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDotClass(trip.status)}`} />
+                          {normalizeTripStatus(trip.status) || trip.status || 'Unknown'}
                         </span>
                         {trip.trip_number}
                       </div>

@@ -46,6 +46,13 @@ const cases: Case[] = [
     expectedType: 'other',
     expectedAmount: 8.12,
   },
+  {
+    name: 'actual fuel ocr total should prefer charged amount',
+    filename: '2026-04-14-love-475-sweetwater-tx.jpg',
+    text: 'STORE 475\n9418 North Interstate 20\nSweetwater, TX 79556\n04/14/2026 Tkt #99242754\nPump: 2\nGallons: 183.682\nPrice / Gal 5.649\nsubtotal 1037.62\nsales Tax 0.00\nTotal 1637.62\nReceived TCHEK 1037.62\nINVOICE# 08887\nDate: 04/14/2026\n$1037.62\nTotal Sale:',
+    expectedType: 'fuel',
+    expectedAmount: 1037.62,
+  },
 ];
 
 let failed = 0;
@@ -84,6 +91,26 @@ for (const [input, expected] of parseCases) {
   } else {
     console.log(`✓ toNumber(${input}) -> ${parsed}`);
   }
+}
+
+const fuelDraft = h.parseFuelDraft(
+  'STORE 475\n9418 North Interstate 20\nSweetwater, TX 79556\n04/14/2026 Tkt #99242754\nPump: 2\nGallons: 183.682\nPrice / Gal 5.649\nsubtotal 1037.62\nsales Tax 0.00\nTotal 1637.62\nReceived TCHEK 1037.62\nINVOICE# 08887\nDate: 04/14/2026\n$1037.62\nTotal Sale:',
+  '2026-04-14-love-475-sweetwater-tx.jpg'
+);
+
+if (fuelDraft.gallons !== 183.682 || fuelDraft.amount_usd !== 1037.62 || fuelDraft.vendor?.includes('.jpg')) {
+  failed += 1;
+  console.error(`✗ parseFuelDraft failed: gallons=${fuelDraft.gallons} amount=${fuelDraft.amount_usd} vendor=${fuelDraft.vendor}`);
+} else {
+  console.log(`✓ parseFuelDraft actual fuel OCR -> gallons=${fuelDraft.gallons}, amount=${fuelDraft.amount_usd}, vendor=${fuelDraft.vendor}`);
+}
+
+const cadCurrency = h.inferCurrency('Transaction 2026-04-05\n81 Ube Drive\nSarnia, Ontario\nAmt/Vol 701.6 L', 'Sarnia, Ontario');
+if (cadCurrency !== 'CAD') {
+  failed += 1;
+  console.error(`✗ inferCurrency failed: expected=CAD actual=${cadCurrency}`);
+} else {
+  console.log(`✓ inferCurrency Ontario fallback -> ${cadCurrency}`);
 }
 
 const dateCases = [

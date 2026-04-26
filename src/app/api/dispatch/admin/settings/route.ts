@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { writeAdminDebugLog } from '@/lib/admin-debug-logs';
 import { db } from '@/lib/db';
 import { ensureDispatchAuthSchemaAndSeed } from '@/lib/dispatch-auth';
 import { requireAccess } from '@/lib/ownership';
@@ -42,7 +43,8 @@ export async function GET(request: Request) {
       llm_primary:             normalizeSelectablePrimary(raw.llm_primary || 'minimax', customProviders, disabledProviderIds, disabledModelIds),
       llm_minimax_model:       raw.llm_minimax_model || process.env.MINIMAX_MODEL || 'MiniMax-M2.7',
       llm_minimax_api_key:     maskKey(raw.llm_minimax_api_key || process.env.MINIMAX_API_KEY || ''),
-      llm_openrouter_vision_model: raw.llm_openrouter_vision_model || process.env.OPENROUTER_VISION_MODEL || 'qwen/qwen3-vl-32b-instruct',
+      llm_openrouter_vision_model: raw.llm_openrouter_vision_model || process.env.OPENROUTER_VISION_MODEL || 'qwen/qwen3-vl-235b-a22b-thinking',
+      llm_openrouter_fallback_model: raw.llm_openrouter_fallback_model || process.env.OPENROUTER_FALLBACK_MODEL || 'qwen/qwen2.5-vl-72b-instruct',
       llm_openrouter_api_key:  maskKey(raw.llm_openrouter_api_key || process.env.OPENROUTER_API_KEY || ''),
       llm_anthropic_api_key:   maskKey(raw.llm_anthropic_api_key || process.env.ANTHROPIC_API_KEY || ''),
       llm_zai_api_key:         maskKey(raw.llm_zai_api_key || process.env.ZAI_API_KEY || ''),
@@ -71,8 +73,12 @@ export async function POST(request: Request) {
     const body = await request.json();
     const { settings } = body as { settings: Record<string, unknown> };
 
-    const existingRows = await db().query('SELECT key, value FROM system_defaults WHERE key = $1', ['llm_custom_providers']) as Array<{ key: string; value: string }>;
-    const existingCustomProviders = normalizeCustomProviders(existingRows[0]?.value || '[]');
+    const existingRows = await db().query(
+      "SELECT key, value FROM system_defaults WHERE key IN ('llm_custom_providers', 'llm_openrouter_api_key')",
+      []
+    ) as Array<{ key: string; value: string }>;
+    const existingByKey = Object.fromEntries(existingRows.map((row) => [row.key, row.value]));
+    const existingCustomProviders = normalizeCustomProviders(existingByKey.llm_custom_providers || '[]');
     const existingById = new Map(existingCustomProviders.map((entry) => [entry.id, entry]));
     const normalizedCustomProviders = normalizeCustomProviders(settings.llm_custom_providers || '[]');
     const normalizedDisabledProviderIds = normalizeDisabledProviderIds(settings.llm_disabled_provider_ids || '[]');
@@ -86,11 +92,18 @@ export async function POST(request: Request) {
 
     for (const [key, value] of Object.entries(settings)) {
       if (key === 'llm_custom_providers') {
+        const submittedOpenRouterKey = String(settings.llm_openrouter_api_key || '');
+        const inheritedOpenRouterKey = submittedOpenRouterKey.includes('••')
+          ? (existingByKey.llm_openrouter_api_key || process.env.OPENROUTER_API_KEY || '')
+          : (submittedOpenRouterKey || existingByKey.llm_openrouter_api_key || process.env.OPENROUTER_API_KEY || '');
         const incoming = normalizedCustomProviders;
         const merged = incoming.map((entry) => {
           if (entry.api_key.includes('••')) {
             const existing = existingById.get(entry.id);
             return { ...entry, api_key: existing?.api_key || '' };
+          }
+          if (!entry.api_key && (entry.provider === 'openrouter' || entry.provider === 'openrouter-vision')) {
+            return { ...entry, api_key: inheritedOpenRouterKey };
           }
           return entry;
         });
@@ -153,6 +166,19 @@ export async function POST(request: Request) {
         );
       }
     }
+
+    await writeAdminDebugLog({
+      category: 'admin',
+      event: 'settings_saved',
+      userId: access.session.userId,
+      traceId: `settings-${Date.now().toString(36)}`,
+      data: {
+        primary: normalizedPrimary,
+        disabledProviders: normalizedDisabledProviderIds,
+        disabledModels: normalizedDisabledModelIds,
+        customProviderCount: normalizedCustomProviders.length,
+      },
+    }).catch(() => {});
 
     return NextResponse.json({ success: true });
   } catch (error: any) {

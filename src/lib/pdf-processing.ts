@@ -24,7 +24,8 @@ const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const ZAI_API_URL = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
 const ZAI_MODEL = 'glm-4.5-air';
 
-import { DISPATCH_APP_RULES, ITINERARY_LLM_RULES } from '@/lib/app-rules';
+import { DISPATCH_APP_RULES, ITINERARY_LLM_RULES } from './app-rules';
+import { deriveTripStatus } from './trip-status';
 
 // Runtime LLM config — reads from DB (admin_settings), falls back to env vars
 export interface LlmConfig {
@@ -33,6 +34,7 @@ export interface LlmConfig {
   minimaxModel: string;
   openrouterApiKey: string;
   openrouterVisionModel: string;
+  openrouterFallbackModel: string;
   anthropicApiKey: string;
   zaiApiKey: string;
   customProviders: CustomLlmProvider[];
@@ -55,7 +57,8 @@ export async function getLlmConfig(): Promise<LlmConfig> {
       minimaxApiKey:   s.llm_minimax_api_key         || process.env.MINIMAX_API_KEY          || '',
       minimaxModel:    s.llm_minimax_model           || process.env.MINIMAX_MODEL            || 'MiniMax-M2.7',
       openrouterApiKey:s.llm_openrouter_api_key      || process.env.OPENROUTER_API_KEY       || '',
-      openrouterVisionModel: s.llm_openrouter_vision_model || process.env.OPENROUTER_VISION_MODEL || 'qwen/qwen3-vl-32b-instruct',
+      openrouterVisionModel: s.llm_openrouter_vision_model || process.env.OPENROUTER_VISION_MODEL || 'qwen/qwen3-vl-235b-a22b-thinking',
+      openrouterFallbackModel: s.llm_openrouter_fallback_model || process.env.OPENROUTER_FALLBACK_MODEL || 'qwen/qwen2.5-vl-72b-instruct',
       anthropicApiKey: s.llm_anthropic_api_key       || process.env.ANTHROPIC_API_KEY        || '',
       zaiApiKey:       s.llm_zai_api_key             || process.env.ZAI_API_KEY              || '',
       customProviders,
@@ -68,7 +71,8 @@ export async function getLlmConfig(): Promise<LlmConfig> {
       minimaxApiKey: process.env.MINIMAX_API_KEY || '',
       minimaxModel: process.env.MINIMAX_MODEL || 'MiniMax-M2.7',
       openrouterApiKey: process.env.OPENROUTER_API_KEY || '',
-      openrouterVisionModel: process.env.OPENROUTER_VISION_MODEL || 'qwen/qwen3-vl-32b-instruct',
+      openrouterVisionModel: process.env.OPENROUTER_VISION_MODEL || 'qwen/qwen3-vl-235b-a22b-thinking',
+      openrouterFallbackModel: process.env.OPENROUTER_FALLBACK_MODEL || 'qwen/qwen2.5-vl-72b-instruct',
       anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
       zaiApiKey: process.env.ZAI_API_KEY || '',
       customProviders: [],
@@ -83,7 +87,8 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const MINIMAX_API_KEY = process.env.MINIMAX_API_KEY || '';
 const MINIMAX_MODEL = process.env.MINIMAX_MODEL || 'MiniMax-M2.7';
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
-const OPENROUTER_VISION_MODEL = process.env.OPENROUTER_VISION_MODEL || 'qwen/qwen3-vl-32b-instruct';
+const OPENROUTER_VISION_MODEL = process.env.OPENROUTER_VISION_MODEL || 'qwen/qwen3-vl-235b-a22b-thinking';
+const OPENROUTER_FALLBACK_MODEL = process.env.OPENROUTER_FALLBACK_MODEL || 'qwen/qwen2.5-vl-72b-instruct';
 const ZAI_API_KEY = process.env.ZAI_API_KEY || '';
 
 export type ParsedStop = {
@@ -176,6 +181,24 @@ function parseDateFromLine(line: string, fallbackYear: number): string | null {
   return fmtDate(year, m[1], m[2]);
 }
 
+function cleanCapturedValue(value?: string | null) {
+  if (!value) return null;
+  const normalized = value
+    .replace(/\s{2,}/g, ' ')
+    .replace(/(?:Dispatched By|EMail|Email|Issued On).*$/i, '')
+    .replace(/^Name:\s*/i, '')
+    .trim();
+  return normalized || null;
+}
+
+function rejectDispatcherOrHeader(value: string | null | undefined, dispatcherName?: string | null) {
+  const normalized = cleanCapturedValue(value);
+  if (!normalized) return null;
+  if (/trip\s+itinerary|dispatched\s+by|issued\s+on|e-?mail|@|dmtransport/i.test(normalized)) return null;
+  if (dispatcherName && normalized.toLowerCase() === dispatcherName.toLowerCase()) return null;
+  return normalized;
+}
+
 export async function extractTextFromPdf(buffer: Buffer): Promise<string> {
   const tmp = await mkdtemp(join(tmpdir(), 'dispatch-pdf-'));
   const input = join(tmp, 'input.pdf');
@@ -187,10 +210,35 @@ export async function extractTextFromPdf(buffer: Buffer): Promise<string> {
     if (text.trim()) return text;
   } catch {
     // fallback below
+  }
+
+  try {
+    await execFileAsync('pdftoppm', ['-png', '-f', '1', '-l', '3', '-r', '220', input, join(tmp, 'page')]);
+    const files = (await readdir(tmp))
+      .filter((name) => /^page-\d+\.png$/i.test(name))
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+    const ocrPages: string[] = [];
+    for (const file of files) {
+      const imagePath = join(tmp, file);
+      const outputBase = imagePath.replace(/\.png$/i, '');
+      try {
+        await execFileAsync('tesseract', [imagePath, outputBase]);
+        const pageText = await readFile(`${outputBase}.txt`, 'utf8').catch(() => '');
+        if (pageText.trim()) ocrPages.push(pageText.trim());
+      } catch {
+        continue;
+      }
+    }
+
+    if (ocrPages.length > 0) return ocrPages.join('\n\n');
+  } catch {
+    // fallback below
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
-  return buffer.toString('utf8');
+
+  return '';
 }
 
 export async function extractTextFromImage(buffer: Buffer, filename: string): Promise<string> {
@@ -235,12 +283,27 @@ export function parseDriverItinerary(text: string): ParsedTrip {
   const milesMatch = text.match(/TOTAL ROUTED MILES\s*:\s*([\d,]+(?:\.\d+)?)/i);
   const totalMiles = milesMatch ? Number(milesMatch[1].replace(/,/g, '')) : 0;
 
+  const dispatcherName = cleanCapturedValue(
+    text.match(/Dispatched By\s+(?:Name:\s*)?(.+?)(?=\s{2,}(?:EMail|Email|Issued On)|\n|$)/i)?.[1]
+      || text.match(/\bName:\s*([^\n]+?)\s+(?:EMail|Email):\s*\S+@dmtransport\./i)?.[1]
+  );
+  const leadDriver = rejectDispatcherOrHeader(cleanCapturedValue(
+    text.match(/Lead Driver\s+(.+?)(?=\s{2,}(?:Dispatched By|Team Driver|EMail|Email|Issued On)|\n|$)/i)?.[1]
+      || text.match(/(?:^|\n)\s*(?:Lead Driver|Driver)\s*[:\-]\s*([^\n]+)/i)?.[1]
+      || text.match(/(?:^|\n)\s*Driver\s{2,}(.+?)(?=\s{2,}(?:Dispatched By|Team Driver|EMail|Email|Issued On)|\n|$)/i)?.[1]
+  ), dispatcherName);
+  const coDriver = cleanCapturedValue(
+    text.match(/(?:Team Driver|Co-Driver)\s+(.+?)(?=\s{2,}(?:EMail|Email|Issued On|Dispatched By)|\n|$)/i)?.[1]
+      || text.match(/(?:Team Driver|Co-Driver)\s*[:\-]?\s*([^\n]+)/i)?.[1]
+  );
+  const truckNumber = cleanCapturedValue(text.match(/\bTruck\s*[:#]\s*([A-Z0-9-]+)/i)?.[1]);
+  const trailerNumber = cleanCapturedValue(text.match(/\bTrailer\s*[:#]\s*([A-Z0-9-]+)/i)?.[1]);
+
   const eventRegex = /(ACQUIRE|RELEASE|HOOK|DROP|PICKUP|DELIVER|BORDER CROSSING)\s*\(([^)]+)\)([\s\S]*?)(?=(?:\n(?:ACQUIRE|RELEASE|HOOK|DROP|PICKUP|DELIVER|BORDER CROSSING)\s*\()|$)/gi;
   const stops: ParsedStop[] = [];
 
   let match: RegExpExecArray | null;
   let currentDate = startDate;
-  let lastPickupDate = startDate;
 
   while ((match = eventRegex.exec(text)) !== null) {
     const type = match[1].toUpperCase();
@@ -261,8 +324,6 @@ export function parseDriverItinerary(text: string): ParsedTrip {
       type === 'BORDER CROSSING' ? 'BORDER CROSSING' :
       type === 'ACQUIRE' ? 'ACQUIRE' : 'RELEASE';
 
-    if (stopType === 'PICKUP') lastPickupDate = currentDate;
-
     stops.push({
       stop_type: stopType,
       location,
@@ -272,8 +333,7 @@ export function parseDriverItinerary(text: string): ParsedTrip {
     });
   }
 
-  const endDate = lastPickupDate ? new Date(`${lastPickupDate}T00:00:00`).toISOString().slice(0, 10) : null;
-  const finalEnd = endDate ? new Date(new Date(endDate).getTime() + 86400000).toISOString().slice(0, 10) : null;
+  const finalEnd = stops.length > 0 ? (stops[stops.length - 1].date || null) : null;
 
   const route = (() => {
     const first = stops.find((s) => s.stop_type === 'PICKUP' || s.stop_type === 'DELIVER')?.location || stops[0]?.location;
@@ -303,6 +363,12 @@ export function parseDriverItinerary(text: string): ParsedTrip {
     stops,
     placeholders,
     hasDetectedTripNumber,
+    driverName: leadDriver,
+    leadDriver,
+    coDriver,
+    truckNumber,
+    trailerNumber,
+    dispatcherName,
   };
 }
 
@@ -644,6 +710,9 @@ export function llmResultToParsedTrip(llm: LlmExtractResult, rawText: string): P
   const firstLoc = stops[0]?.location || '';
   const lastLoc = stops.length > 0 ? stops[stops.length - 1].location : '';
   const route = firstLoc && lastLoc ? `${firstLoc} → ${lastLoc}` : 'Unknown';
+  const dispatcherName = cleanCapturedValue(llm.dispatcher_name);
+  const leadDriver = rejectDispatcherOrHeader(llm.lead_driver, dispatcherName);
+  const driverName = rejectDispatcherOrHeader(llm.driver_name, dispatcherName) || leadDriver;
 
   return {
     tripNumber: llm.trip_number,
@@ -656,13 +725,13 @@ export function llmResultToParsedTrip(llm: LlmExtractResult, rawText: string): P
     stops,
     placeholders: [],
     hasDetectedTripNumber: true,
-    driverName: llm.driver_name,
-    leadDriver: llm.lead_driver,
-    coDriver: llm.co_driver,
-    truckNumber: llm.truck_number,
-    trailerNumber: llm.trailer_number,
-    customsBroker: llm.customs_broker,
-    dispatcherName: llm.dispatcher_name,
+    driverName,
+    leadDriver: leadDriver || driverName,
+    coDriver: rejectDispatcherOrHeader(llm.co_driver, dispatcherName),
+    truckNumber: cleanCapturedValue(llm.truck_number),
+    trailerNumber: cleanCapturedValue(llm.trailer_number),
+    customsBroker: cleanCapturedValue(llm.customs_broker),
+    dispatcherName,
   };
 }
 
@@ -677,20 +746,26 @@ export async function mergeTripAndStops(userId: number, parsed: ParsedTrip, pdfP
   const effectiveTripNumber = sameTripAnyUser && sameTripAnyUser.user_id !== userId ? `${parsed.tripNumber}-U${userId}` : parsed.tripNumber;
 
   const existing = await d.get(
-    'SELECT trip_number FROM trips WHERE trip_number = $1 AND user_id = $2',
+    'SELECT trip_number, status FROM trips WHERE trip_number = $1 AND user_id = $2',
     [effectiveTripNumber, userId]
-  ) as { trip_number: string } | undefined;
+  ) as { trip_number: string; status: string | null } | undefined;
+  const derivedStatus = deriveTripStatus({
+    startDate: parsed.startDate,
+    endDate: parsed.endDate,
+    stops: parsed.stops,
+    requestedStatus: existing?.status || null,
+  });
 
-  const dbg = [effectiveTripNumber, parsed.startDate, parsed.endDate, parsed.totalMiles, parsed.route, '', pdfPath, parsed.rawText, userId, parsed.driverName || null, parsed.leadDriver || null, parsed.truckNumber || null, parsed.trailerNumber || null, parsed.truckNumber || null, parsed.trailerNumber || null, parsed.trailerNumber || null];
+  const dbg = [effectiveTripNumber, parsed.startDate, parsed.endDate, parsed.totalMiles, parsed.route, derivedStatus, parsed.notes || '', pdfPath, parsed.rawText, userId, parsed.driverName || null, parsed.leadDriver || null, parsed.truckNumber || null, parsed.trailerNumber || null, parsed.truckNumber || null, parsed.trailerNumber || null, parsed.trailerNumber || null];
   console.log('[DEBUG] INSERT/UPDATE params:', dbg.length);
   if (!existing) {
     await d.run(
-      `INSERT INTO trips (trip_number, start_date, end_date, total_miles, route, status, notes, pdf_path, raw_data, user_id, driver_name, lead_driver, truck_number, trailer_number, truck, trailer)
-      VALUES ($1, $2, $3, $4, $5, 'Active', $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+      `INSERT INTO trips (trip_number, start_date, end_date, total_miles, route, status, notes, pdf_path, raw_data, user_id, driver_name, lead_driver, truck_number, trailer_number, truck, trailer, trailer_2)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
       dbg
     );
   } else {
-    const upd = [parsed.startDate, parsed.endDate, parsed.totalMiles, parsed.route, pdfPath, parsed.rawText, userId, parsed.driverName || null, parsed.leadDriver || null, parsed.truckNumber || null, parsed.trailerNumber || null, parsed.truckNumber || null, parsed.trailerNumber || null, parsed.trailerNumber || null, effectiveTripNumber, userId];
+    const upd = [parsed.startDate, parsed.endDate, parsed.totalMiles, parsed.route, derivedStatus, pdfPath, parsed.rawText, userId, parsed.driverName || null, parsed.leadDriver || null, parsed.truckNumber || null, parsed.trailerNumber || null, parsed.truckNumber || null, parsed.trailerNumber || null, parsed.trailerNumber || null, effectiveTripNumber, userId];
     console.log('[DEBUG] UPDATE params:', upd.length);
     await d.run(
       `UPDATE trips
@@ -698,18 +773,18 @@ export async function mergeTripAndStops(userId: number, parsed: ParsedTrip, pdfP
           end_date = $2,
           total_miles = $3,
           route = $4,
-          status = 'Active',
-          pdf_path = $5,
-          raw_data = $6,
-          user_id = $7,
-          driver_name = $8,
-          lead_driver = $9,
-          truck_number = $10,
-          trailer_number = $11,
-          truck = $12,
-          trailer = $13,
-          trailer_2 = $14
-      WHERE trip_number = $15 AND user_id = $16`,
+          status = $5,
+          pdf_path = $6,
+          raw_data = $7,
+          user_id = $8,
+          driver_name = $9,
+          lead_driver = $10,
+          truck_number = $11,
+          trailer_number = $12,
+          truck = $13,
+          trailer = $14,
+          trailer_2 = $15
+      WHERE trip_number = $16 AND user_id = $17`,
       upd
     );
   }
