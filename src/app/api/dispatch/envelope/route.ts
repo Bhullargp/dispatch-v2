@@ -347,11 +347,13 @@ function TripEnvelope({ trip, stops, fuel, extraPay, expenses, driverName }: {
             React.createElement(Text, { style: S.sectionLabel }, 'REIMBURSEMENTS & TOLLS'),
             React.createElement(View, { style: S.extrasTable },
               React.createElement(View, { style: S.extrasHead },
-                React.createElement(Text, { style: [S.extrasHeadDesc, { flex: 1 }] }, 'DESCRIPTION'),
+                React.createElement(Text, { style: S.extrasHeadDesc }, 'DESCRIPTION'),
+                React.createElement(Text, { style: S.extrasHeadAmt }, 'AMOUNT'),
               ),
               ...extraRows.filter(r => r.isToll).map((r, i) =>
                 React.createElement(View, { key: i, style: S.extrasRow },
                   React.createElement(Text, { style: S.extrasDesc }, r.desc),
+                  React.createElement(Text, { style: S.extrasAmt }, `$${fmtNum(r.amt, 2)}`),
                 )
               ),
               extraRows.filter(r => r.isToll).length === 0
@@ -363,7 +365,7 @@ function TripEnvelope({ trip, stops, fuel, extraPay, expenses, driverName }: {
               // Subtotal
               React.createElement(View, { style: S.extrasTotalRow },
                 React.createElement(Text, { style: [S.extrasDesc, { color: '#cc1111' }] }, 'SUBTOTAL'),
-                React.createElement(Text, { style: [S.extrasAmt, { color: '#cc1111' }] }, ''),
+                React.createElement(Text, { style: [S.extrasAmt, { color: '#cc1111' }] }, tollsTotal > 0 ? `$${fmtNum(tollsTotal, 2)}` : ''),
               ),
             ),
           ),
