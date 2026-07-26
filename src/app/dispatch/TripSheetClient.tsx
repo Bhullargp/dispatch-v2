@@ -409,7 +409,9 @@ export default function TripSheet({ initialTrips, isAdmin = false }: { initialTr
       const parts = dateStr.split('-');
       if (parts.length === 3) {
         const d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
-        return d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+        const date = d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+        const weekday = d.toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase();
+        return `${date} (${weekday})`;
       }
       return dateStr;
     } catch { return dateStr; }
@@ -524,7 +526,7 @@ export default function TripSheet({ initialTrips, isAdmin = false }: { initialTr
           </div>
         )}
 
-        <div className="bg-zinc-900/20 border border-zinc-900 rounded-3xl overflow-hidden backdrop-blur-sm shadow-2xl">
+        <div className="bg-zinc-900/20 border border-zinc-900 rounded-3xl overflow-x-auto backdrop-blur-sm shadow-2xl">
           <table className="w-full text-left border-separate border-spacing-0">
 	            <thead>
 	              <tr className="bg-zinc-900/40 text-[10px] font-black uppercase text-zinc-500 tracking-[0.2em]">

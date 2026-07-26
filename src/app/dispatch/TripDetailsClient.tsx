@@ -239,13 +239,20 @@ export default function TripDetailsClient({
     }
   }, [currentTrip?.manual_rate, currentTrip?.rate_type, currentTrip?.manual_hours]);
 
-  const formatDateDisplay = (dateStr: string | null) => {
+  const formatDateDisplay = (dateStr: string | null, includeWeekday = false) => {
     if (!dateStr) return '---';
     try {
       const parts = dateStr.split('-');
       if (parts.length === 3) {
         const d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
-        return d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+        const date = d.toLocaleDateString('en-US', {
+          month: 'long',
+          day: 'numeric',
+          year: 'numeric',
+        });
+        if (!includeWeekday) return date;
+        const weekday = d.toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase();
+        return `${date} (${weekday})`;
       }
       return dateStr;
     } catch { return dateStr; }
@@ -1375,7 +1382,7 @@ export default function TripDetailsClient({
             <div className="group relative bg-black/20 p-4 rounded-3xl border border-zinc-900 transition-all hover:border-zinc-800">
               <label className="text-[10px] font-bold text-zinc-600 uppercase block mb-2">Start Date</label>
               <div className="flex items-center justify-center md:justify-start gap-2">
-                <p className="text-lg font-black font-mono">{formatDateDisplay(currentTrip.start_date)}</p>
+                <p className="text-lg font-black font-mono">{formatDateDisplay(currentTrip.start_date, true)}</p>
                 <button className="text-emerald-400 text-xs">✎</button>
               </div>
               <input {...dateInputProps('start_date')} />
@@ -1383,7 +1390,7 @@ export default function TripDetailsClient({
             <div className="group relative bg-black/20 p-4 rounded-3xl border border-zinc-900 transition-all hover:border-zinc-800">
               <label className="text-[10px] font-bold text-zinc-600 uppercase block mb-2">End Date</label>
               <div className="flex items-center justify-center md:justify-start gap-2">
-                <p className="text-lg font-black font-mono">{formatDateDisplay(currentTrip.end_date)}</p>
+                <p className="text-lg font-black font-mono">{formatDateDisplay(currentTrip.end_date, true)}</p>
                 <button className="text-emerald-400 text-xs">✎</button>
               </div>
               <input {...dateInputProps('end_date')} />
@@ -1441,7 +1448,7 @@ export default function TripDetailsClient({
                   <label className="text-[9px] font-black text-zinc-500 uppercase tracking-widest">Start Date</label>
                 </div>
                 <div className="flex items-center justify-between">
-                  <p className="text-xl font-black font-mono text-zinc-200">{formatDateDisplay(currentTrip.start_date)}</p>
+                  <p className="text-xl font-black font-mono text-zinc-200">{formatDateDisplay(currentTrip.start_date, true)}</p>
                   <button className="text-emerald-400 text-xs hover:text-emerald-400 transition-colors">✎</button>
                 </div>
               <input {...dateInputProps('start_date')} />
@@ -1453,7 +1460,7 @@ export default function TripDetailsClient({
                   <label className="text-[9px] font-black text-zinc-500 uppercase tracking-widest">End Date</label>
                 </div>
                 <div className="flex items-center justify-between">
-                  <p className="text-xl font-black font-mono text-zinc-200">{formatDateDisplay(currentTrip.end_date)}</p>
+                  <p className="text-xl font-black font-mono text-zinc-200">{formatDateDisplay(currentTrip.end_date, true)}</p>
                   <button className="text-emerald-400 text-xs hover:text-emerald-400 transition-colors">✎</button>
                 </div>
               <input {...dateInputProps('end_date')} />
