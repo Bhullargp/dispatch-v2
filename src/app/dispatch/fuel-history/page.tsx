@@ -17,11 +17,11 @@ export default async function FuelHistoryPage({ searchParams }: { searchParams?:
   await ensureDispatchAuthSchemaAndSeed();
   const sp = searchParams ? await searchParams : undefined;
   const access = await getServerAccess(sp?.adminMode);
-  if (!access) redirect('/dispatch/login');
-  if (access.mustChangePassword) redirect('/dispatch/login?forcePasswordChange=1');
+  if (!access) redirect('/login');
+  if (access.mustChangePassword) redirect('/login?forcePasswordChange=1');
 
   const user = await db().get('SELECT setup_complete FROM users WHERE id = $1', [access.session.userId]) as any;
-  if (!user?.setup_complete) redirect('/dispatch/setup');
+  if (!user?.setup_complete) redirect('/setup');
   const scope = userScopedWhere(access, 'user_id');
 
   const fuelEntries = await db().query(`SELECT * FROM fuel WHERE ${scope.clause} ORDER BY date DESC, id DESC LIMIT 200`, scope.params) as any[];

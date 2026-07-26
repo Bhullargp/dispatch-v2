@@ -12,6 +12,7 @@ import AdminUserPasswordReset from './AdminUserPasswordReset';
 import AdminLlmSettings from './AdminLlmSettings';
 import AdminModelTestUtility from './AdminModelTestUtility';
 import AdminDebugLogs from './AdminDebugLogs';
+import AdminBackupButton from './AdminBackupButton';
 import { ensureAdminDebugLogsTable } from '@/lib/admin-debug-logs';
 import { ensureDocumentProcessingTables } from '@/lib/document-processing';
 
@@ -20,9 +21,9 @@ export default async function AdminInspectionPage() {
   await ensureDocumentProcessingTables();
   await ensureAdminDebugLogsTable();
   const access = await getServerAccess();
-  if (!access) redirect('/dispatch/login');
-  if (access.mustChangePassword) redirect('/dispatch/login?forcePasswordChange=1');
-  if (!access.isAdmin) redirect('/dispatch');
+  if (!access) redirect('/login');
+  if (access.mustChangePassword) redirect('/login?forcePasswordChange=1');
+  if (!access.isAdmin) redirect('/dashboard');
 
   const users = await db().query(`
     SELECT
@@ -101,8 +102,9 @@ export default async function AdminInspectionPage() {
             </h1>
           </div>
           <div className="flex items-center gap-2">
+            <AdminBackupButton />
             <RunUploadWorkerButton />
-            <Link href="/dispatch" className="text-xs font-black uppercase bg-zinc-900/60 hover:bg-zinc-800 border border-zinc-800 px-4 py-2 rounded-xl transition-all">
+            <Link href="/dashboard" className="text-xs font-black uppercase bg-zinc-900/60 hover:bg-zinc-800 border border-zinc-800 px-4 py-2 rounded-xl transition-all">
               ← Dispatch
             </Link>
           </div>

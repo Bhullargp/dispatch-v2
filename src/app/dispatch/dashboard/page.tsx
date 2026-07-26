@@ -10,7 +10,7 @@ export default async function DashboardPage() {
   const token = cookieStore.get('dispatch_session')?.value;
   const session = verifySessionToken(token);
 
-  if (!session) redirect('/dispatch/login');
+  if (!session) redirect('/login');
 
   return <DashboardClient isAdmin={session.role === 'admin'} />;
 }

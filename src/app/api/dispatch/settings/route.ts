@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { db } from '@/lib/db';
+import { db, shouldRunRuntimeSchemaEnsures } from '@/lib/db';
 import { ensureDispatchAuthSchemaAndSeed } from '@/lib/dispatch-auth';
 import { requireAccess } from '@/lib/ownership';
 
@@ -23,8 +23,9 @@ export async function GET(request: Request) {
     const canadaUnder = mileage.canada_under_1000;
     const canadaOver = mileage.canada_over_1000;
 
-    // Ensure display_name column exists
-    await db().run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT`);
+    if (shouldRunRuntimeSchemaEnsures()) {
+      await db().run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT`);
+    }
     // Get profile fields
     const user = await db().get('SELECT setup_complete, display_name, phone, truck_number, trailer_number, avatar_url, avatar_preset FROM users WHERE id = $1', [access.session.userId]) as any;
 

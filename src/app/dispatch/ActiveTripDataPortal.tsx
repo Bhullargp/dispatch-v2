@@ -191,7 +191,7 @@ export default function ActiveTripDataPortal({ trip, fuelEntries, extraPay, inve
     <div className="md:hidden sticky top-0 z-50 bg-emerald-600 px-4 py-3 shadow-lg flex justify-between items-center">
         <div className="flex items-center gap-3">
           <Link 
-            href="/dispatch" 
+            href="/dashboard" 
             className="bg-white/20 hover:bg-white/30 p-2 rounded-xl transition-colors active:scale-90"
             title="Back to Trip Sheet"
           >
@@ -442,7 +442,7 @@ export default function ActiveTripDataPortal({ trip, fuelEntries, extraPay, inve
 
         {/* Navigation to Full Details */}
         <Link 
-            href={`/dispatch/${trip.trip_number}`}
+            href={`/${trip.trip_number}`}
             className="block w-full bg-zinc-900 border border-zinc-800 text-zinc-500 font-bold text-center py-4 rounded-2xl"
         >
             View Full Trip Details

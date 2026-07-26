@@ -12,11 +12,11 @@ export default async function ActiveTripPage({ searchParams }: { searchParams?: 
   await ensureDispatchAuthSchemaAndSeed();
   const sp = searchParams ? await searchParams : undefined;
   const access = await getServerAccess(sp?.adminMode);
-  if (!access) redirect('/dispatch/login');
-  if (access.mustChangePassword) redirect('/dispatch/login?forcePasswordChange=1');
+  if (!access) redirect('/login');
+  if (access.mustChangePassword) redirect('/login?forcePasswordChange=1');
 
   const user = await db().get('SELECT setup_complete FROM users WHERE id = $1', [access.session.userId]) as any;
-  if (!user?.setup_complete) redirect('/dispatch/setup');
+  if (!user?.setup_complete) redirect('/setup');
   const scope = userScopedWhere(access, 'user_id');
 
   const trip = await db().get(
@@ -34,7 +34,7 @@ export default async function ActiveTripPage({ searchParams }: { searchParams?: 
           <div className="text-6xl mb-6">🚛</div>
           <h1 className="text-2xl font-black font-mono tracking-tighter mb-2">No Active Trip Found</h1>
           <p className="text-zinc-500 text-sm mb-8 leading-relaxed">There are currently no trips marked as <span className="text-emerald-400 font-bold uppercase">Active</span> in your scope.</p>
-          <Link href="/dispatch" className="block w-full bg-emerald-600 hover:bg-emerald-500 text-white font-black uppercase text-xs py-4 rounded-2xl transition-all active:scale-95 shadow-lg shadow-emerald-600/20">Go to Trip Sheet</Link>
+          <Link href="/dashboard" className="block w-full bg-emerald-600 hover:bg-emerald-500 text-white font-black uppercase text-xs py-4 rounded-2xl transition-all active:scale-95 shadow-lg shadow-emerald-600/20">Go to Trip Sheet</Link>
         </div>
       </div>
     );

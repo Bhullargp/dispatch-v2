@@ -3,7 +3,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { db } from '@/lib/db';
+import { db, shouldRunRuntimeSchemaEnsures } from '@/lib/db';
 import { writeAdminDebugLog } from '@/lib/admin-debug-logs';
 import { buildDocumentDownloadUrl, buildSourcePathUrl, ensureUserDocumentsTable, getDocumentSourceFileType, resolveDocumentSourcePath } from '@/lib/dispatch-documents';
 import { downloadFromR2 } from '@/lib/r2-storage';
@@ -565,6 +565,9 @@ function parseFuelDraft(text: string, fallbackName: string): DocumentDraftData {
   const priceMatch = text.match(/(?:price\s*(?:\/|per)?\s*(?:unit|gal|gallon|l|liter|litre)|ppu)\s*[: ]\s*\$?\s*([0-9]+(?:\.[0-9]{2,3})?)/i)
     || text.match(/\$\s*([0-9]+(?:\.[0-9]{2,3})?)\s*\/(?:gal|gallon|l|liter|litre)/i);
   const odometerMatch = text.match(/odo(?:meter)?\s*[:# ]\s*(\d{4,8})/i);
+  const poNumberMatch = text.match(/po\s*number\s*[:# ]\s*(\d{4,8})/i)
+    || text.match(/ponumber\s*[:# ]\s*(\d{4,8})/i)
+    || text.match(/po\s*no\.?\s*[:# ]\s*(\d{4,8})/i);
   const defBlock = cleaned.match(/(?:def|diesel\s*exhaust\s*fluid)[\s\S]{0,180}/i)?.[0] || '';
   const defGallonsMatch = defBlock.match(/\b([0-9]+(?:\.[0-9]+)?)\s*(?:gal|gallons?)\b/i)
     || cleaned.match(/(?:def|diesel\s*exhaust\s*fluid)[^\d]{0,25}(\d+(?:\.\d+)?)\s*(?:gal|gallons?)\b/i)
@@ -590,7 +593,7 @@ function parseFuelDraft(text: string, fallbackName: string): DocumentDraftData {
     def_price_per_unit: defPriceMatch ? Number(defPriceMatch[1]) : null,
     price_per_unit: priceMatch ? Number(priceMatch[1]) : null,
     amount_usd: pickAmount(text),
-    odometer: odometerMatch ? Number(odometerMatch[1]) : null,
+    odometer: odometerMatch ? Number(odometerMatch[1]) : poNumberMatch ? Number(poNumberMatch[1]) : null,
     fuel_type: hasDef && /\bdiesel\b/i.test(cleaned) ? 'both' : hasDef ? 'def' : 'diesel',
     currency: inferCurrency(text, location),
     category: 'fuel',
@@ -1637,6 +1640,8 @@ export async function generateDocumentProcessingPreview(params: {
 }
 
 export async function ensureDocumentProcessingTables() {
+  if (!shouldRunRuntimeSchemaEnsures()) return;
+
   await ensureUserDocumentsTable();
   await ensureTripExpensesReceiptColumns();
 
@@ -1837,6 +1842,13 @@ export async function createDocumentProcessingDraftFromUpload(params: {
     ]
   );
 
+  const draftRow = await db().get(
+    `SELECT id, status, document_type, extracted_data, trip_number
+     FROM document_processing_drafts
+     WHERE user_document_id = $1 AND user_id = $2`,
+    [params.userDocumentId, params.userId]
+  ) as { id: number; status: string; document_type: DocumentDraftType; extracted_data: DocumentDraftData; trip_number: string | null } | undefined;
+
   if (resolvedTripNumber) {
     await db().run(
       `UPDATE user_documents
@@ -1844,6 +1856,24 @@ export async function createDocumentProcessingDraftFromUpload(params: {
        WHERE id = $2`,
       [resolvedTripNumber, params.userDocumentId]
     ).catch(() => {});
+  }
+
+  if (draftRow && draftRow.document_type === 'fuel' && draftRow.status === 'ready') {
+    try {
+      await confirmDocumentProcessingDraft({
+        draftId: draftRow.id,
+        userId: params.userId,
+        tripNumber: draftRow.trip_number || resolvedTripNumber,
+        documentType: 'fuel',
+        extractedData: (draftRow.extracted_data || extractedData) as DocumentDraftData,
+      });
+      status = 'saved';
+      missingFields = [];
+      extractionError = null;
+    } catch (error: any) {
+      extractionError = String(error?.message || extractionError || 'Auto-save failed');
+      status = 'ready';
+    }
   }
 
   return { documentType, status, extractedData, missingFields, extractionError };

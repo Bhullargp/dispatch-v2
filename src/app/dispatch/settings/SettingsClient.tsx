@@ -48,7 +48,7 @@ export default function SettingsPageClient({ userId, role, setupComplete }: { us
             <p className="text-zinc-500 text-[10px] font-bold uppercase tracking-[0.4em] ml-11">Configuration</p>
           </div>
           <div className="flex items-center gap-2">
-            <Link href="/dispatch" className="text-[10px] font-black uppercase tracking-widest bg-zinc-900 hover:bg-zinc-800 px-4 py-3 rounded-xl border border-zinc-800 transition-all shadow-xl text-zinc-400 hover:text-white">
+            <Link href="/dashboard" className="text-[10px] font-black uppercase tracking-widest bg-zinc-900 hover:bg-zinc-800 px-4 py-3 rounded-xl border border-zinc-800 transition-all shadow-xl text-zinc-400 hover:text-white">
               ← Back
             </Link>
             <LogoutButton />
@@ -58,7 +58,7 @@ export default function SettingsPageClient({ userId, role, setupComplete }: { us
 
       <header className="md:hidden p-4 border-b border-zinc-900 flex justify-between items-center bg-black/50 sticky top-0 z-40 backdrop-blur-md">
         <div className="flex items-center gap-4">
-          <Link href="/dispatch" className="bg-zinc-900 p-2 rounded-xl border border-zinc-800">
+          <Link href="/dashboard" className="bg-zinc-900 p-2 rounded-xl border border-zinc-800">
             <span className="text-zinc-400">←</span>
           </Link>
           <h1 className="text-xl font-black uppercase tracking-tighter">⚙️ Settings</h1>

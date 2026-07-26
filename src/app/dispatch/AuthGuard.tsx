@@ -17,17 +17,17 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
           // Redirect to setup wizard if not complete (but not if already on setup/settings page)
           if (!data?.user?.setupComplete) {
             const currentPath = window.location.pathname;
-            if (currentPath !== '/dispatch/setup' && currentPath !== '/dispatch/settings' && currentPath !== '/dispatch/login') {
-              router.replace('/dispatch/setup');
+            if (currentPath !== '/setup' && currentPath !== '/settings' && currentPath !== '/login') {
+              router.replace('/setup');
               return;
             }
           }
           setAuthed(true);
         } else {
-          router.replace('/dispatch/login');
+          router.replace('/login');
         }
       } catch {
-        router.replace('/dispatch/login');
+        router.replace('/login');
       } finally {
         setLoading(false);
       }
@@ -52,7 +52,7 @@ export function LogoutButton() {
     setLoggingOut(true);
     try {
       await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
-      router.replace('/dispatch/login');
+      router.replace('/login');
     } finally {
       setLoggingOut(false);
     }

@@ -2,7 +2,9 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import Link from 'next/link';
+import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
+import { ChevronDown, ExternalLink, FileText } from 'lucide-react';
 import { useIsMobile } from '../hooks/useIsMobile';
 import MobileQuickAddPanel from './MobileQuickAddPanel';
 import FloatingAddButton from './FloatingAddButton';
@@ -27,6 +29,43 @@ function getPeriodColor(payDate: string) {
 }
 
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+type SortKey = 'trip_number' | 'start_date' | 'end_date' | 'route' | 'total_miles' | 'est_pay';
+type SortDirection = 'asc' | 'desc';
+const TRIP_SHEET_SORT_PREF_KEY = 'dispatch.tripSheet.sort';
+const SORT_KEYS: SortKey[] = ['trip_number', 'start_date', 'end_date', 'route', 'total_miles', 'est_pay'];
+const SORT_DIRECTIONS: SortDirection[] = ['asc', 'desc'];
+
+function isSortKey(value: unknown): value is SortKey {
+  return typeof value === 'string' && SORT_KEYS.includes(value as SortKey);
+}
+
+function isSortDirection(value: unknown): value is SortDirection {
+  return typeof value === 'string' && SORT_DIRECTIONS.includes(value as SortDirection);
+}
+type TripPdf = {
+  path: string;
+  filename: string;
+  id: number;
+  description?: string | null;
+  linkedRecordType?: string | null;
+  documentType?: string | null;
+};
+type PdfMenuAnchor = {
+  tripNumber: string;
+  top: number;
+  left: number;
+  maxHeight: number;
+  width: number;
+};
+
+const PDF_CATEGORY_ORDER = ['itinerary', 'fuel', 'toll', 'reimbursement', 'other'] as const;
+const PDF_CATEGORY_META: Record<string, { label: string; shortLabel: string; dot: string }> = {
+  itinerary: { label: 'Itinerary', shortLabel: 'Itin', dot: 'bg-sky-400' },
+  fuel: { label: 'Fuel', shortLabel: 'Fuel', dot: 'bg-emerald-400' },
+  toll: { label: 'Toll', shortLabel: 'Toll', dot: 'bg-amber-400' },
+  reimbursement: { label: 'Reimbursement', shortLabel: 'Reimb', dot: 'bg-violet-400' },
+  other: { label: 'Other PDFs', shortLabel: 'Other', dot: 'bg-zinc-500' },
+};
 
 function formatPeriodLabel(payDate: string) {
   const d = new Date(payDate + 'T12:00:00');
@@ -49,6 +88,26 @@ function generatePayPeriods() {
   }
   const seen = new Set<string>();
   return periods.filter(p => { if (seen.has(p)) return false; seen.add(p); return true; });
+}
+
+function getPdfCategory(pdf: TripPdf) {
+  const typeText = `${pdf.documentType || ''} ${pdf.linkedRecordType || ''}`.toLowerCase();
+  const text = `${typeText} ${pdf.filename || ''} ${pdf.description || ''}`.toLowerCase();
+  if (typeText.includes('itinerary') || typeText.includes('dispatch_itinerary') || typeText.includes('trip') || text.includes('itinerary')) return 'itinerary';
+  if (typeText.includes('fuel') || text.includes('fuel') || text.includes('diesel') || text.includes("love's") || text.includes('petro')) return 'fuel';
+  if (typeText.includes('toll') || text.includes('toll') || text.includes('a30')) return 'toll';
+  if (typeText.includes('reimbursement') || text.includes('reimbursement') || text.includes('lumper') || text.includes('scale')) return 'reimbursement';
+  return 'other';
+}
+
+function groupTripPdfs(pdfs: TripPdf[]) {
+  return PDF_CATEGORY_ORDER
+    .map((category) => ({
+      category,
+      meta: PDF_CATEGORY_META[category],
+      files: pdfs.filter((pdf) => getPdfCategory(pdf) === category),
+    }))
+    .filter((group) => group.files.length > 0);
 }
 
 export default function TripSheet({ initialTrips, isAdmin = false }: { initialTrips: any[]; isAdmin?: boolean }) {
@@ -90,15 +149,56 @@ export default function TripSheet({ initialTrips, isAdmin = false }: { initialTr
   const [uploadJobs, setUploadJobs] = useState<any[]>([]);
   const [uploadFeedback, setUploadFeedback] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [sortKey, setSortKey] = useState<SortKey>('trip_number');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   // Generate pay periods
   const payPeriods = useMemo(() => generatePayPeriods(), []);
 
   // Per-trip PDF dropdown
   const [openPdfDropdownId, setOpenPdfDropdownId] = useState<string | null>(null);
+  const [pdfMenuAnchor, setPdfMenuAnchor] = useState<PdfMenuAnchor | null>(null);
 
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(TRIP_SHEET_SORT_PREF_KEY);
+      if (!saved) return;
+      const parsed = JSON.parse(saved) as { key?: unknown; direction?: unknown };
+      if (isSortKey(parsed.key)) setSortKey(parsed.key);
+      if (isSortDirection(parsed.direction)) setSortDirection(parsed.direction);
+    } catch {
+      // Ignore bad/old localStorage values and fall back to default sorting.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!mounted) return;
+    try {
+      window.localStorage.setItem(
+        TRIP_SHEET_SORT_PREF_KEY,
+        JSON.stringify({ key: sortKey, direction: sortDirection })
+      );
+    } catch {
+      // Sorting still works for this page even if persistence is unavailable.
+    }
+  }, [mounted, sortKey, sortDirection]);
+
+  useEffect(() => {
+    if (!openPdfDropdownId) return;
+    const closePdfMenu = () => {
+      setOpenPdfDropdownId(null);
+      setPdfMenuAnchor(null);
+    };
+    window.addEventListener('resize', closePdfMenu);
+    window.addEventListener('scroll', closePdfMenu, true);
+    return () => {
+      window.removeEventListener('resize', closePdfMenu);
+      window.removeEventListener('scroll', closePdfMenu, true);
+    };
+  }, [openPdfDropdownId]);
 
   useEffect(() => {
     if (!mounted || isLoggedIn !== true) return;
@@ -158,7 +258,7 @@ export default function TripSheet({ initialTrips, isAdmin = false }: { initialTr
   // Auth check - redirect to login if not authenticated
   useEffect(() => {
     if (mounted && isLoggedIn === false) {
-      router.push('/dispatch/login');
+      router.push('/login');
     }
   }, [mounted, isLoggedIn, router]);
 
@@ -177,6 +277,131 @@ export default function TripSheet({ initialTrips, isAdmin = false }: { initialTr
     );
     return result.total;
   };
+
+  const sortedTrips = useMemo(() => {
+    const valueFor = (trip: any) => {
+      if (sortKey === 'est_pay') return calculateTripPay(trip);
+      if (sortKey === 'total_miles') return Number(trip.total_miles || 0);
+      if (sortKey === 'start_date' || sortKey === 'end_date') return trip[sortKey] ? Date.parse(`${trip[sortKey]}T00:00:00`) : 0;
+      if (sortKey === 'route') {
+        const s1 = trip.first_stop?.split(',')[0]?.trim();
+        const s2 = trip.last_stop?.split(',')[0]?.trim();
+        return (s1 && s2 && s1 !== s2 ? `${s1} ${s2}` : s1 || trip.route || '').toLowerCase();
+      }
+      return String(trip.trip_number || '').toLowerCase();
+    };
+
+    return [...trips].sort((a, b) => {
+      const av = valueFor(a);
+      const bv = valueFor(b);
+      if (typeof av === 'number' && typeof bv === 'number') return sortDirection === 'asc' ? av - bv : bv - av;
+      return sortDirection === 'asc'
+        ? String(av).localeCompare(String(bv), undefined, { numeric: true })
+        : String(bv).localeCompare(String(av), undefined, { numeric: true });
+    });
+  }, [trips, sortKey, sortDirection, liveMileRates, livePayRates]);
+
+  const setSort = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortDirection((current) => current === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortKey(key);
+      setSortDirection(key === 'trip_number' || key === 'start_date' || key === 'end_date' ? 'desc' : 'asc');
+    }
+  };
+
+  const sortLabel = (key: SortKey) => sortKey === key ? (sortDirection === 'asc' ? '▲' : '▼') : '↕';
+
+  const closePdfMenu = () => {
+    setOpenPdfDropdownId(null);
+    setPdfMenuAnchor(null);
+  };
+
+  const getTripPdfs = (trip: any): TripPdf[] => {
+    let pdfs: TripPdf[] = [];
+    try { pdfs = trip.trip_pdfs_json ? JSON.parse(trip.trip_pdfs_json) : []; } catch {}
+    if (pdfs.length === 0 && trip.pdf_path) {
+      pdfs = [{ path: trip.pdf_path, filename: 'Itinerary PDF', id: 0 }];
+    }
+    return pdfs;
+  };
+
+  const openPdfMenu = (tripNumber: string, button: HTMLButtonElement) => {
+    const rect = button.getBoundingClientRect();
+    const gap = 10;
+    const viewportPadding = 16;
+    const width = Math.min(460, window.innerWidth - viewportPadding * 2);
+    const preferredLeft = rect.right - width;
+    const left = Math.min(Math.max(viewportPadding, preferredLeft), window.innerWidth - width - viewportPadding);
+    const menuMaxHeight = Math.min(460, window.innerHeight - viewportPadding * 2);
+    const opensBelow = rect.bottom + gap + Math.min(menuMaxHeight, 360) <= window.innerHeight - viewportPadding;
+    const top = opensBelow
+      ? rect.bottom + gap
+      : Math.max(viewportPadding, rect.top - gap - menuMaxHeight);
+
+    setOpenPdfDropdownId(tripNumber);
+    setPdfMenuAnchor({
+      tripNumber,
+      top,
+      left,
+      width,
+      maxHeight: Math.max(220, Math.min(menuMaxHeight, window.innerHeight - top - viewportPadding)),
+    });
+  };
+
+  const renderPdfDropdownContent = (pdfs: TripPdf[]) => {
+    const groupedPdfs = groupTripPdfs(pdfs);
+    return (
+      <>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-800/90">
+          <span className="text-[11px] font-black uppercase tracking-[0.22em] text-zinc-400">Attached PDFs</span>
+          <span className="text-[11px] font-black text-emerald-300">{pdfs.length} file{pdfs.length === 1 ? '' : 's'}</span>
+        </div>
+        <div className="overflow-y-auto py-2 bg-[#02040b]" style={{ maxHeight: pdfMenuAnchor?.maxHeight ? pdfMenuAnchor.maxHeight - 58 : 360 }}>
+          {groupedPdfs.map((group) => (
+            <div key={group.category} className="py-2">
+              <div className="flex items-center justify-between px-5 py-2">
+                <div className="flex items-center gap-3 min-w-0">
+                  <span className={`h-2.5 w-2.5 rounded-full ${group.meta.dot} shrink-0`} />
+                  <span className="text-[11px] font-black uppercase tracking-[0.18em] text-zinc-400 truncate">{group.meta.label}</span>
+                </div>
+                <span className="text-[11px] font-bold text-zinc-600">{group.files.length}</span>
+              </div>
+              <div className="space-y-1 px-2">
+                {group.files.map((pdf, i) => (
+                  <a key={pdf.id || `${group.category}-${i}`} href={pdf.path} target="_blank" rel="noopener noreferrer"
+                    onClick={() => closePdfMenu()}
+                    className="flex items-center gap-3 rounded-xl px-3 py-2.5 hover:bg-zinc-900 transition-colors group/pdf">
+                    <FileText className="h-4 w-4 text-zinc-500 group-hover/pdf:text-emerald-400 shrink-0" aria-hidden="true" />
+                    <div className="min-w-0 flex-1 text-left">
+                      <div className="text-sm font-bold text-zinc-100 group-hover/pdf:text-white truncate">{pdf.filename || `${group.meta.label} PDF ${i + 1}`}</div>
+                      {pdf.description && (
+                        <div className="text-[11px] text-zinc-600 truncate mt-0.5">{pdf.description}</div>
+                      )}
+                    </div>
+                    <ExternalLink className="h-4 w-4 text-zinc-600 group-hover/pdf:text-emerald-400 shrink-0" aria-hidden="true" />
+                  </a>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </>
+    );
+  };
+
+  const sortableHeader = (key: SortKey, label: string, className = '') => (
+    <th className={`px-8 py-6 border-b border-zinc-900 ${className}`}>
+      <button
+        type="button"
+        onClick={() => setSort(key)}
+        className={`inline-flex items-center gap-2 uppercase tracking-[0.2em] hover:text-emerald-400 transition-colors ${className.includes('text-right') ? 'justify-end w-full' : ''}`}
+      >
+        <span>{label}</span>
+        <span className={`text-[9px] ${sortKey === key ? 'text-emerald-400' : 'text-zinc-700'}`}>{sortLabel(key)}</span>
+      </button>
+    </th>
+  );
 
   const formatDate = (dateStr: string | null) => {
     if (!dateStr) return null;
@@ -301,22 +526,22 @@ export default function TripSheet({ initialTrips, isAdmin = false }: { initialTr
 
         <div className="bg-zinc-900/20 border border-zinc-900 rounded-3xl overflow-hidden backdrop-blur-sm shadow-2xl">
           <table className="w-full text-left border-separate border-spacing-0">
-            <thead>
-              <tr className="bg-zinc-900/40 text-[10px] font-black uppercase text-zinc-500 tracking-[0.2em]">
-                <th className="px-8 py-6 border-b border-zinc-900">Trip Number</th>
-                <th className="px-8 py-6 border-b border-zinc-900">Start Date</th>
-                <th className="px-8 py-6 border-b border-zinc-900">End Date</th>
-                <th className="px-8 py-6 border-b border-zinc-900">Route</th>
-                <th className="px-8 py-6 border-b border-zinc-900 text-right">Miles</th>
-                <th className="px-8 py-6 border-b border-zinc-900 text-right text-emerald-400/80">Est. Pay</th>
-                <th className="px-8 py-6 border-b border-zinc-900 text-center"></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-zinc-900">
-              {trips.map((trip: any) => {
+	            <thead>
+	              <tr className="bg-zinc-900/40 text-[10px] font-black uppercase text-zinc-500 tracking-[0.2em]">
+	                {sortableHeader('trip_number', 'Trip Number')}
+	                {sortableHeader('start_date', 'Start Date')}
+	                {sortableHeader('end_date', 'End Date')}
+	                {sortableHeader('route', 'Route')}
+	                {sortableHeader('total_miles', 'Miles', 'text-right')}
+	                {sortableHeader('est_pay', 'Est. Pay', 'text-right text-emerald-400/80')}
+	                <th className="px-8 py-6 border-b border-zinc-900 text-center"></th>
+	              </tr>
+	            </thead>
+	            <tbody className="divide-y divide-zinc-900">
+	              {sortedTrips.map((trip: any) => {
                 const start = formatDate(trip.start_date);
                 const end = formatDate(trip.end_date);
-                const tripUrl = `/dispatch/${trip.trip_number}?from=tripsheet`;
+                const tripUrl = `/${trip.trip_number}?from=tripsheet`;
                 const s1 = trip.first_stop?.split(',')[0]?.trim();
                 const s2 = trip.last_stop?.split(',')[0]?.trim();
                 const routeHint = (() => {
@@ -401,11 +626,7 @@ export default function TripSheet({ initialTrips, isAdmin = false }: { initialTr
                           ))}
                         </select>
                         {(() => {
-                          let pdfs: Array<{path: string; filename: string; id: number}> = [];
-                          try { pdfs = trip.trip_pdfs_json ? JSON.parse(trip.trip_pdfs_json) : []; } catch {}
-                          if (pdfs.length === 0 && trip.pdf_path) {
-                            pdfs = [{ path: trip.pdf_path, filename: 'Itinerary PDF', id: 0 }];
-                          }
+                          const pdfs = getTripPdfs(trip);
                           if (pdfs.length === 0) {
                             return (
                               <button disabled className="text-[10px] font-black uppercase px-4 py-2 rounded-xl border bg-zinc-900/50 border-zinc-800/50 text-zinc-700 cursor-not-allowed">
@@ -413,35 +634,34 @@ export default function TripSheet({ initialTrips, isAdmin = false }: { initialTr
                               </button>
                             );
                           }
-                          if (pdfs.length === 1) {
-                            return (
-                              <a href={pdfs[0].path} target="_blank" rel="noopener noreferrer"
-                                className="text-[10px] font-black uppercase px-4 py-2 rounded-xl border bg-zinc-800 hover:bg-emerald-600 border-zinc-700 hover:border-emerald-500 transition-all">
-                                📄 PDF
-                              </a>
-                            );
-                          }
                           const isOpen = openPdfDropdownId === trip.trip_number;
                           return (
                             <div className="relative">
                               <button
-                                onClick={(e) => { e.preventDefault(); e.stopPropagation(); setOpenPdfDropdownId(isOpen ? null : trip.trip_number); }}
-                                className="text-[10px] font-black uppercase px-4 py-2 rounded-xl border bg-zinc-800 hover:bg-emerald-600 border-zinc-700 hover:border-emerald-500 transition-all flex items-center gap-1.5"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  if (isOpen) {
+                                    closePdfMenu();
+                                    return;
+                                  }
+                                  openPdfMenu(trip.trip_number, e.currentTarget);
+                                }}
+                                className={`h-9 min-w-[84px] justify-center text-[10px] font-black uppercase px-3 rounded-xl border transition-all inline-flex items-center gap-2 ${
+                                  isOpen
+                                    ? 'bg-emerald-500/15 border-emerald-500/70 text-emerald-200 shadow-[0_0_18px_rgba(16,185,129,0.12)]'
+                                    : 'bg-zinc-900/80 hover:bg-zinc-800 border-zinc-700 hover:border-emerald-500/70 text-zinc-200'
+                                }`}
+                                aria-expanded={isOpen}
+                                aria-label={`${pdfs.length} PDF attachments`}
                               >
-                                📄 <span className="text-emerald-400">{pdfs.length}</span>
+                                <FileText className="h-3.5 w-3.5 text-emerald-400" aria-hidden="true" />
+                                <span>PDFs</span>
+                                <span className="rounded-full bg-emerald-400/15 px-1.5 py-0.5 text-[9px] leading-none text-emerald-300 border border-emerald-400/25">
+                                  {pdfs.length}
+                                </span>
+                                <ChevronDown className={`h-3 w-3 text-zinc-500 transition-transform ${isOpen ? 'rotate-180 text-emerald-300' : ''}`} aria-hidden="true" />
                               </button>
-                              {isOpen && (
-                                <div className="absolute right-0 top-full mt-1 w-64 bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl z-50 py-1 overflow-hidden">
-                                  {pdfs.map((pdf, i) => (
-                                    <a key={pdf.id || i} href={pdf.path} target="_blank" rel="noopener noreferrer"
-                                      className="flex items-center gap-2 px-3 py-2.5 hover:bg-zinc-800 transition-colors group/pdf border-b border-zinc-800 last:border-0">
-                                      <span className="text-zinc-500 text-xs shrink-0">📄</span>
-                                      <span className="text-xs text-zinc-300 group-hover/pdf:text-emerald-400 truncate flex-1">{pdf.filename || `PDF ${i + 1}`}</span>
-                                      <span className="text-zinc-600 group-hover/pdf:text-emerald-500 shrink-0">↗</span>
-                                    </a>
-                                  ))}
-                                </div>
-                              )}
                             </div>
                           );
                         })()}
@@ -455,9 +675,37 @@ export default function TripSheet({ initialTrips, isAdmin = false }: { initialTr
                   </tr>
                 );
               })}
-            </tbody>
-          </table>
+	            </tbody>
+	          </table>
         </div>
+        {mounted && openPdfDropdownId && pdfMenuAnchor && (() => {
+          const activeTrip = sortedTrips.find((trip: any) => trip.trip_number === openPdfDropdownId);
+          if (!activeTrip) return null;
+          const pdfs = getTripPdfs(activeTrip);
+          if (pdfs.length === 0) return null;
+          return createPortal(
+            <>
+              <button
+                type="button"
+                aria-label="Close PDF attachments"
+                className="fixed inset-0 z-[9998] cursor-default bg-black/80 backdrop-blur-[2px]"
+                onClick={closePdfMenu}
+              />
+              <div
+                className="fixed z-[9999] overflow-hidden rounded-2xl border border-zinc-600 bg-[#02040b] shadow-[0_36px_120px_rgba(0,0,0,1)] ring-1 ring-white/10"
+                style={{
+                  top: pdfMenuAnchor.top,
+                  left: pdfMenuAnchor.left,
+                  width: pdfMenuAnchor.width,
+                  maxHeight: pdfMenuAnchor.maxHeight,
+                }}
+              >
+                {renderPdfDropdownContent(pdfs)}
+              </div>
+            </>,
+            document.body
+          );
+        })()}
       </main>
       <footer className="mt-20 py-10 text-center"><p className="text-[8px] font-black uppercase text-zinc-800 tracking-[1em]">Secure End-to-End Environment</p></footer>
       

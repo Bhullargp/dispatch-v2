@@ -1,14 +1,50 @@
-import { Pool } from 'pg';
+import { Pool, type PoolConfig } from 'pg';
 
-const pool = new Pool({
-  host: '127.0.0.1',
-  port: 5432,
-  user: 'dispatch_user',
-  password: 'karandeep@',
-  database: 'masterdb',
-  options: '-c search_path=dispatch',
-  max: 10,
-});
+export type DbConfig = PoolConfig & {
+  schema: string;
+  options: string;
+};
+
+function parseIntWithDefault(value: string | undefined, fallback: number) {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+export function getDbConfig(): DbConfig {
+  const schema = process.env.DB_SCHEMA || 'dispatch';
+  const databaseUrl = process.env.DATABASE_URL;
+  const max = parseIntWithDefault(process.env.DB_POOL_MAX, databaseUrl ? 5 : 10);
+  const options = `-c search_path=${schema}`;
+
+  if (databaseUrl) {
+    const sslMode = (process.env.DB_SSL || 'require').toLowerCase();
+    return {
+      connectionString: databaseUrl,
+      schema,
+      max,
+      options,
+      ...(sslMode === 'disable' ? {} : { ssl: { rejectUnauthorized: sslMode === 'verify-full' } }),
+    };
+  }
+
+  return {
+    host: process.env.DB_HOST || '127.0.0.1',
+    port: parseIntWithDefault(process.env.DB_PORT, 5432),
+    user: process.env.DB_USER || 'dispatch_user',
+    password: process.env.DB_PASSWORD || 'karandeep@',
+    database: process.env.DB_NAME || 'masterdb',
+    schema,
+    max,
+    options,
+  };
+}
+
+export function shouldRunRuntimeSchemaEnsures() {
+  if (process.env.ALLOW_RUNTIME_SCHEMA_ENSURES === 'true') return true;
+  return !process.env.DATABASE_URL;
+}
+
+const pool = new Pool(getDbConfig());
 
 export default pool;
 

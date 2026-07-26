@@ -68,6 +68,7 @@ test('parseDriverItinerary extracts lead driver and equipment from DM itinerary 
   assert.equal(parsed.truckNumber, '598');
   assert.equal(parsed.trailerNumber, '1020R');
   assert.equal(parsed.totalMiles, 562);
+  assert.equal(parsed.stops.at(-1)?.stop_type, 'DELIVER');
 });
 
 test('parseDriverItinerary does not mistake dispatcher name for the driver', () => {

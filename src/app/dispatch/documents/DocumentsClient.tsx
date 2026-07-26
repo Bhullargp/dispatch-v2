@@ -160,7 +160,7 @@ export default function DocumentsClient({
                       </span>
                       {document.trip_number && (
                         <Link
-                          href={`/dispatch/${document.trip_number}`}
+                          href={`/${document.trip_number}`}
                           className="inline-flex rounded-full border border-sky-500/20 bg-sky-500/10 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-sky-300"
                         >
                           Trip {document.trip_number}

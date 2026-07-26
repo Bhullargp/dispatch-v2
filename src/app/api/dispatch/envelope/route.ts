@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { db } from '@/lib/db';
+import { db, shouldRunRuntimeSchemaEnsures } from '@/lib/db';
 import { ensureDispatchAuthSchemaAndSeed } from '@/lib/dispatch-auth';
 import { getServerAccess } from '@/lib/ownership';
 import { renderToBuffer, Document, Page, Text, View, StyleSheet, Font } from '@react-pdf/renderer';
@@ -62,6 +62,39 @@ function fmtNum(n: any, dec = 0) {
   return isNaN(v) ? '' : v.toFixed(dec);
 }
 
+function minutesFromTime(value: string | null | undefined) {
+  const match = String(value || '').match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes) || hours > 23 || minutes > 59) return null;
+  return hours * 60 + minutes;
+}
+
+function hoursBetweenTimes(start: string | null | undefined, end: string | null | undefined) {
+  const startMinutes = minutesFromTime(start);
+  const endMinutes = minutesFromTime(end);
+  if (startMinutes == null || endMinutes == null) return null;
+  let diff = endMinutes - startMinutes;
+  if (diff < 0) diff += 24 * 60;
+  return Math.round((diff / 60) * 100) / 100;
+}
+
+function fmtHours(value: any) {
+  const hours = Number(value);
+  if (!Number.isFinite(hours) || hours <= 0) return '';
+  const whole = Math.floor(hours);
+  const minutes = Math.round((hours - whole) * 60);
+  return minutes > 0 ? `${whole} Hr ${minutes} Min` : `${whole} Hr`;
+}
+
+function cityTimeRangeFromNotes(notes: string | null | undefined) {
+  const match = String(notes || '').match(/CITY_HOURS\s+(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/i);
+  if (!match) return null;
+  const hours = hoursBetweenTimes(match[1], match[2]);
+  return hours && hours > 0 ? { start: match[1], end: match[2], hours } : null;
+}
+
 // Parse city + province/state from a full location string
 function cityProvince(loc: string) {
   if (!loc) return '';
@@ -84,9 +117,12 @@ function buildTrailerMap(trip: any, stops: any[]): Map<string, string> {
   for (let i = 0; i < stops.length; i++) {
     const s = stops[i];
     const stype = String(s?.stop_type || '').toUpperCase();
-    const desc = String(s?.description || '');
+    const explicitTrailer = String(s?.trailer_number || s?.trailer || '').trim().toUpperCase();
+    const desc = String(s?.description || s?.notes || '');
     const m = desc.match(/trailer\s+([A-Z0-9]+)/i);
-    if (m) {
+    if (explicitTrailer) {
+      current = explicitTrailer;
+    } else if (m) {
       current = m[1].toUpperCase();
     } else if (!current && stype === 'HOOK' && defaultTrailer) {
       current = defaultTrailer;
@@ -113,8 +149,9 @@ function tripMarkerForExtraType(type: string | null | undefined) {
 }
 
 // ─── PDF Document ─────────────────────────────────────────────────────────────
-function TripEnvelope({ trip, stops, fuel, extraPay, expenses, driverName }: {
+function TripEnvelope({ trip, stops, fuel, extraPay, expenses, driverName, cityWorkTime }: {
   trip: any; stops: any[]; fuel: any[]; extraPay: any[]; expenses: any[]; driverName: string;
+  cityWorkTime?: { start: string; end: string; hours: number } | null;
 }) {
   const odometerEnd = trip.end_odometer || trip.odometer_end || '';
   const odometerStart = trip.start_odometer || trip.odometer_start || '';
@@ -150,6 +187,11 @@ function TripEnvelope({ trip, stops, fuel, extraPay, expenses, driverName }: {
 
     if (type === 'Waiting Time') {
       extraRows.push({ desc: `Waiting Time — ${qty} Hr${qty !== 1 ? 's' : ''}`, amt });
+    } else if (type === 'City Work') {
+      const timeRange = cityTimeRangeFromNotes(e.notes) || (cityWorkTime?.hours ? cityWorkTime : null);
+      const hours = timeRange?.hours || e.duration_hours || e.quantity || qty;
+      const timeText = timeRange ? `${timeRange.start} to ${timeRange.end} — ` : '';
+      extraRows.push({ desc: `City Work — ${timeText}${fmtHours(hours)}`, amt });
     } else if (type === 'Tolls') {
       extraRows.push({ desc: `Toll`, amt, isToll: true });
     } else if (type === 'Layover') {
@@ -413,6 +455,12 @@ export async function GET(request: Request) {
     await ensureDispatchAuthSchemaAndSeed();
     const { searchParams } = new URL(request.url);
     const trip_number = searchParams.get('trip');
+    const cityStart = searchParams.get('city_start');
+    const cityEnd = searchParams.get('city_end');
+    const cityHours = hoursBetweenTimes(cityStart, cityEnd);
+    const cityWorkTime = cityStart && cityEnd && cityHours && cityHours > 0
+      ? { start: cityStart, end: cityEnd, hours: cityHours }
+      : null;
     if (!trip_number) return NextResponse.json({ error: 'Missing trip' }, { status: 400 });
 
     const access = await getServerAccess();
@@ -426,9 +474,10 @@ export async function GET(request: Request) {
     ) as any;
     if (!trip) return NextResponse.json({ error: 'Trip not found' }, { status: 404 });
 
-    // Ensure profile columns exist on users
-    for (const col of ['display_name TEXT', 'phone TEXT', 'truck_number TEXT', 'trailer_number TEXT', 'avatar_url TEXT', 'avatar_preset TEXT']) {
-      await db().run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ${col}`).catch(() => {});
+    if (shouldRunRuntimeSchemaEnsures()) {
+      for (const col of ['display_name TEXT', 'phone TEXT', 'truck_number TEXT', 'trailer_number TEXT', 'avatar_url TEXT', 'avatar_preset TEXT']) {
+        await db().run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ${col}`).catch(() => {});
+      }
     }
 
     // Use display_name from user profile if set, otherwise fall back to trip's extracted driver_name
@@ -463,7 +512,7 @@ export async function GET(request: Request) {
       access.adminMode ? [trip_number] : [trip_number, access.session.userId]
     ) as any[];
 
-    const element = React.createElement(TripEnvelope, { trip, stops, fuel, extraPay, expenses, driverName });
+    const element = React.createElement(TripEnvelope, { trip, stops, fuel, extraPay, expenses, driverName, cityWorkTime });
     const buffer = await renderToBuffer(element as any);
     const uint8 = new Uint8Array(buffer);
 

@@ -317,7 +317,7 @@ export function parseDriverItinerary(text: string): ParsedTrip {
     const miles = Number((block.match(/([\d,]+(?:\.\d+)?)\s+miles\s+from\s+last\s+stop/i)?.[1] || '0').replace(/,/g, ''));
 
     const stopType =
-      type === 'DELIVERY' ? 'DELIVER' :
+      type === 'DELIVER' || type === 'DELIVERY' ? 'DELIVER' :
       type === 'PICKUP' ? 'PICKUP' :
       type === 'HOOK' ? 'HOOK' :
       type === 'DROP' ? 'DROP' :

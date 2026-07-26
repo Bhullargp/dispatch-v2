@@ -200,7 +200,7 @@ function getPreferredPreviewUrl(draft: UploadDraft) {
 
 function getAdminTraceHref(traceId?: string | null) {
   if (!traceId) return null;
-  return `/dispatch/admin?trace=${encodeURIComponent(traceId)}`;
+  return `/admin?trace=${encodeURIComponent(traceId)}`;
 }
 
 function getReviewFields(type: DraftType): FieldConfig[] {
@@ -788,7 +788,7 @@ export default function PdfUploader({
             <span>{message}</span>
             {tripNumber && (
               <Link
-                href={`/dispatch/${tripNumber}`}
+                href={`/${tripNumber}`}
                 className="text-emerald-400 hover:text-emerald-300 font-black uppercase text-[10px] tracking-wider flex-shrink-0"
               >
                 Open Trip →

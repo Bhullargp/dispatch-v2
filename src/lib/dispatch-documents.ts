@@ -1,5 +1,5 @@
 import path from 'path';
-import { db } from '@/lib/db';
+import { db, shouldRunRuntimeSchemaEnsures } from '@/lib/db';
 import { getDocumentUploadMimeType } from '@/lib/upload-file-types';
 
 export type TripDocument = {
@@ -135,6 +135,8 @@ export function getDocumentSourceFileType(sourcePath: string) {
 }
 
 export async function ensureUserDocumentsTable() {
+  if (!shouldRunRuntimeSchemaEnsures()) return;
+
   await db().run(`
     CREATE TABLE IF NOT EXISTS user_documents (
       id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
@@ -196,8 +198,8 @@ export async function getTripDocuments(userId: string | number, tripNumber: stri
   return documents.map(mapTripDocumentRow);
 }
 
-export async function getTripDocumentsForTrips(userId: string | number, tripNumbers: string[]): Promise<TripDocument[]> {
-  await ensureUserDocumentsTable();
+export async function getTripDocumentsForTrips(userId: string | number, tripNumbers: string[], options: { ensureTable?: boolean } = {}): Promise<TripDocument[]> {
+  if (options.ensureTable !== false) await ensureUserDocumentsTable();
   if (!tripNumbers.length) return [];
 
   const documents = await db().query(

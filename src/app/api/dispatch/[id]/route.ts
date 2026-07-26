@@ -1,7 +1,13 @@
 import { NextResponse } from 'next/server';
-import { db } from '@/lib/db';
+import { db, shouldRunRuntimeSchemaEnsures } from '@/lib/db';
 import { ensureDispatchAuthSchemaAndSeed } from '@/lib/dispatch-auth';
 import { ensureTripOwnership, requireAccess } from '@/lib/ownership';
+
+async function ensureTripRateColumns() {
+  if (!shouldRunRuntimeSchemaEnsures()) return;
+
+  try { await db().run('ALTER TABLE trips ADD COLUMN IF NOT EXISTS manual_hours REAL'); } catch {}
+}
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -13,6 +19,10 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     const body = await request.json();
 
     if (!(await ensureTripOwnership(access, id))) return NextResponse.json({ error: 'Trip not found' }, { status: 404 });
+
+    if ('manual_hours' in body || body.rate_type === 'hourly') {
+      await ensureTripRateColumns();
+    }
 
     if (!body.start_odometer || body.start_odometer === 0) {
       const currentTrip = await db().get('SELECT trip_number FROM trips WHERE trip_number = $1', [id]) as { trip_number: string } | undefined;

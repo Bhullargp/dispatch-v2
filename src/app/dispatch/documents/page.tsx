@@ -13,13 +13,13 @@ export default async function DocumentsPage({ searchParams }: { searchParams?: P
   await ensureDispatchAuthSchemaAndSeed();
   const sp = searchParams ? await searchParams : undefined;
   const access = await getServerAccess(sp?.adminMode);
-  if (!access) redirect('/dispatch/login');
-  if (access.mustChangePassword) redirect('/dispatch/login?forcePasswordChange=1');
+  if (!access) redirect('/login');
+  if (access.mustChangePassword) redirect('/login?forcePasswordChange=1');
 
   const database = db();
   const user = await database.get('SELECT setup_complete FROM users WHERE id = $1', [access.session.userId]) as any;
   if (!user?.setup_complete) {
-    redirect('/dispatch/setup');
+    redirect('/setup');
   }
 
   await ensureUserDocumentsTable();

@@ -11,8 +11,8 @@ export default async function TripDetailPage({ params, searchParams }: { params:
   await ensureDispatchAuthSchemaAndSeed();
   const sp = searchParams ? await searchParams : undefined;
   const access = await getServerAccess(sp?.adminMode);
-  if (!access) redirect('/dispatch/login');
-  if (access.mustChangePassword) redirect('/dispatch/login?forcePasswordChange=1');
+  if (!access) redirect('/login');
+  if (access.mustChangePassword) redirect('/login?forcePasswordChange=1');
 
   const { trip_number } = await params;
 
@@ -28,6 +28,20 @@ export default async function TripDetailPage({ params, searchParams }: { params:
     `SELECT * FROM extra_pay WHERE trip_number = $1 AND (${access.adminMode ? '1=1' : 'user_id = $2'})`,
     access.adminMode ? [trip_number] : [trip_number, access.session.userId]
   );
+  const previousTrip = await db().get(
+    `SELECT trip_number FROM trips
+     WHERE trip_number < $1 AND (${access.adminMode ? '1=1' : 'user_id = $2'})
+     ORDER BY trip_number DESC
+     LIMIT 1`,
+    access.adminMode ? [trip_number] : [trip_number, access.session.userId]
+  ) as { trip_number: string } | undefined;
+  const nextTrip = await db().get(
+    `SELECT trip_number FROM trips
+     WHERE trip_number > $1 AND (${access.adminMode ? '1=1' : 'user_id = $2'})
+     ORDER BY trip_number ASC
+     LIMIT 1`,
+    access.adminMode ? [trip_number] : [trip_number, access.session.userId]
+  ) as { trip_number: string } | undefined;
   const inventory = await db().query(
     `SELECT * FROM trailer_inventory WHERE ${access.adminMode ? '1=1' : 'user_id = $1'} ORDER BY last_seen DESC`,
     access.adminMode ? [] : [access.session.userId]
@@ -41,5 +55,14 @@ export default async function TripDetailPage({ params, searchParams }: { params:
     );
   }
 
-  return <TripDetailsClient trip={trip} stops={stops} extraPay={extraPay} inventory={inventory} />;
+  return (
+    <TripDetailsClient
+      trip={trip}
+      stops={stops}
+      extraPay={extraPay}
+      inventory={inventory}
+      previousTripNumber={previousTrip?.trip_number || null}
+      nextTripNumber={nextTrip?.trip_number || null}
+    />
+  );
 }

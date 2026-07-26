@@ -1,0 +1,16 @@
+.env
+.env.*
+.codex-secrets
+.next
+node_modules
+backups
+logs
+receipts
+dev*.log
+server*.log
+build_errors.log
+tsconfig.tsbuildinfo
+*.db
+*.db-*
+*.dump
+*.sql

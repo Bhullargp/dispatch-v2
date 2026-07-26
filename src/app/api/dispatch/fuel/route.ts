@@ -21,7 +21,13 @@ export async function POST(request: Request) {
       gallons, liters, price_per_unit, amount_usd, unit,
       odometer, prev_odometer, fuel_type,
       def_liters, def_cost, def_price_per_unit, currency,
+      quantity,
     } = body;
+
+    const resolvedUnit = unit || (liters ? 'Litres' : 'Gallons');
+    const unitLooksLitres = /^(l|litres?|liters?)$/i.test(String(resolvedUnit).trim());
+    const resolvedGallons = gallons ?? (!unitLooksLitres ? quantity : undefined);
+    const resolvedLiters = liters ?? (unitLooksLitres ? quantity : undefined);
 
     let target_trip = trip_number;
 
@@ -31,7 +37,7 @@ export async function POST(request: Request) {
     }
 
     const scopedUserId = access.adminMode ? null : access.session.userId;
-    const gallonsNumber = gallons === undefined || gallons === null || gallons === '' ? null : Number(gallons);
+    const gallonsNumber = resolvedGallons === undefined || resolvedGallons === null || resolvedGallons === '' ? null : Number(resolvedGallons);
     const amountUsdNumber = amount_usd === undefined || amount_usd === null || amount_usd === '' ? null : Number(amount_usd);
     const odometerNumber = odometer === undefined || odometer === null || odometer === '' ? null : Number(odometer);
     const locationValue = location || null;
@@ -104,7 +110,7 @@ export async function POST(request: Request) {
       RETURNING id`,
       [
         target_trip, date, location, province || null, country || null,
-        gallons || null, liters || null, price_per_unit || null, amount_usd || null, unit || 'Gallons',
+        resolvedGallons || null, resolvedLiters || null, price_per_unit || null, amount_usd || null, resolvedUnit,
         odometer || null, prev_odometer || null, fuel_type || 'diesel',
         def_liters || null, def_cost || null, def_price_per_unit || null,
         currency || 'USD',
@@ -155,7 +161,7 @@ export async function GET(request: Request) {
         .map((entry: any) => entry.trip_number)
         .filter((value: string | null) => !!value && value !== 'UNLINKED') as string[]
     ));
-    const documents = dedupeTripDocuments(await getTripDocumentsForTrips(access.session.userId, tripNumbers));
+    const documents = dedupeTripDocuments(await getTripDocumentsForTrips(access.session.userId, tripNumbers, { ensureTable: false }));
 
     // Attach the matching receipt URL for each fuel entry.
     // IMPORTANT APP RULE: this must stay per-entry, not per-trip. Date alone is not sufficient
@@ -191,8 +197,15 @@ export async function PATCH(request: Request) {
       gallons, liters, price_per_unit, amount_usd, unit,
       odometer, prev_odometer, fuel_type,
       def_liters, def_cost, def_price_per_unit, currency,
+      quantity,
     } = body;
     if (!id) return NextResponse.json({ error: 'Missing fuel record id' }, { status: 400 });
+
+    const resolvedUnit = unit || (liters ? 'Litres' : 'Gallons');
+    const unitLooksLitres = /^(l|litres?|liters?)$/i.test(String(resolvedUnit).trim());
+    const resolvedGallons = gallons ?? (!unitLooksLitres ? quantity : undefined);
+    const resolvedLiters = liters ?? (unitLooksLitres ? quantity : undefined);
+    const resolvedUnitForUpdate = (unit !== undefined || quantity !== undefined || gallons !== undefined || liters !== undefined) ? resolvedUnit : undefined;
 
     const isAdmin = access.adminMode;
     const existing = await db().get(
@@ -213,9 +226,9 @@ export async function PATCH(request: Request) {
 
     const fields: [string, any][] = [
       ['trip_number', trip_number], ['date', date], ['location', location],
-      ['province', province], ['country', country], ['gallons', gallons],
-      ['liters', liters], ['price_per_unit', price_per_unit], ['amount_usd', amount_usd],
-      ['unit', unit], ['odometer', odometer], ['prev_odometer', prev_odometer],
+      ['province', province], ['country', country], ['gallons', resolvedGallons],
+      ['liters', resolvedLiters], ['price_per_unit', price_per_unit], ['amount_usd', amount_usd],
+      ['unit', resolvedUnitForUpdate], ['odometer', odometer], ['prev_odometer', prev_odometer],
       ['fuel_type', fuel_type], ['def_liters', def_liters], ['def_cost', def_cost],
       ['def_price_per_unit', def_price_per_unit], ['currency', currency],
     ];

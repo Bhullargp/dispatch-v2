@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { ensureDispatchAuthSchemaAndSeed } from '@/lib/dispatch-auth';
 import { requireAccess } from '@/lib/ownership';
-import { buildDocumentDownloadUrl, buildSourcePathUrl, ensureUserDocumentsTable } from '@/lib/dispatch-documents';
+import { buildDocumentDownloadUrl, buildSourcePathUrl } from '@/lib/dispatch-documents';
 import { ensureTripExpensesReceiptColumns } from '@/lib/trip-expenses';
 
 export async function GET(request: Request) {
@@ -11,7 +11,6 @@ export async function GET(request: Request) {
     const { access, response } = requireAccess(request);
     if (response || !access) return response;
     await ensureTripExpensesReceiptColumns();
-    await ensureUserDocumentsTable();
 
     const url = new URL(request.url);
     const tripNumber = url.searchParams.get('trip_number');

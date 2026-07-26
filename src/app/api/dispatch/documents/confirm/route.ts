@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { ensureDispatchAuthSchemaAndSeed } from '@/lib/dispatch-auth';
+import { ensureUserDocumentsTable } from '@/lib/dispatch-documents';
 import { requireAccess } from '@/lib/ownership';
 import { isR2Configured } from '@/lib/r2-storage';
 
@@ -37,25 +38,10 @@ export async function POST(req: Request) {
     }
 
     const database = db();
-
-    // Ensure documents table exists
-    await database.run(`
-      CREATE TABLE IF NOT EXISTS user_documents (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id TEXT NOT NULL,
-        file_key TEXT NOT NULL,
-        original_filename TEXT NOT NULL,
-        file_type TEXT NOT NULL,
-        file_size INTEGER NOT NULL,
-        description TEXT,
-        trip_number TEXT,
-        uploaded_at TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS')),
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-      )
-    `);
+    await ensureUserDocumentsTable();
 
     await database.run(`
-      INSERT INTO user_documents (user_id, file_key, original_filename, file_type, file_size, description, trip_number)
+      INSERT INTO user_documents (user_id, s3_key, filename, file_type, file_size, description, trip_number)
       VALUES ($1, $2, $3, $4, $5, $6, $7)
     `, [access.session.userId, key, originalFilename, fileType, fileSize, description, tripNumber]);
 

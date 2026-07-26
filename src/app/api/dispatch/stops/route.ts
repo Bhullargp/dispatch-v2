@@ -1,7 +1,13 @@
 import { NextResponse } from 'next/server';
-import { db } from '@/lib/db';
+import { db, shouldRunRuntimeSchemaEnsures } from '@/lib/db';
 import { requireAccess } from '@/lib/ownership';
 import { ensureDispatchAuthSchemaAndSeed } from '@/lib/dispatch-auth';
+
+async function ensureStopsTrailerColumn() {
+  try {
+    await db().run('ALTER TABLE stops ADD COLUMN IF NOT EXISTS trailer_number TEXT');
+  } catch {}
+}
 
 export async function POST(request: Request) {
   try {
@@ -9,7 +15,8 @@ export async function POST(request: Request) {
     const { access, response } = requireAccess(request);
     if (response || !access) return response;
 
-    const { trip_number, date, location, stop_type, miles_from_last } = await request.json();
+    const { trip_number, date, location, stop_type, miles_from_last, trailer_number } = await request.json();
+    if (trailer_number !== undefined) await ensureStopsTrailerColumn();
 
     const ownedTrip = await db().get(
       'SELECT trip_number FROM trips WHERE trip_number = $1 AND ($2 OR user_id = $3)',
@@ -17,12 +24,21 @@ export async function POST(request: Request) {
     );
     if (!ownedTrip) return NextResponse.json({ error: 'Trip not found' }, { status: 404 });
 
-    const result = await db().run(
-      'INSERT INTO stops (trip_number, date, location, stop_type, miles_from_last, user_id) VALUES ($1, $2, $3, $4, $5, $6)',
-      [trip_number, date, location, stop_type, miles_from_last || 0, access.adminMode ? null : access.session.userId]
-    );
+    const result = trailer_number !== undefined
+      ? await db().run(
+        `INSERT INTO stops (trip_number, date, location, stop_type, miles_from_last, user_id, trailer_number)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING id`,
+        [trip_number, date, location, stop_type, miles_from_last || 0, access.adminMode ? null : access.session.userId, trailer_number || null]
+      )
+      : await db().run(
+        `INSERT INTO stops (trip_number, date, location, stop_type, miles_from_last, user_id)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING id`,
+        [trip_number, date, location, stop_type, miles_from_last || 0, access.adminMode ? null : access.session.userId]
+      );
 
-    return NextResponse.json({ success: true, id: result.changes });
+    return NextResponse.json({ success: true, id: result.rows?.[0]?.id || null });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -35,7 +51,8 @@ export async function PATCH(request: Request) {
     if (response || !access) return response;
 
     const body = await request.json();
-    const { id, location, date, stop_type, miles_from_last } = body;
+    const { id, location, date, stop_type, miles_from_last, notes, trailer_number } = body;
+    if (trailer_number !== undefined) await ensureStopsTrailerColumn();
 
     const existing = await db().get(
       'SELECT id FROM stops WHERE id = $1 AND ($2 OR user_id = $3)',
@@ -50,6 +67,8 @@ export async function PATCH(request: Request) {
     if (date !== undefined) { updates.push(`date = $${idx++}`); params.push(date); }
     if (stop_type !== undefined) { updates.push(`stop_type = $${idx++}`); params.push(stop_type); }
     if (miles_from_last !== undefined) { updates.push(`miles_from_last = $${idx++}`); params.push(miles_from_last); }
+    if (notes !== undefined) { updates.push(`notes = $${idx++}`); params.push(notes || null); }
+    if (trailer_number !== undefined) { updates.push(`trailer_number = $${idx++}`); params.push(trailer_number || null); }
     if (updates.length === 0) return NextResponse.json({ error: 'Nothing to update' }, { status: 400 });
 
     params.push(id);
@@ -77,8 +96,9 @@ export async function PUT(request: Request) {
     );
     if (!ownedTrip) return NextResponse.json({ error: 'Trip not found' }, { status: 404 });
 
-    // Ensure stop_order column exists
-    try { await db().run('ALTER TABLE stops ADD COLUMN IF NOT EXISTS stop_order INTEGER DEFAULT 0'); } catch {}
+    if (shouldRunRuntimeSchemaEnsures()) {
+      try { await db().run('ALTER TABLE stops ADD COLUMN IF NOT EXISTS stop_order INTEGER DEFAULT 0'); } catch {}
+    }
 
     for (let i = 0; i < stop_ids.length; i++) {
       await db().run('UPDATE stops SET stop_order = $1 WHERE id = $2 AND trip_number = $3', [i, stop_ids[i], trip_number]);

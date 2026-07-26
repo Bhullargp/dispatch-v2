@@ -110,7 +110,7 @@ export async function GET(request: Request) {
   SELECT t.*,
     (SELECT location FROM stops WHERE trip_number = t.trip_number AND location NOT ILIKE '%caledon%' AND (${access.adminMode ? '1=1' : 'user_id = t.user_id'}) ORDER BY COALESCE(stop_order, 999999), id ASC LIMIT 1) as first_stop,
     (SELECT location FROM stops WHERE trip_number = t.trip_number AND location NOT ILIKE '%caledon%' AND (${access.adminMode ? '1=1' : 'user_id = t.user_id'}) ORDER BY COALESCE(stop_order, 999999) DESC, id DESC LIMIT 1) as last_stop,
-    (SELECT json_agg(json_build_object('type', type, 'amount', amount, 'quantity', quantity)) FROM extra_pay WHERE trip_number = t.trip_number AND (${access.adminMode ? '1=1' : 'user_id = t.user_id'})) as extra_pay_json,
+    (SELECT json_agg(json_build_object('type', type, 'amount', amount, 'quantity', quantity, 'rate', rate, 'duration_hours', duration_hours)) FROM extra_pay WHERE trip_number = t.trip_number AND (${access.adminMode ? '1=1' : 'user_id = t.user_id'})) as extra_pay_json,
     (SELECT json_agg(json_build_object('stop_type', stop_type, 'location', location, 'date', date, 'miles_from_last', miles_from_last) ORDER BY COALESCE(stop_order, 999999) ASC, id ASC) FROM stops WHERE trip_number = t.trip_number AND (${access.adminMode ? '1=1' : 'user_id = t.user_id'})) as stops_json,
     (SELECT json_agg(json_build_object('name', name, 'amount', amount, 'category', category)) FROM trip_expenses WHERE trip_number = t.trip_number AND (${access.adminMode ? '1=1' : 'user_id = t.user_id'})) as expenses_json
   FROM trips t WHERE ${scope.clause} ORDER BY trip_number DESC

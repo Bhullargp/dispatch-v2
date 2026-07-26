@@ -198,7 +198,7 @@ export default function SetupWizard({ userId }: { userId: number }) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: 'completeSetup' }),
         });
-        router.push('/dispatch');
+        router.push('/dashboard');
         return;
       }
       setStep(step + 1);

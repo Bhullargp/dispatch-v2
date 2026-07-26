@@ -6,6 +6,7 @@ import { useIsMobile } from '../../hooks/useIsMobile';
 import AuthGuard from '../AuthGuard';
 import FloatingAddButton from '../FloatingAddButton';
 import MobileQuickAddPanel from '../MobileQuickAddPanel';
+import { formatFuelOdometerInput } from '@/lib/fuel-format';
 
 interface EditFuelForm {
   id: number;
@@ -17,6 +18,13 @@ interface EditFuelForm {
   unit: string;
 }
 
+const unitIsLitres = (unit?: string | null) => /^(l|litres?|liters?)$/i.test(String(unit || '').trim());
+
+const getFuelQuantity = (f: any) => {
+  if (unitIsLitres(f.unit)) return f.liters ?? f.quantity ?? f.gallons ?? '';
+  return f.gallons ?? f.quantity ?? f.liters ?? '';
+};
+
 export default function FuelHistoryClient({ initialFuel, trips }: { initialFuel: any[], trips: any[] }) {
   const [fuel, setFuel] = useState(initialFuel);
   const [filter, setFilter] = useState('ALL'); // ALL, UNLINKED, LINKED
@@ -25,6 +33,7 @@ export default function FuelHistoryClient({ initialFuel, trips }: { initialFuel:
   const [isQuickAddOpen, setIsQuickAddOpen] = useState(false);
   const [editingFuel, setEditingFuel] = useState<EditFuelForm | null>(null);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const [previewReceipt, setPreviewReceipt] = useState<{ url: string; filename: string | null } | null>(null);
 
   useEffect(() => {
     setMounted(true);
@@ -66,14 +75,15 @@ export default function FuelHistoryClient({ initialFuel, trips }: { initialFuel:
   };
 
   const startEdit = (f: any) => {
+    const quantity = getFuelQuantity(f);
     setEditingFuel({
       id: f.id,
       date: f.date || '',
       location: f.location || '',
-      quantity: f.quantity?.toString() || '',
+      quantity: quantity === null || quantity === undefined ? '' : quantity.toString(),
       amount_usd: f.amount_usd?.toString() || '',
-      odometer: f.odometer?.toString() || '',
-      unit: f.unit || 'Gallons',
+      odometer: formatFuelOdometerInput(f.odometer),
+      unit: f.unit || (f.liters ? 'L' : 'Gallons'),
     });
   };
 
@@ -81,13 +91,16 @@ export default function FuelHistoryClient({ initialFuel, trips }: { initialFuel:
     if (!editingFuel) return;
     setIsSavingEdit(true);
     try {
+      const quantity = editingFuel.quantity ? parseFloat(editingFuel.quantity) : undefined;
+      const saveAsLitres = unitIsLitres(editingFuel.unit);
       const res = await fetch('/api/dispatch/fuel', {
         method: 'PATCH',
         body: JSON.stringify({
           id: editingFuel.id,
           date: editingFuel.date || undefined,
           location: editingFuel.location || undefined,
-          quantity: editingFuel.quantity ? parseFloat(editingFuel.quantity) : undefined,
+          gallons: saveAsLitres ? undefined : quantity,
+          liters: saveAsLitres ? quantity : undefined,
           amount_usd: editingFuel.amount_usd ? parseFloat(editingFuel.amount_usd) : undefined,
           odometer: editingFuel.odometer ? parseFloat(editingFuel.odometer) : undefined,
           unit: editingFuel.unit || undefined,
@@ -98,7 +111,8 @@ export default function FuelHistoryClient({ initialFuel, trips }: { initialFuel:
           ...f,
           date: editingFuel.date,
           location: editingFuel.location,
-          quantity: editingFuel.quantity ? parseFloat(editingFuel.quantity) : f.quantity,
+          gallons: saveAsLitres ? f.gallons : quantity,
+          liters: saveAsLitres ? quantity : f.liters,
           amount_usd: editingFuel.amount_usd ? parseFloat(editingFuel.amount_usd) : f.amount_usd,
           odometer: editingFuel.odometer ? parseFloat(editingFuel.odometer) : f.odometer,
           unit: editingFuel.unit,
@@ -114,10 +128,47 @@ export default function FuelHistoryClient({ initialFuel, trips }: { initialFuel:
     }
   };
 
+  const isImageReceipt = (filename: string | null | undefined, url: string) => {
+    const target = `${filename || ''} ${url}`;
+    return /\.(png|jpe?g|webp|gif)(\?|$)/i.test(target);
+  };
+
   if (!mounted) return <div className="min-h-screen bg-zinc-950" />;
 
   return (
     <AuthGuard>
+    {/* Receipt Preview Modal */}
+    {previewReceipt && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" onClick={() => setPreviewReceipt(null)}>
+        <div className="bg-zinc-900 border border-zinc-700 rounded-2xl w-full max-w-5xl h-[85vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+          <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-zinc-800">
+            <div className="min-w-0">
+              <h2 className="font-black text-sm md:text-lg uppercase tracking-tighter">Receipt Preview</h2>
+              <p className="text-[10px] md:text-xs text-zinc-500 truncate">{previewReceipt.filename || 'Fuel receipt'}</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <a
+                href={previewReceipt.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-3 py-2 rounded-lg border border-zinc-700 text-zinc-300 text-[10px] md:text-xs font-black uppercase hover:border-zinc-500"
+              >
+                Open New Tab
+              </a>
+              <button onClick={() => setPreviewReceipt(null)} className="text-zinc-500 hover:text-white text-xl px-2">✕</button>
+            </div>
+          </div>
+          <div className="flex-1 bg-black/40 overflow-auto p-2 md:p-4">
+            {isImageReceipt(previewReceipt.filename, previewReceipt.url) ? (
+              <img src={previewReceipt.url} alt={previewReceipt.filename || 'Fuel receipt'} className="max-w-full max-h-full mx-auto rounded-xl" />
+            ) : (
+              <iframe src={previewReceipt.url} title={previewReceipt.filename || 'Fuel receipt'} className="w-full h-full rounded-xl bg-white" />
+            )}
+          </div>
+        </div>
+      </div>
+    )}
+
     {/* Edit Fuel Modal */}
     {editingFuel && (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
@@ -171,10 +222,12 @@ export default function FuelHistoryClient({ initialFuel, trips }: { initialFuel:
             </div>
           </div>
           <input
-            type="number"
+            type="text"
+            inputMode="numeric"
+            pattern="[0-9]*"
             placeholder="Odometer (optional)"
             value={editingFuel.odometer}
-            onChange={e => setEditingFuel({ ...editingFuel, odometer: e.target.value })}
+            onChange={e => setEditingFuel({ ...editingFuel, odometer: e.target.value.replace(/[^0-9]/g, '') })}
             className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-3 font-bold outline-none focus:border-green-600"
           />
           <div className="flex gap-3 pt-2">
@@ -195,7 +248,7 @@ export default function FuelHistoryClient({ initialFuel, trips }: { initialFuel:
     {/* Mobile Header - Show only on mobile */}
     <header className="md:hidden p-4 border-b border-zinc-900 flex justify-between items-center bg-black/50 sticky top-0 z-40 backdrop-blur-md">
       <div className="flex items-center gap-4">
-        <Link href="/dispatch" className="bg-zinc-900 p-2 rounded-xl border border-zinc-800">
+        <Link href="/dashboard" className="bg-zinc-900 p-2 rounded-xl border border-zinc-800">
           <span className="text-zinc-400">←</span>
         </Link>
         <h1 className="text-xl font-black uppercase tracking-tighter">Fuel History</h1>
@@ -224,19 +277,17 @@ export default function FuelHistoryClient({ initialFuel, trips }: { initialFuel:
               <div>
                 <h3 className="text-sm md:text-lg font-black tracking-tight">{f.location}</h3>
                 <p className="text-[10px] font-mono text-zinc-500">
-                  {(f.gallons || f.liters || f.quantity || '—')} {f.unit} • ${Number(f.amount_usd || 0).toFixed(2)} USD
+                  {(getFuelQuantity(f) || '—')} {f.unit} • ${Number(f.amount_usd || 0).toFixed(2)} USD
                   {f.odometer && ` • ODO: ${f.odometer}`}
                 </p>
                 <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] font-black uppercase">
                   {f.receiptUrl ? (
-                    <a
-                      href={f.receiptUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
+                    <button
+                      onClick={() => setPreviewReceipt({ url: f.receiptUrl, filename: f.receiptFilename || null })}
                       className="text-amber-400 hover:text-amber-300"
                     >
                       🧾 Receipt
-                    </a>
+                    </button>
                   ) : (
                     <span className="text-zinc-700">No receipt</span>
                   )}
@@ -278,7 +329,7 @@ export default function FuelHistoryClient({ initialFuel, trips }: { initialFuel:
               <div className="flex items-center gap-2 self-end">
                 {f.trip_number && f.trip_number !== 'UNLINKED' && (
                   <Link
-                    href={`/dispatch/${f.trip_number}`}
+                    href={`/${f.trip_number}`}
                     className="p-2 bg-zinc-800 text-zinc-400 rounded-xl hover:text-white border border-zinc-700"
                   >
                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>

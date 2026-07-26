@@ -10,8 +10,82 @@ import TripDocumentProcessingPanel from './tripdocumentprocessingpanel';
 
 // User-configurable extra pay items (fetched from settings)
 let userExtraPayItems: Array<{ name: string; rate: number; unit: string }> = [];
+const SEGMENT_MILE_BONUS_NAME = 'Bonus Pay Mileage';
 
-export default function TripDetailsClient({ trip, stops, extraPay, inventory }: { trip: any, stops: any[], extraPay: any[], inventory: any[] }) {
+function toNumber(value: any): number {
+  const parsed = typeof value === 'number' ? value : Number.parseFloat(String(value ?? ''));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function roundMoney(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function roundHours(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function splitHourValue(value: any) {
+  const total = Math.max(0, toNumber(value));
+  const hours = Math.floor(total);
+  const minutes = Math.round((total - hours) * 60 / 15) * 15;
+  if (minutes >= 60) return { hours: hours + 1, minutes: 0 };
+  return { hours, minutes };
+}
+
+function formatHoursCompact(value: number) {
+  const { hours, minutes } = splitHourValue(value);
+  return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+}
+
+function timeToMinutes(value: string) {
+  const [h, m] = value.split(':').map(Number);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+  return h * 60 + m;
+}
+
+function minutesToTime(totalMinutes: number) {
+  const normalized = ((Math.round(totalMinutes) % (24 * 60)) + (24 * 60)) % (24 * 60);
+  const hours = Math.floor(normalized / 60);
+  const minutes = normalized % 60;
+  return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+}
+
+function addDurationToTime(start: string, hours: number) {
+  const startMinutes = timeToMinutes(start);
+  if (startMinutes == null) return '';
+  return minutesToTime(startMinutes + (Math.max(0, hours) * 60));
+}
+
+function hoursBetweenTimes(start: string, end: string) {
+  const startMinutes = timeToMinutes(start);
+  const endMinutes = timeToMinutes(end);
+  if (startMinutes == null || endMinutes == null) return 0;
+  let diff = endMinutes - startMinutes;
+  if (diff < 0) diff += 24 * 60;
+  return roundHours(diff / 60);
+}
+
+function cityTimesFromNotes(notes: any) {
+  const match = String(notes || '').match(/CITY_HOURS\s+(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/i);
+  return match ? { start: match[1], end: match[2] } : { start: '', end: '' };
+}
+
+export default function TripDetailsClient({
+  trip,
+  stops,
+  extraPay,
+  inventory,
+  previousTripNumber,
+  nextTripNumber,
+}: {
+  trip: any,
+  stops: any[],
+  extraPay: any[],
+  inventory: any[],
+  previousTripNumber?: string | null,
+  nextTripNumber?: string | null,
+}) {
   const [currentTrip, setCurrentTrip] = useState(trip);
   const [currentStops, setCurrentStops] = useState(stops);
   const [currentExtras, setCurrentExtras] = useState(extraPay);
@@ -19,13 +93,22 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
   const [mounted, setMounted] = useState(false);
   const [showEquipmentModal, setShowEquipmentModal] = useState(false);
   const [activeEquipmentField, setActiveEquipmentField] = useState<string | null>(null);
-  const [extraMinutes, setExtraMinutes] = useState<{[key: string]: number}>({});
   const [rateInput, setRateInput] = useState<string>((trip.manual_rate || 1.06).toString());
+  const initialManualHours = splitHourValue(trip.manual_hours);
+  const [rateMode, setRateMode] = useState<'manual' | 'hourly'>(trip.rate_type === 'hourly' ? 'hourly' : 'manual');
+  const [hourlyHoursInput, setHourlyHoursInput] = useState<string>(initialManualHours.hours.toString());
+  const [hourlyMinutesInput, setHourlyMinutesInput] = useState<string>(initialManualHours.minutes.toString());
+  const initialCityPayTimes = cityTimesFromNotes(extraPay.find((e: any) => e.type === 'City Work')?.notes);
+  const [cityPayStartTime, setCityPayStartTime] = useState(initialCityPayTimes.start);
+  const [cityPayEndTime, setCityPayEndTime] = useState(initialCityPayTimes.end);
+  const cityPayHours = cityPayStartTime && cityPayEndTime ? hoursBetweenTimes(cityPayStartTime, cityPayEndTime) : 0;
+  const envelopeHref = `/api/dispatch/envelope?trip=${encodeURIComponent(trip.trip_number)}`;
   const [showRatePicker, setShowRatePicker] = useState(false);
   const [showAddHUD, setShowAddHUD] = useState(false);
   const searchParams = useSearchParams();
-  const backHref = searchParams.get('from') === 'dashboard' ? '/dispatch/dashboard' : '/dispatch/trips';
+  const backHref = searchParams.get('from') === 'dashboard' ? '/dashboard' : '/trips';
   const [showAllPayables, setShowAllPayables] = useState(false);
+  const [selectedPayableNames, setSelectedPayableNames] = useState<string[]>([]);
   const [showPayBreakdown, setShowPayBreakdown] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
@@ -63,6 +146,9 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
   const [tripPdfs, setTripPdfs] = useState<any[]>([]);
   const [showPdfMenu, setShowPdfMenu] = useState(false);
   const [openingReceiptEnvelope, setOpeningReceiptEnvelope] = useState(false);
+  const [bonusStartStopId, setBonusStartStopId] = useState('');
+  const [bonusEndStopId, setBonusEndStopId] = useState('');
+  const [bonusRateInput, setBonusRateInput] = useState('0.05');
   const datePickerOpenedValue = useRef<{ start_date?: string; end_date?: string }>({});
 
   useEffect(() => { setMounted(true); }, []);
@@ -144,9 +230,14 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
 
   useEffect(() => {
     if (currentTrip?.manual_rate !== undefined) {
-      setRateInput((currentTrip.manual_rate || 1.06).toString());
+      const isHourly = currentTrip.rate_type === 'hourly';
+      setRateInput((currentTrip.manual_rate || (isHourly ? 39 : 1.06)).toString());
+      setRateMode(isHourly ? 'hourly' : 'manual');
+      const { hours, minutes } = splitHourValue(currentTrip.manual_hours);
+      setHourlyHoursInput(hours.toString());
+      setHourlyMinutesInput(minutes.toString());
     }
-  }, [currentTrip?.manual_rate]);
+  }, [currentTrip?.manual_rate, currentTrip?.rate_type, currentTrip?.manual_hours]);
 
   const formatDateDisplay = (dateStr: string | null) => {
     if (!dateStr) return '---';
@@ -190,19 +281,159 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
     return `#${getStopNumber(index)} ${cityState}`;
   };
 
+  const getStopShortLabel = (stop: any) => {
+    const parts = stop?.location?.split(',').map((p: string) => p.trim()).filter(Boolean) || [];
+    if (parts.length >= 2) return `${parts[parts.length - 2]}, ${parts[parts.length - 1]}`;
+    return stop?.location || 'Unknown stop';
+  };
+
+  const getStopTrailerOverride = (stop: any) => {
+    const directTrailer = String(stop?.trailer_number || stop?.trailer || '').trim();
+    if (directTrailer) return directTrailer.toUpperCase();
+    const trailerMatch = String(`${stop?.notes || ''} ${stop?.description || ''}`).match(/trailer\s+([A-Z0-9]+)/i);
+    return trailerMatch ? trailerMatch[1].toUpperCase() : '';
+  };
+
+  const getStopNotesWithTrailer = (stop: any, trailer: string) => {
+    const notes = String(stop?.notes || '').trim();
+    const cleanTrailer = trailer.trim().toUpperCase();
+    const trailerPattern = /\btrailer\s+[A-Z0-9]+\b/i;
+    if (trailerPattern.test(notes)) {
+      return notes
+        .replace(trailerPattern, cleanTrailer ? `Trailer ${cleanTrailer}` : '')
+        .replace(/\s*;\s*;/g, ';')
+        .replace(/^\s*;\s*|\s*;\s*$/g, '')
+        .trim();
+    }
+    if (!cleanTrailer) return notes;
+    return notes ? `${notes}; Trailer ${cleanTrailer}` : `Trailer ${cleanTrailer}`;
+  };
+
+  const stopKeyForTrailer = (stop: any, index: number) => {
+    const stopType = String(stop?.stop_type || '').toUpperCase();
+    return String(stop?.id ?? `${stop?.stop_order ?? index}:${stop?.location ?? ''}:${stopType}`);
+  };
+
+  const buildStopTrailerMap = () => {
+    const map = new Map<string, string>();
+    let currentTrailer = '';
+    const defaultTrailer = String(
+      currentTrip.trailer_number || currentTrip.trailer || currentTrip.trailer_2 || ''
+    ).toUpperCase();
+
+    currentStops.forEach((stop: any, index: number) => {
+      const stopType = String(stop?.stop_type || '').toUpperCase();
+      const explicitTrailer = getStopTrailerOverride(stop);
+      const description = String(stop?.description || stop?.notes || '');
+      const trailerMatch = description.match(/trailer\s+([A-Z0-9]+)/i);
+      if (explicitTrailer) {
+        currentTrailer = explicitTrailer;
+      } else if (trailerMatch) {
+        currentTrailer = trailerMatch[1].toUpperCase();
+      } else if (!currentTrailer && stopType === 'HOOK' && defaultTrailer) {
+        currentTrailer = defaultTrailer;
+      }
+      map.set(stopKeyForTrailer(stop, index), currentTrailer);
+    });
+
+    return map;
+  };
+
+  const getEnvelopeTrailerForStop = (stop: any, index: number, trailerMap: Map<string, string>, lastTrailerRef: { value: string }) => {
+    const stopType = String(stop?.stop_type || '').toUpperCase();
+    const trailer = trailerMap.get(stopKeyForTrailer(stop, index)) || lastTrailerRef.value;
+    if (trailer) lastTrailerRef.value = trailer;
+    return stopType !== 'ACQUIRE' && stopType !== 'RELEASE' ? trailer : '';
+  };
+
+  const isValidSegmentMileageEntry = (entry: any) => {
+    if (entry?.type !== SEGMENT_MILE_BONUS_NAME) return false;
+    const startId = toNumber(entry.segment_start_stop_id || entry.linked_stop_id);
+    const endId = toNumber(entry.segment_end_stop_id);
+    const miles = toNumber(entry.segment_miles) || toNumber(entry.quantity);
+    return startId > 0 && endId > 0 && miles > 0;
+  };
+
+  const getStopIndexById = (stopId: any) => currentStops.findIndex((stop: any) => String(stop.id) === String(stopId));
+
+  const calculateSegmentMiles = (startStopId: any, endStopId: any) => {
+    const startIndex = getStopIndexById(startStopId);
+    const endIndex = getStopIndexById(endStopId);
+    if (startIndex < 0 || endIndex < 0 || endIndex <= startIndex) return 0;
+    return roundMoney(currentStops
+      .slice(startIndex + 1, endIndex + 1)
+      .reduce((sum: number, stop: any) => sum + toNumber(stop.miles_from_last), 0));
+  };
+
+  const buildSegmentMileageEntry = (startStopId: string | number, endStopId: string | number, rateValue: string | number, previous: any = {}) => {
+    const rate = Math.max(0, toNumber(rateValue));
+    const segmentMiles = calculateSegmentMiles(startStopId, endStopId);
+    const startIndex = getStopIndexById(startStopId);
+    return {
+      ...previous,
+      type: SEGMENT_MILE_BONUS_NAME,
+      rate,
+      quantity: segmentMiles,
+      segment_miles: segmentMiles,
+      amount: roundMoney(rate * segmentMiles),
+      linked_stop_id: Number(startStopId),
+      linked_stop_number: startIndex >= 0 ? getStopNumber(startIndex) : null,
+      segment_start_stop_id: Number(startStopId),
+      segment_end_stop_id: Number(endStopId),
+      duration_hours: null,
+    };
+  };
+
+  const addSegmentMileageBonus = async () => {
+    const rate = toNumber(bonusRateInput);
+    const segmentMiles = calculateSegmentMiles(bonusStartStopId, bonusEndStopId);
+    if (!bonusStartStopId || !bonusEndStopId) {
+      setActionError('Select both start and end stops for the mileage bonus.');
+      return;
+    }
+    if (segmentMiles <= 0) {
+      setActionError('End stop must be after the start stop and have miles between them.');
+      return;
+    }
+    if (rate <= 0) {
+      setActionError('Enter the extra cents per mile rate.');
+      return;
+    }
+    const cleanExtras = currentExtras.filter((entry: any) => (
+      entry.type !== SEGMENT_MILE_BONUS_NAME || isValidSegmentMileageEntry(entry)
+    ));
+    await persistExtras([...cleanExtras, buildSegmentMileageEntry(bonusStartStopId, bonusEndStopId, rate)]);
+    setSelectedPayableNames((names) => (
+      names.includes(SEGMENT_MILE_BONUS_NAME) ? names : [...names, SEGMENT_MILE_BONUS_NAME]
+    ));
+    setActionError(null);
+    setActionSuccess(`Added ${segmentMiles} mi x $${rate.toFixed(2)}/mi bonus`);
+    setTimeout(() => setActionSuccess(null), 3000);
+ };
+
+  const removeExtraAtIndex = async (extraIndex: number) => {
+    const removedType = currentExtras[extraIndex]?.type;
+    const nextExtras = [...currentExtras];
+    nextExtras.splice(extraIndex, 1);
+    await persistExtras(nextExtras);
+    if (removedType && !nextExtras.some((extra) => extra.type === removedType)) {
+      setSelectedPayableNames((names) => names.filter((name) => name !== removedType));
+    }
+  };
+
   const persistExtras = async (nextExtras: any[]) => {
     setCurrentExtras(nextExtras);
-    try {
-      await fetch('/api/dispatch/extra', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          trip_number: currentTrip.trip_number,
-          extras: nextExtras,
-        })
-      });
-    } catch (err) {
-      console.error('Failed to save payables:', err);
+    const res = await fetch('/api/dispatch/extra', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        trip_number: currentTrip.trip_number,
+        extras: nextExtras,
+      })
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data?.error || 'Failed to save payables');
     }
   };
 
@@ -280,6 +511,34 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
     }
   };
 
+  const updateStopTrailer = async (stop: any, index: number, value: string) => {
+    if (!stop?.id) return;
+    const nextTrailer = value.trim().toUpperCase();
+    const nextNotes = getStopNotesWithTrailer(stop, nextTrailer);
+    const previousStops = currentStops;
+    const nextStops = currentStops.map((item: any, itemIndex: number) => (
+      itemIndex === index ? { ...item, notes: nextNotes, trailer_number: nextTrailer || null } : item
+    ));
+    setCurrentStops(nextStops);
+    setActionError(null);
+    try {
+      const res = await fetch('/api/dispatch/stops', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: stop.id, notes: nextNotes }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.error || 'Trailer save failed');
+      }
+      setActionSuccess(nextTrailer ? `Stop ${getStopNumber(index)} trailer set to ${nextTrailer}` : `Stop ${getStopNumber(index)} trailer override cleared`);
+      setTimeout(() => setActionSuccess(null), 2500);
+    } catch (err: any) {
+      setCurrentStops(previousStops);
+      setActionError(err?.message || 'Trailer save failed');
+    }
+  };
+
   const moveStop = async (index: number, direction: 'up' | 'down') => {
     const newIndex = direction === 'up' ? index - 1 : index + 1;
     if (newIndex < 0 || newIndex >= currentStops.length) return;
@@ -349,13 +608,178 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
     }
   };
 
+  const getExtraHours = (entry: any, payable: PayableItem) => {
+    const duration = toNumber(entry.duration_hours);
+    if (duration > 0) return duration;
+
+    const quantity = toNumber(entry.quantity);
+    if (quantity > 0) return quantity;
+
+    const amount = toNumber(entry.amount);
+    const rate = toNumber(entry.rate) || payable.rate;
+    if (amount > 0 && rate > 0) return amount / rate;
+
+    return 1;
+  };
+
+  const getPayableHours = (payable: PayableItem) => {
+    const entries = currentExtras.filter(e => e.type === payable.name);
+    const hours = entries.map(e => getExtraHours(e, payable)).filter(h => h > 0);
+    if (hours.length === 0) return 0;
+    if (payable.name === 'City Work' && hours.some(h => h > 1)) return Math.max(...hours);
+    return hours.reduce((sum, value) => sum + value, 0);
+  };
+
+  const getPayableQuantity = (payable: PayableItem) => {
+    if (payable.unit === 'segment_mile') {
+      return currentExtras
+        .filter(e => e.type === payable.name && isValidSegmentMileageEntry(e))
+        .reduce((sum, e) => sum + (toNumber(e.segment_miles) || toNumber(e.quantity)), 0);
+    }
+    if (payable.unit === 'hour') return getPayableHours(payable);
+    if (payable.unit === 'dollar') {
+      return currentExtras
+        .filter(e => e.type === payable.name)
+        .reduce((sum, e) => sum + toNumber(e.amount), 0);
+    }
+    return currentExtras
+      .filter(e => e.type === payable.name)
+      .reduce((sum, e) => sum + (toNumber(e.quantity) || 1), 0);
+  };
+
+  const setHourlyPayable = async (payable: PayableItem, hours: number, meta: { notes?: string | null } = {}) => {
+    const cleanHours = roundHours(Math.max(0, hours));
+    const otherExtras = currentExtras.filter(ex => ex.type !== payable.name);
+    if (cleanHours <= 0) {
+      await persistExtras(otherExtras);
+      return;
+    }
+
+    const previous = currentExtras.find(ex => ex.type === payable.name) || {};
+    const nextEntry = {
+      type: payable.name,
+      rate: payable.rate,
+      amount: roundMoney(payable.rate * cleanHours),
+      quantity: cleanHours,
+      duration_hours: cleanHours,
+      notes: meta.notes ?? previous.notes ?? null,
+      linked_stop_id: payable.name === 'City Work' ? null : previous.linked_stop_id || null,
+      linked_stop_number: payable.name === 'City Work' ? null : previous.linked_stop_number || null,
+    };
+
+    await persistExtras([...otherExtras, nextEntry]);
+  };
+
+  const setHourlyPayableFromParts = async (payable: PayableItem, hoursValue: string | number, minuteValue: string | number) => {
+    const hours = Math.max(0, Number.parseInt(String(hoursValue || '0'), 10) || 0);
+    const minutes = Math.max(0, Number.parseInt(String(minuteValue || '0'), 10) || 0);
+    await setHourlyPayable(payable, hours + (minutes / 60));
+  };
+
+  const setCityPayDurationFromParts = (hoursValue: string | number, minuteValue: string | number) => {
+    const hours = Math.max(0, Number.parseInt(String(hoursValue || '0'), 10) || 0);
+    const minutes = Math.max(0, Number.parseInt(String(minuteValue || '0'), 10) || 0);
+    const nextHours = roundHours(hours + (minutes / 60));
+
+    if (nextHours <= 0) {
+      setCityPayEndTime('');
+      return;
+    }
+
+    if (!cityPayStartTime) {
+      setActionError('Set City Work start time first');
+      return;
+    }
+
+    setActionError(null);
+    setCityPayEndTime(addDurationToTime(cityPayStartTime, nextHours));
+  };
+
+  const adjustCityPayDuration = (deltaHours: number) => {
+    const nextHours = roundHours(Math.max(0, cityPayHours + deltaHours));
+    const { hours, minutes } = splitHourValue(nextHours);
+    setCityPayDurationFromParts(hours, minutes);
+  };
+
+  const applyCityPayHours = async (payable: PayableItem) => {
+    if (!cityPayStartTime || !cityPayEndTime || cityPayHours <= 0) {
+      setActionError('Enter City Work start and end time first');
+      return;
+    }
+
+    setIsSaving(true);
+    setActionError(null);
+    try {
+      await setHourlyPayable(payable, cityPayHours, { notes: `CITY_HOURS ${cityPayStartTime}-${cityPayEndTime}` });
+      const tripPayload = {
+        manual_rate: payable.rate,
+        rate_type: 'hourly',
+        manual_hours: cityPayHours,
+      };
+      const res = await fetch(`/api/dispatch/${currentTrip.trip_number}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(tripPayload),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.error || 'Could not save hourly trip pay');
+      }
+      setCurrentTrip({ ...currentTrip, ...tripPayload });
+      setRateMode('hourly');
+      setRateInput(String(payable.rate));
+      const { hours, minutes } = splitHourValue(cityPayHours);
+      setHourlyHoursInput(String(hours));
+      setHourlyMinutesInput(String(minutes));
+      setActionSuccess(`City hours saved: ${formatHoursCompact(cityPayHours)} at $${payable.rate}/hr`);
+      setTimeout(() => setActionSuccess(null), 2500);
+    } catch (err: any) {
+      setActionError(err?.message || 'Could not save City Work hours');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   const updatePayableQty = async (typeName: string, delta: number) => {
     const existing = currentExtras.filter(e => e.type === typeName);
     const payable = getPayItems().find(p => p.name === typeName);
 
+    if (payable?.unit === 'segment_mile') {
+      if (delta > 0) {
+        setSelectedPayableNames((names) => names.includes(typeName) ? names : [...names, typeName]);
+        setShowAllPayables(false);
+        setShowAddHUD(false);
+        window.setTimeout(() => {
+          document.getElementById('payables-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 0);
+        return;
+      }
+
+      if (delta < 0 && existing.length > 0) {
+        const nextExtras = [...currentExtras];
+        const index = currentExtras.findLastIndex(e => e.type === typeName);
+        nextExtras.splice(index, 1);
+        await persistExtras(nextExtras);
+        if (!nextExtras.some((extra) => extra.type === typeName)) {
+          setSelectedPayableNames((names) => names.filter((name) => name !== typeName));
+        }
+        return;
+      }
+
+      if (delta < 0) {
+        setSelectedPayableNames((names) => names.filter((name) => name !== typeName));
+      }
+      return;
+    }
+
+    if (payable?.unit === 'hour') {
+      await setHourlyPayable(payable, getPayableHours(payable) + delta);
+      return;
+    }
+
     let nextExtras = [...currentExtras];
     if (delta > 0) {
-      const newItem = { type: typeName, amount: payable?.rate || 0, quantity: 1, linked_stop_id: null, linked_stop_number: null };
+      const newItem = { type: typeName, amount: payable?.rate || 0, rate: payable?.rate || 0, quantity: 1, linked_stop_id: null, linked_stop_number: null };
       nextExtras = [...currentExtras, newItem];
     } else if (delta < 0 && existing.length > 0) {
       const index = currentExtras.findLastIndex(e => e.type === typeName);
@@ -367,17 +791,29 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
 
   const calculatePayableTotal = (payable: any) => {
     if (!currentExtras) return "0.00";
-    const qty = currentExtras.filter(e => e.type === payable.name).length;
-    const mins = extraMinutes[payable.name] || 0;
-    if (payable.unit === 'hour') {
-        const totalHours = qty + (mins / 60);
-        return (totalHours * payable.rate).toFixed(2);
+    if (payable.unit === 'segment_mile') {
+      return currentExtras
+        .filter(e => e.type === payable.name && isValidSegmentMileageEntry(e))
+        .reduce((sum, e) => {
+          const amount = toNumber(e.amount);
+          if (amount > 0) return sum + amount;
+          const miles = toNumber(e.segment_miles) || toNumber(e.quantity);
+          const rate = toNumber(e.rate) || payable.rate;
+          return sum + (miles * rate);
+        }, 0)
+        .toFixed(2);
     }
-    return (qty * payable.rate).toFixed(2);
+    if (payable.unit === 'hour') {
+        return (getPayableHours(payable) * payable.rate).toFixed(2);
+    }
+    if (payable.unit === 'dollar') {
+      return getPayableQuantity(payable).toFixed(2);
+    }
+    return (getPayableQuantity(payable) * payable.rate).toFixed(2);
   };
 
   const paySummary = useMemo(() => {
-    if (!currentTrip || !currentExtras) return { milePay: 0, items: [], grandTotal: 0, ratePerMile: 0, rateLabel: '', miles: 0 };
+    if (!currentTrip || !currentExtras) return { milePay: 0, basePay: 0, items: [], grandTotal: 0, ratePerMile: 0, rateLabel: '', rateUnit: 'mile' as const, baseQuantity: 0, miles: 0 };
 
     const baseRates = payConfig?.baseRates || { usRate: 1.06, canadaUnder: 1.26, canadaOver: 1.16 };
     const mileRates: MileRates = {
@@ -389,6 +825,8 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
     const tripInput: TripPayInput = {
       total_miles: currentTrip.total_miles,
       manual_rate: currentTrip.manual_rate,
+      manual_hours: currentTrip.manual_hours,
+      rate_type: currentTrip.rate_type,
       extra_pay_json: JSON.stringify(currentExtras),
       route: currentTrip.route || null,
       first_stop: currentStops?.[0]?.location || null,
@@ -403,13 +841,16 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
 
     return {
       milePay: result.milePay,
+      basePay: result.basePay,
       items,
       grandTotal: result.total,
       ratePerMile: result.ratePerMile,
       rateLabel: result.rateLabel,
+      rateUnit: result.rateUnit,
+      baseQuantity: result.baseQuantity,
       miles: currentTrip.total_miles || 0,
     };
-  }, [currentTrip?.total_miles, currentTrip?.manual_rate, currentExtras, extraMinutes, currentStops, payConfig]);
+  }, [currentTrip?.total_miles, currentTrip?.manual_rate, currentTrip?.manual_hours, currentTrip?.rate_type, currentExtras, currentStops, payConfig]);
 
   const openInventory = (field: string) => {
     setActiveEquipmentField(field);
@@ -434,14 +875,90 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
   const endOdo = currentTrip.end_odometer;
   const totalKilos = (startOdo !== null && endOdo !== null) ? (endOdo - startOdo) : null;
   const isMileageIncomplete = currentTrip.status !== 'Completed' && currentTrip.status !== 'Cancelled' && !currentStops[currentStops.length - 1]?.location?.includes('Caledon, ON');
+  const isHourlyTripRate = paySummary.rateUnit === 'hour';
+  const rateUnitLabel = isHourlyTripRate ? 'hr' : 'mi';
+  const rateModeLabel = isHourlyTripRate
+    ? 'Hourly'
+    : (currentTrip.rate_type === 'manual' || currentTrip.manual_rate ? 'Manual' : 'Auto');
+  const rateDetailLabel = isHourlyTripRate
+    ? `${formatHoursCompact(paySummary.baseQuantity)} work`
+    : `${currentTrip.total_miles || 0} mi`;
+
+  const applyCustomTripRate = async () => {
+    const rate = parseFloat(rateInput);
+    if (!rate || rate <= 0) return;
+
+    const cityWorkPayable = getPayItems().find((item) => item.name === 'City Work');
+    const savedCityWorkHours = cityWorkPayable ? getPayableHours(cityWorkPayable) : 0;
+    const manualHours = rateMode === 'hourly'
+      ? savedCityWorkHours
+      : null;
+
+    if (rateMode === 'hourly' && (!manualHours || manualHours <= 0)) {
+      setActionError('Add City Work hours in Payables first');
+      return;
+    }
+
+    setIsSaving(true);
+    setActionError(null);
+    try {
+      const payload = rateMode === 'hourly'
+        ? { manual_rate: rate, rate_type: 'hourly', manual_hours: roundHours(manualHours || 0) }
+        : { manual_rate: rate, rate_type: 'manual', manual_hours: null };
+      const res = await fetch(`/api/dispatch/${currentTrip.trip_number}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.error || 'Save failed');
+      }
+      setCurrentTrip({ ...currentTrip, ...payload });
+      setRateInput(rate.toString());
+      setShowRatePicker(false);
+      setActionSuccess(rateMode === 'hourly' ? 'Hourly rate saved' : 'Custom rate saved');
+      setTimeout(() => setActionSuccess(null), 2000);
+    } catch (err: any) {
+      setActionError(err?.message || 'Save failed');
+    } finally {
+      setIsSaving(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 p-4 md:p-8 font-sans selection:bg-emerald-500/30">
       <header className="max-w-6xl mx-auto mb-10 flex items-center justify-between border-b border-zinc-900 pb-8">
         <div className="flex items-center gap-6">
-          <Link href={backHref} className="bg-zinc-900 p-3 rounded-2xl hover:bg-zinc-800 border border-zinc-800 transition-all shadow-lg">
-            <span className="text-zinc-400">←</span>
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link href={backHref} className="bg-zinc-900 p-3 rounded-2xl hover:bg-zinc-800 border border-zinc-800 transition-all shadow-lg" title="Back to trips">
+              <span className="text-zinc-400">←</span>
+            </Link>
+            <Link
+              href={previousTripNumber ? `/${previousTripNumber}?from=tripsheet` : '#'}
+              onClick={(e) => { if (!previousTripNumber) e.preventDefault(); }}
+              className={`px-3 py-3 rounded-2xl border text-[10px] font-black uppercase tracking-widest transition-all shadow-lg ${
+                previousTripNumber
+                  ? 'bg-zinc-900 hover:bg-zinc-800 border-zinc-800 text-zinc-300'
+                  : 'bg-zinc-950 border-zinc-900 text-zinc-700 cursor-not-allowed'
+              }`}
+              title={previousTripNumber ? `Previous trip ${previousTripNumber}` : 'No previous trip'}
+            >
+              Prev
+            </Link>
+            <Link
+              href={nextTripNumber ? `/${nextTripNumber}?from=tripsheet` : '#'}
+              onClick={(e) => { if (!nextTripNumber) e.preventDefault(); }}
+              className={`px-3 py-3 rounded-2xl border text-[10px] font-black uppercase tracking-widest transition-all shadow-lg ${
+                nextTripNumber
+                  ? 'bg-zinc-900 hover:bg-zinc-800 border-zinc-800 text-zinc-300'
+                  : 'bg-zinc-950 border-zinc-900 text-zinc-700 cursor-not-allowed'
+              }`}
+              title={nextTripNumber ? `Next trip ${nextTripNumber}` : 'No next trip'}
+            >
+              Next
+            </Link>
+          </div>
           <div>
             <h1 className="text-4xl font-black font-mono tracking-tighter">{currentTrip.trip_number}</h1>
             <div className="flex items-center gap-4 mt-2">
@@ -472,20 +989,20 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
             >
                 <p className="text-[9px] font-black text-zinc-500 uppercase tracking-widest leading-none mb-1 group-hover:text-emerald-400">Estimated Total Pay ⓘ</p>
                 <p className="text-2xl font-black text-emerald-400 font-mono tracking-tighter">{paySummary.grandTotal.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}</p>
-                <p className="text-[8px] text-zinc-600 mt-1">{paySummary.rateLabel} • {currentTrip.total_miles || 0} mi</p>
+                <p className="text-[8px] text-zinc-600 mt-1">{paySummary.rateLabel} • {rateDetailLabel}</p>
             </button>
             <div className="flex flex-col gap-2">
               {/* Current Rate Display */}
               <div className="flex items-center gap-3">
                 <div className="flex items-center gap-2 bg-zinc-900/80 border border-zinc-700/50 rounded-xl px-3 py-2">
                   <span className="text-lg font-black font-mono text-emerald-400">${paySummary.ratePerMile.toFixed(2)}</span>
-                  <span className="text-[10px] text-zinc-500 font-black">/mi</span>
+                  <span className="text-[10px] text-zinc-500 font-black">/{rateUnitLabel}</span>
                   <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-md tracking-wider ${
-                    currentTrip.rate_type === 'manual' || currentTrip.manual_rate
+                    currentTrip.rate_type === 'manual' || currentTrip.rate_type === 'hourly' || currentTrip.manual_rate
                       ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
                       : 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
                   }`}>
-                    {currentTrip.rate_type === 'manual' || currentTrip.manual_rate ? '✎ Manual' : `⚡ Auto: ${paySummary.rateLabel}`}
+                    {rateModeLabel}
                   </span>
                 </div>
                 <button
@@ -516,10 +1033,10 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                           const res = await fetch(`/api/dispatch/${currentTrip.trip_number}`, {
                             method: 'PATCH',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ manual_rate: rate, rate_type: 'manual' })
+                            body: JSON.stringify({ manual_rate: rate, rate_type: 'manual', manual_hours: null })
                           });
                           if (!res.ok) throw new Error('Save failed');
-                          setCurrentTrip({ ...currentTrip, manual_rate: rate, rate_type: 'manual' });
+                          setCurrentTrip({ ...currentTrip, manual_rate: rate, rate_type: 'manual', manual_hours: null });
                           setRateInput(rate.toString());
                           setShowRatePicker(false);
                           setActionSuccess('Rate set to US');
@@ -550,10 +1067,10 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                           const res = await fetch(`/api/dispatch/${currentTrip.trip_number}`, {
                             method: 'PATCH',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ manual_rate: rate, rate_type: 'manual' })
+                            body: JSON.stringify({ manual_rate: rate, rate_type: 'manual', manual_hours: null })
                           });
                           if (!res.ok) throw new Error('Save failed');
-                          setCurrentTrip({ ...currentTrip, manual_rate: rate, rate_type: 'manual' });
+                          setCurrentTrip({ ...currentTrip, manual_rate: rate, rate_type: 'manual', manual_hours: null });
                           setRateInput(rate.toString());
                           setShowRatePicker(false);
                           setActionSuccess('Rate set to Canada <1000mi');
@@ -584,10 +1101,10 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                           const res = await fetch(`/api/dispatch/${currentTrip.trip_number}`, {
                             method: 'PATCH',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ manual_rate: rate, rate_type: 'manual' })
+                            body: JSON.stringify({ manual_rate: rate, rate_type: 'manual', manual_hours: null })
                           });
                           if (!res.ok) throw new Error('Save failed');
-                          setCurrentTrip({ ...currentTrip, manual_rate: rate, rate_type: 'manual' });
+                          setCurrentTrip({ ...currentTrip, manual_rate: rate, rate_type: 'manual', manual_hours: null });
                           setRateInput(rate.toString());
                           setShowRatePicker(false);
                           setActionSuccess('Rate set to Canada >1000mi');
@@ -617,10 +1134,10 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                           const res = await fetch(`/api/dispatch/${currentTrip.trip_number}`, {
                             method: 'PATCH',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ manual_rate: null, rate_type: 'auto' })
+                            body: JSON.stringify({ manual_rate: null, rate_type: 'auto', manual_hours: null })
                           });
                           if (!res.ok) throw new Error('Save failed');
-                          setCurrentTrip({ ...currentTrip, manual_rate: null, rate_type: 'auto' });
+                          setCurrentTrip({ ...currentTrip, manual_rate: null, rate_type: 'auto', manual_hours: null });
                           setRateInput('1.06');
                           setShowRatePicker(false);
                           setActionSuccess('Rate reset to Auto');
@@ -644,50 +1161,71 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                   </div>
 
                   {/* Custom Rate */}
-                  <div className="flex items-center gap-2 pt-2 border-t border-zinc-800/50">
-                    <span className="text-[9px] font-black text-zinc-500 uppercase tracking-widest">Custom:</span>
-                    <span className="text-[10px] text-zinc-400">$</span>
-                    <input
-                      type="number"
-                      step="0.01"
-                      value={rateInput}
-                      onChange={(e) => setRateInput(e.target.value)}
-                      className="w-24 bg-black/40 border border-zinc-800 rounded-lg px-2 py-1.5 text-sm font-mono font-black text-emerald-400 focus:border-emerald-500 outline-none"
-                    />
-                    <span className="text-[10px] text-zinc-400">/mi</span>
-                    <button
-                      onClick={async () => {
-                        const rate = parseFloat(rateInput);
-                        if (!rate || rate <= 0) return;
-                        setIsSaving(true);
-                        setActionError(null);
-                        try {
-                          const res = await fetch(`/api/dispatch/${currentTrip.trip_number}`, {
-                            method: 'PATCH',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ manual_rate: rate, rate_type: 'manual' })
-                          });
-                          if (!res.ok) {
-                            const data = await res.json().catch(() => ({}));
-                            throw new Error(data?.error || 'Save failed');
-                          }
-                          setCurrentTrip({ ...currentTrip, manual_rate: rate, rate_type: 'manual' });
-                          setRateInput(rate.toString());
-                          setShowRatePicker(false);
-                          setActionSuccess('Custom rate saved');
-                          setTimeout(() => setActionSuccess(null), 2000);
-                        } catch (err: any) {
-                          setActionError(err?.message || 'Save failed');
-                        } finally {
-                          setIsSaving(false);
-                          setShowRatePicker(false);
-                        }
-                      }}
-                      disabled={isSaving}
-                      className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-[9px] font-black uppercase px-3 py-1.5 rounded-lg transition-all"
-                    >
-                      {isSaving ? '...' : 'Apply'}
-                    </button>
+                  <div className="space-y-3 pt-2 border-t border-zinc-800/50">
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRateMode('manual');
+                          if (currentTrip.rate_type === 'hourly') setRateInput('1.06');
+                        }}
+                        className={`rounded-xl border px-3 py-2 text-[9px] font-black uppercase transition-all ${
+                          rateMode === 'manual'
+                            ? 'bg-emerald-600/20 border-emerald-500/40 text-emerald-400'
+                            : 'bg-zinc-900/50 border-zinc-800 text-zinc-500 hover:text-zinc-300'
+                        }`}
+                      >
+                        Custom Mile
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRateMode('hourly');
+                          if (currentTrip.rate_type !== 'hourly') setRateInput('39');
+                        }}
+                        className={`rounded-xl border px-3 py-2 text-[9px] font-black uppercase transition-all ${
+                          rateMode === 'hourly'
+                            ? 'bg-amber-600/20 border-amber-500/40 text-amber-300'
+                            : 'bg-zinc-900/50 border-zinc-800 text-zinc-500 hover:text-zinc-300'
+                        }`}
+                      >
+                        Hourly
+                      </button>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-[9px] font-black text-zinc-500 uppercase tracking-widest">Rate:</span>
+                      <span className="text-[10px] text-zinc-400">$</span>
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={rateInput}
+                        onChange={(e) => setRateInput(e.target.value)}
+                        className="w-24 bg-black/40 border border-zinc-800 rounded-lg px-2 py-1.5 text-sm font-mono font-black text-emerald-400 focus:border-emerald-500 outline-none"
+                      />
+                      <span className="text-[10px] text-zinc-400">/{rateMode === 'hourly' ? 'hr' : 'mi'}</span>
+                      {rateMode === 'hourly' && (() => {
+                        const cityWorkPayable = getPayItems().find((item) => item.name === 'City Work');
+                        const savedCityWorkHours = cityWorkPayable ? getPayableHours(cityWorkPayable) : 0;
+                        return (
+                          <span className={`rounded-lg border px-3 py-1.5 text-[10px] font-black uppercase tracking-widest ${
+                            savedCityWorkHours > 0
+                              ? 'border-amber-700/40 bg-amber-950/30 text-amber-200'
+                              : 'border-zinc-800 bg-zinc-950 text-zinc-500'
+                          }`}>
+                            {savedCityWorkHours > 0
+                              ? `Using City Work: ${formatHoursCompact(savedCityWorkHours)}`
+                              : 'Hours come from City Work payable'}
+                          </span>
+                        );
+                      })()}
+                      <button
+                        onClick={applyCustomTripRate}
+                        disabled={isSaving}
+                        className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-[9px] font-black uppercase px-3 py-1.5 rounded-lg transition-all"
+                      >
+                        {isSaving ? '...' : 'Apply'}
+                      </button>
+                    </div>
                   </div>
                 </div>
                 </div>
@@ -743,7 +1281,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                 )}
               </div>
               <a
-                href={`/api/dispatch/envelope?trip=${encodeURIComponent(currentTrip.trip_number)}`}
+                href={envelopeHref}
                 download={`trip-envelope-${currentTrip.trip_number}.pdf`}
                 className="bg-red-700 hover:bg-red-600 text-white text-[10px] font-black uppercase px-4 py-3 rounded-xl border border-red-600 transition-all flex items-center gap-2"
               >
@@ -858,13 +1396,13 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
               </div>
               {isMileageIncomplete && <p className="text-[8px] text-orange-600 font-black uppercase mt-1 tracking-widest animate-pulse">⚠️ Incomplete</p>}
               <div className="mt-2 flex items-center justify-center gap-2">
-                <span className="text-sm font-black font-mono text-emerald-400">${paySummary.ratePerMile.toFixed(2)}/mi</span>
+                <span className="text-sm font-black font-mono text-emerald-400">${paySummary.ratePerMile.toFixed(2)}/{rateUnitLabel}</span>
                 <span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded tracking-wider ${
-                  currentTrip.rate_type === 'manual' || currentTrip.manual_rate
+                  currentTrip.rate_type === 'manual' || currentTrip.rate_type === 'hourly' || currentTrip.manual_rate
                     ? 'bg-amber-500/15 text-amber-400'
                     : 'bg-emerald-500/15 text-emerald-400'
                 }`}>
-                  {currentTrip.rate_type === 'manual' || currentTrip.manual_rate ? 'Manual' : 'Auto'}
+                  {rateModeLabel}
                 </span>
               </div>
             </div>
@@ -945,13 +1483,13 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                 )}
                 {/* Rate display under miles */}
                 <div className="mt-3 flex items-center gap-2">
-                  <span className="text-sm font-black font-mono text-emerald-400">${paySummary.ratePerMile.toFixed(2)}/mi</span>
+                  <span className="text-sm font-black font-mono text-emerald-400">${paySummary.ratePerMile.toFixed(2)}/{rateUnitLabel}</span>
                   <span className={`text-[8px] font-black uppercase px-2 py-0.5 rounded-md tracking-wider ${
-                    currentTrip.rate_type === 'manual' || currentTrip.manual_rate
+                    currentTrip.rate_type === 'manual' || currentTrip.rate_type === 'hourly' || currentTrip.manual_rate
                       ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
                       : 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
                   }`}>
-                    {currentTrip.rate_type === 'manual' || currentTrip.manual_rate ? '✎ Manual' : `⚡ Auto: ${paySummary.rateLabel}`}
+                    {rateModeLabel}
                   </span>
                 </div>
               </div>
@@ -1027,7 +1565,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
               </div>
             </section>
 
-            <section className="bg-zinc-900/30 border border-zinc-800 rounded-3xl p-8 group">
+            <section id="payables-section" className="bg-zinc-900/30 border border-zinc-800 rounded-3xl p-8 group">
               <div className="flex justify-between items-center mb-8">
                 <h2 className="text-[10px] font-black uppercase text-zinc-500 tracking-[0.3em]">Payables & Extras</h2>
                 <div className="flex items-center gap-2">
@@ -1103,17 +1641,149 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                 </div>
               )}
 
+              {showAllPayables && getPayItems().some((p) => p.unit === 'segment_mile' && getPayableQuantity(p) <= 0 && !selectedPayableNames.includes(p.name)) && (
+                <div className="mb-4 rounded-2xl border border-zinc-800 bg-zinc-950/70 p-4">
+                  <p className="mb-3 text-[9px] font-black uppercase tracking-[0.24em] text-zinc-500">Select Mileage Bonus</p>
+                  <div className="flex flex-wrap gap-2">
+                    {getPayItems()
+                      .filter((p) => p.unit === 'segment_mile' && getPayableQuantity(p) <= 0 && !selectedPayableNames.includes(p.name))
+                      .map((p) => (
+                        <button
+                          key={p.name}
+                          onClick={() => updatePayableQty(p.name, 1)}
+                          className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-[10px] font-black uppercase tracking-widest text-emerald-300 transition-all hover:border-emerald-400 hover:bg-emerald-500/20"
+                        >
+                          {p.name}
+                        </button>
+                      ))}
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {getPayItems().filter(p => {
-                  const qty = currentExtras.filter(e => e.type === p.name).length;
-                  return showAllPayables || qty > 0;
+                  const qty = getPayableQuantity(p);
+                  if (p.unit === 'segment_mile') return qty > 0 || selectedPayableNames.includes(p.name);
+                  return showAllPayables || qty > 0 || selectedPayableNames.includes(p.name);
                 }).map(payable => {
-                  const payableExtras = currentExtras
+                  const rawPayableExtras = currentExtras
                     .map((e, idx) => ({ ...e, _index: idx }))
                     .filter(e => e.type === payable.name);
-                  const qty = payableExtras.length;
-                  const total = calculatePayableTotal(payable);
+                  const payableExtras = payable.unit === 'segment_mile'
+                    ? rawPayableExtras.filter(isValidSegmentMileageEntry)
+                    : rawPayableExtras;
+                  const qty = getPayableQuantity(payable);
+                  const displayQty = payable.name === 'City Work' && (cityPayStartTime || cityPayEndTime) ? cityPayHours : qty;
+                  const hourParts = payable.unit === 'hour' ? splitHourValue(displayQty) : { hours: 0, minutes: 0 };
+                  const qtyLabel = payable.unit === 'hour' ? (displayQty > 0 ? formatHoursCompact(displayQty) : '0h') : qty;
+                  const linkableExtras = payable.name === 'City Work'
+                    ? []
+                    : (payable.unit === 'hour' ? payableExtras.slice(0, 1) : payableExtras);
+                  const total = payable.name === 'City Work' && (cityPayStartTime || cityPayEndTime) && cityPayHours > 0
+                    ? (cityPayHours * payable.rate).toFixed(2)
+                    : calculatePayableTotal(payable);
                   const isZero = parseFloat(total) === 0;
+                  if (payable.name === SEGMENT_MILE_BONUS_NAME) {
+                    const previewMiles = calculateSegmentMiles(bonusStartStopId, bonusEndStopId);
+                    const previewRate = toNumber(bonusRateInput);
+                    return (
+                      <div key={payable.name} className="sm:col-span-2 flex flex-col bg-black/20 p-5 rounded-2xl border border-emerald-500/20 hover:border-emerald-500/40 transition-all shadow-lg">
+                        <div className="flex justify-between items-start gap-4 mb-4">
+                          <div>
+                            <span className="text-[11px] font-black uppercase tracking-tight text-emerald-300">{payable.name}</span>
+                            <p className="text-[10px] text-zinc-500 mt-1">Add extra cents per mile for only the miles between two selected stops.</p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {payableExtras.length === 0 && (
+                              <button
+                                onClick={() => setSelectedPayableNames((names) => names.filter((name) => name !== payable.name))}
+                                className="rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-500 transition-all hover:border-zinc-700 hover:text-zinc-300"
+                              >
+                                Hide
+                              </button>
+                            )}
+                            <div className={`${isZero ? 'bg-zinc-500/10 border-zinc-500/20' : 'bg-green-500/10 border-green-500/20'} px-3 py-2 rounded-xl border`}>
+                              <span className={`text-sm font-mono font-black ${isZero ? 'text-zinc-500' : 'text-green-500'}`}>${total}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {payableExtras.length > 0 && (
+                          <div className="space-y-2 mb-4">
+                            {payableExtras.map((entry) => {
+                              const startStop = currentStops.find((stop: any) => Number(stop.id) === Number(entry.segment_start_stop_id || entry.linked_stop_id));
+                              const endStop = currentStops.find((stop: any) => Number(stop.id) === Number(entry.segment_end_stop_id));
+                              const miles = toNumber(entry.segment_miles) || toNumber(entry.quantity);
+                              const rate = toNumber(entry.rate) || payable.rate;
+                              return (
+                                <div key={`${payable.name}-${entry._index}`} className="flex items-center justify-between gap-3 rounded-xl border border-zinc-800 bg-zinc-950/70 px-3 py-2">
+                                  <div className="min-w-0">
+                                    <p className="text-[10px] font-black uppercase text-zinc-300 truncate">
+                                      {startStop ? getStopShortLabel(startStop) : 'Start'} → {endStop ? getStopShortLabel(endStop) : 'End'}
+                                    </p>
+                                    <p className="text-[10px] text-zinc-500 font-mono">{miles} mi x ${rate.toFixed(2)}/mi</p>
+                                  </div>
+                                  <div className="flex items-center gap-3">
+                                    <span className="text-sm font-black font-mono text-green-500">${(toNumber(entry.amount) || miles * rate).toFixed(2)}</span>
+                                    <button
+                                      onClick={() => removeExtraAtIndex(entry._index)}
+                                      className="h-8 px-3 rounded-lg bg-red-950/40 hover:bg-red-600 text-[10px] font-black uppercase text-red-300 hover:text-white border border-red-900/40 transition-all"
+                                    >
+                                      Remove
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+
+                        <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr_110px_120px] gap-2 pt-4 border-t border-zinc-900/70">
+                          <select
+                            value={bonusStartStopId}
+                            onChange={(e) => setBonusStartStopId(e.target.value)}
+                            className="bg-zinc-900 border border-zinc-800 rounded-xl p-2 text-[10px] font-black text-zinc-300 focus:border-emerald-500 outline-none"
+                          >
+                            <option value="">Start stop</option>
+                            {currentStops.map((stop: any, stopIndex: number) => (
+                              <option key={stop.id || stopIndex} value={stop.id || ''}>{getStopDisplay(stop, stopIndex)}</option>
+                            ))}
+                          </select>
+                          <select
+                            value={bonusEndStopId}
+                            onChange={(e) => setBonusEndStopId(e.target.value)}
+                            className="bg-zinc-900 border border-zinc-800 rounded-xl p-2 text-[10px] font-black text-zinc-300 focus:border-emerald-500 outline-none"
+                          >
+                            <option value="">End stop</option>
+                            {currentStops.map((stop: any, stopIndex: number) => (
+                              <option key={stop.id || stopIndex} value={stop.id || ''}>{getStopDisplay(stop, stopIndex)}</option>
+                            ))}
+                          </select>
+                          <div className="flex items-center gap-1 bg-zinc-900 border border-zinc-800 rounded-xl px-2">
+                            <span className="text-[10px] text-zinc-500">$</span>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={bonusRateInput}
+                              onChange={(e) => setBonusRateInput(e.target.value)}
+                              className="w-full bg-transparent p-2 text-sm font-mono font-black text-emerald-300 outline-none"
+                            />
+                            <span className="text-[9px] text-zinc-500">/mi</span>
+                          </div>
+                          <button
+                            onClick={addSegmentMileageBonus}
+                            className="bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border border-emerald-500 transition-all"
+                          >
+                            Add ${roundMoney(previewMiles * previewRate).toFixed(2)}
+                          </button>
+                        </div>
+                        <p className="mt-2 text-[10px] text-zinc-500 font-mono">
+                          Selected segment: {previewMiles} mi
+                        </p>
+                      </div>
+                    );
+                  }
                   return (
                     <div key={payable.name} className="flex flex-col bg-black/20 p-5 rounded-2xl border border-zinc-800/50 hover:border-zinc-700 transition-all shadow-lg group/item">
                       <div className="flex justify-between items-center mb-4">
@@ -1124,14 +1794,38 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                       </div>
                       <div className="flex items-center justify-between gap-2 mb-3">
                          <div className="flex items-center gap-1.5">
-                            <button onClick={() => updatePayableQty(payable.name, -1)} className="w-9 h-9 bg-zinc-800 hover:bg-red-900 rounded-xl flex items-center justify-center text-sm transition-all font-black border border-zinc-700">-</button>
-                            <span className="text-sm font-mono font-black w-10 text-center">{qty}</span>
-                            <button onClick={() => updatePayableQty(payable.name, 1)} className="w-9 h-9 bg-zinc-800 hover:bg-emerald-600 rounded-xl flex items-center justify-center text-sm transition-all font-black border border-zinc-700">+</button>
+                            <button onClick={() => payable.name === 'City Work' ? adjustCityPayDuration(-1) : updatePayableQty(payable.name, -1)} className="w-9 h-9 bg-zinc-800 hover:bg-red-900 rounded-xl flex items-center justify-center text-sm transition-all font-black border border-zinc-700">-</button>
+                            <span className="text-sm font-mono font-black min-w-12 text-center">{qtyLabel}</span>
+                            <button onClick={() => payable.name === 'City Work' ? adjustCityPayDuration(1) : updatePayableQty(payable.name, 1)} className="w-9 h-9 bg-zinc-800 hover:bg-emerald-600 rounded-xl flex items-center justify-center text-sm transition-all font-black border border-zinc-700">+</button>
                          </div>
                          {payable.unit === 'hour' && (
-                            <select onChange={(e) => setExtraMinutes(p => ({...p, [payable.name]: parseInt(e.target.value)}))} className="bg-zinc-900 border border-zinc-800 rounded-xl p-2 text-[10px] font-black uppercase text-zinc-300 focus:border-emerald-500 outline-none shadow-inner">
-                               <option value="0">00m</option><option value="15">15m</option><option value="30">30m</option><option value="45">45m</option>
-                            </select>
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                key={payable.name === 'City Work' ? undefined : `${payable.name}-hours-${hourParts.hours}`}
+                                type="number"
+                                min="0"
+                                step="1"
+                                value={payable.name === 'City Work' ? (displayQty > 0 ? hourParts.hours : '') : undefined}
+                                defaultValue={payable.name === 'City Work' ? undefined : hourParts.hours}
+                                placeholder={payable.name === 'City Work' ? '0' : undefined}
+                                onChange={payable.name === 'City Work' ? (e) => setCityPayDurationFromParts(e.target.value, hourParts.minutes) : undefined}
+                                onBlur={payable.name === 'City Work' ? undefined : (e) => setHourlyPayableFromParts(payable, e.target.value, hourParts.minutes)}
+                                className="w-16 bg-zinc-900 border border-zinc-800 rounded-xl p-2 text-sm font-mono text-amber-300 text-right outline-none focus:border-amber-500 shadow-inner"
+                              />
+                              <span className="text-[10px] text-zinc-500 font-black">h</span>
+                              <select
+                                value={hourParts.minutes}
+                                onChange={(e) => payable.name === 'City Work'
+                                  ? setCityPayDurationFromParts(hourParts.hours, e.target.value)
+                                  : setHourlyPayableFromParts(payable, hourParts.hours, e.target.value)}
+                                className="bg-zinc-900 border border-zinc-800 rounded-xl p-2 text-[10px] font-black uppercase text-zinc-300 focus:border-emerald-500 outline-none shadow-inner"
+                              >
+                                <option value="0">00m</option>
+                                <option value="15">15m</option>
+                                <option value="30">30m</option>
+                                <option value="45">45m</option>
+                              </select>
+                            </div>
                          )}
                          {payable.unit === 'dollar' && (
                             <input
@@ -1148,9 +1842,9 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                             />
                          )}
                       </div>
-                      {payableExtras.length > 0 && (
+                      {linkableExtras.length > 0 && (
                         <div className="space-y-2 pt-3 border-t border-zinc-900/70">
-                          {payableExtras.map((entry, entryIdx) => (
+                          {linkableExtras.map((entry, entryIdx) => (
                             <div key={`${payable.name}-${entry._index}`} className="flex items-center gap-2">
                               <span className="text-[10px] font-black text-zinc-500 w-8">#{entryIdx + 1}</span>
                               <select
@@ -1167,6 +1861,49 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                               </select>
                             </div>
                           ))}
+                        </div>
+                      )}
+                      {payable.name === 'City Work' && (
+                        <div className="mt-3 space-y-3 rounded-2xl border border-amber-700/40 bg-amber-950/20 p-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-[9px] font-black uppercase tracking-widest text-amber-300">City Hours</span>
+                            <span className="text-[10px] font-mono font-black text-amber-100">
+                              {cityPayHours > 0 ? `${formatHoursCompact(cityPayHours)} total` : 'Start + End'}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-[1fr_1fr_auto] gap-2">
+                            <input
+                              type="time"
+                              value={cityPayStartTime}
+                              onChange={(e) => {
+                                const nextStart = e.target.value;
+                                const previousDuration = cityPayHours;
+                                setCityPayStartTime(nextStart);
+                                if (nextStart && cityPayEndTime && previousDuration > 0) {
+                                  setCityPayEndTime(addDurationToTime(nextStart, previousDuration));
+                                }
+                              }}
+                              className="bg-zinc-950 border border-amber-900/60 rounded-xl p-2 text-[11px] font-mono text-amber-100 outline-none focus:border-amber-500"
+                              aria-label="City Work start time"
+                            />
+                            <input
+                              type="time"
+                              value={cityPayEndTime}
+                              onChange={(e) => setCityPayEndTime(e.target.value)}
+                              className="bg-zinc-950 border border-amber-900/60 rounded-xl p-2 text-[11px] font-mono text-amber-100 outline-none focus:border-amber-500"
+                              aria-label="City Work end time"
+                            />
+                            <button
+                              onClick={() => applyCityPayHours(payable)}
+                              disabled={cityPayHours <= 0 || isSaving}
+                              className="bg-amber-600 hover:bg-amber-500 disabled:opacity-40 px-3 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest border border-amber-500 transition-all"
+                            >
+                              Apply
+                            </button>
+                          </div>
+                          <p className="text-[9px] text-amber-200/70">
+                            Saves City Work, switches the trip to hourly pay, calculates pay from these hours, and prints start/end/total on the Trip Envelope. Miles stay only as reference.
+                          </p>
                         </div>
                       )}
                     </div>
@@ -1285,6 +2022,7 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                       onClick={async () => {
                         if (!reimbName.trim() || !reimbAmount) return;
                         setReimbSaving(true);
+                        setActionError(null);
                         try {
                           const payload = {
                             name: reimbName.trim(),
@@ -1296,14 +2034,15 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                             currency: reimbCurrency,
                             source: reimbSource.trim() || null,
                           };
+                          let saveRes: Response;
                           if (editingReimbId) {
-                            await fetch('/api/dispatch/expenses', {
+                            saveRes = await fetch('/api/dispatch/expenses', {
                               method: 'PUT',
                               headers: { 'Content-Type': 'application/json' },
                               body: JSON.stringify({ id: editingReimbId, ...payload })
                             });
                           } else {
-                            await fetch('/api/dispatch/expenses', {
+                            saveRes = await fetch('/api/dispatch/expenses', {
                               method: 'POST',
                               headers: { 'Content-Type': 'application/json' },
                               body: JSON.stringify({
@@ -1314,16 +2053,24 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                               })
                             });
                           }
+                          const saveData = await saveRes.json().catch(() => ({}));
+                          if (!saveRes.ok) throw new Error(saveData?.error || 'Could not save reimbursement');
                           // Refresh list
                           const res = await fetch(`/api/dispatch/expenses?trip_number=${currentTrip.trip_number}&expense_type=trip`);
-                          const data = await res.json();
+                          const data = await res.json().catch(() => ({}));
+                          if (!res.ok) throw new Error(data?.error || 'Could not refresh reimbursements');
                           setReimbursements(data.expenses || []);
                           // Update prev names
                           const names = [...new Set<string>((data.expenses || []).map((e: any) => e.name as string))];
                           setPrevReimbNames(names);
                           setShowReimbForm(false);
                           resetReimbForm();
-                        } catch (err) { console.error('Reimb save error:', err); }
+                          setActionSuccess(editingReimbId ? 'Reimbursement updated' : 'Reimbursement saved');
+                          setTimeout(() => setActionSuccess(null), 3000);
+                        } catch (err: any) {
+                          console.error('Reimb save error:', err);
+                          setActionError(err?.message || 'Could not save reimbursement');
+                        }
                         setReimbSaving(false);
                       }}
                       disabled={reimbSaving || !reimbName.trim() || !reimbAmount}
@@ -1435,7 +2182,12 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                 <button onClick={() => setShowAddHUD(true)} className="bg-zinc-900 hover:bg-zinc-800 text-[9px] font-black uppercase px-4 py-2 rounded-lg border border-zinc-800 transition-all">+ Add Stop</button>
               </div>
               <div className="space-y-10 relative">
-                {currentStops.map((stop: any, i) => (
+                {(() => {
+                  const trailerMap = buildStopTrailerMap();
+                  const lastTrailerRef = { value: '' };
+                  return currentStops.map((stop: any, i) => {
+                    const envelopeTrailer = getEnvelopeTrailerForStop(stop, i, trailerMap, lastTrailerRef);
+                    return (
                   <div key={stop.id || i} className="flex gap-6 relative group/stop">
                     <div className="flex flex-col items-center">
                       <div className="w-7 h-7 rounded-full z-10 border border-emerald-500/30 bg-zinc-950 text-emerald-400 text-[10px] font-black flex items-center justify-center transition-transform group-hover/stop:scale-105">
@@ -1481,6 +2233,40 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                           <>
                             {address && <p className="text-[9px] text-zinc-500 leading-tight mb-0.5">{address}</p>}
                             <p className="text-md font-black text-amber-300 leading-tight tracking-tight underline underline-offset-2 decoration-amber-500/40">{cityState} <span className="text-[9px] font-black text-amber-500 no-underline normal-case">{stop.stop_type ? `(${stop.stop_type?.toUpperCase()})` : ''}{stop.miles_from_last ? ` • ${stop.miles_from_last} mi` : ''}</span></p>
+                            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                              <span className={`px-2 py-1 rounded-lg border text-[9px] font-black uppercase tracking-wider ${
+                                envelopeTrailer
+                                  ? 'bg-sky-500/10 border-sky-500/25 text-sky-300'
+                                  : 'bg-zinc-900/60 border-zinc-800 text-zinc-600'
+                              }`}>
+                                Trailer {envelopeTrailer || '-'}
+                              </span>
+                              <span className="text-[9px] font-bold text-zinc-700">Envelope trailer column</span>
+                              <input
+                                id={`stop-trailer-${stop.id || i}`}
+                                aria-label={`Trailer for stop ${getStopNumber(i)}`}
+                                defaultValue={getStopTrailerOverride(stop)}
+                                placeholder={envelopeTrailer || 'Trailer #'}
+                                onBlur={(e) => {
+                                  const currentValue = getStopTrailerOverride(stop);
+                                  const nextValue = e.target.value.trim().toUpperCase();
+                                  if (nextValue !== currentValue) updateStopTrailer(stop, i, nextValue);
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') e.currentTarget.blur();
+                                }}
+                                className="h-7 w-24 rounded-lg border border-zinc-800 bg-zinc-950/80 px-2 text-[10px] font-black uppercase tracking-wider text-sky-200 placeholder:text-zinc-700 outline-none transition-all focus:border-sky-500/50 focus:bg-sky-500/10"
+                              />
+                              <button
+                                onClick={() => {
+                                  const input = document.getElementById(`stop-trailer-${stop.id || i}`) as HTMLInputElement | null;
+                                  if (input) updateStopTrailer(stop, i, input.value);
+                                }}
+                                className="h-7 rounded-lg border border-zinc-800 bg-zinc-950 px-2 text-[9px] font-black uppercase tracking-wider text-zinc-500 transition-all hover:border-sky-500/40 hover:text-sky-300"
+                              >
+                                Save
+                              </button>
+                            </div>
                             {linkedExtras.length > 0 && (
                               <div className="flex flex-wrap gap-1.5 mt-2">
                                 {linkedExtras.map((e: any, x: number) => (
@@ -1495,7 +2281,9 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
                       })()}
                     </div>
                   </div>
-                ))}
+                    );
+                  });
+                })()}
               </div>
             </section>
           </div>
@@ -1620,17 +2408,26 @@ export default function TripDetailsClient({ trip, stops, extraPay, inventory }: 
               <p className="text-[10px] font-black text-zinc-600 uppercase tracking-[0.5em] mb-12">Earnings Transparency Report</p>
 
               <div className="space-y-6 mb-12 max-h-[450px] overflow-y-auto pr-4 custom-scrollbar">
-                <div className="bg-zinc-900/50 p-6 rounded-3xl border border-zinc-900 flex justify-between items-center group">
-                  <div>
-                    <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-1">
-                      {safetyBonus.enabled ? 'Base Pay' : 'Mileage Pay'}
+	                <div className="bg-zinc-900/50 p-6 rounded-3xl border border-zinc-900 flex justify-between items-center group">
+	                  <div>
+	                    <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-1">
+	                      {isHourlyTripRate ? 'Hourly Pay' : safetyBonus.enabled ? 'Base Pay' : 'Mileage Pay'}
+	                    </p>
+	                    <p className="text-xl font-mono font-black">
+                        {isHourlyTripRate
+                          ? `${formatHoursCompact(paySummary.baseQuantity)} x $${paySummary.ratePerMile.toFixed(2)}/hr`
+                          : `${paySummary.miles || 0} mi x $${(paySummary.ratePerMile - (safetyBonus.enabled ? safetyBonus.rate_per_mile : 0)).toFixed(2)} (${paySummary.rateLabel})`}
+                      </p>
+	                  </div>
+	                  <p className="text-2xl font-black text-white font-mono">
+                      {(isHourlyTripRate
+                        ? paySummary.basePay
+                        : ((paySummary.ratePerMile - (safetyBonus.enabled ? safetyBonus.rate_per_mile : 0)) * (paySummary.miles || 0))
+                      ).toLocaleString('en-US', { style: 'currency', currency: 'USD' })}
                     </p>
-                    <p className="text-xl font-mono font-black">{paySummary.miles || 0} mi × ${(paySummary.ratePerMile - (safetyBonus.enabled ? safetyBonus.rate_per_mile : 0)).toFixed(2)} ({paySummary.rateLabel})</p>
-                  </div>
-                  <p className="text-2xl font-black text-white font-mono">{((paySummary.ratePerMile - (safetyBonus.enabled ? safetyBonus.rate_per_mile : 0)) * (paySummary.miles || 0)).toLocaleString('en-US', { style: 'currency', currency: 'USD' })}</p>
-                </div>
+	                </div>
 
-                {safetyBonus.enabled && safetyBonus.rate_per_mile > 0 && (
+	                {!isHourlyTripRate && safetyBonus.enabled && safetyBonus.rate_per_mile > 0 && (
                   <div className="bg-emerald-900/10 p-6 rounded-3xl border border-emerald-800/20 flex justify-between items-center">
                     <div>
                       <p className="text-[10px] font-black text-emerald-500 uppercase tracking-widest mb-1">Safety Bonus</p>

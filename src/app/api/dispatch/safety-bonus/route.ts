@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { db } from '@/lib/db';
+import { db, shouldRunRuntimeSchemaEnsures } from '@/lib/db';
 import { ensureDispatchAuthSchemaAndSeed } from '@/lib/dispatch-auth';
 import { requireAccess } from '@/lib/ownership';
 
@@ -9,11 +9,12 @@ export async function GET(request: Request) {
     const { access, response } = requireAccess(request);
     if (response || !access) return response;
 
-    // Ensure bonus_type and fixed_amount columns exist
-    try {
-      await db().run('ALTER TABLE safety_bonus ADD COLUMN IF NOT EXISTS bonus_type TEXT DEFAULT \'per_mile\'');
-      await db().run('ALTER TABLE safety_bonus ADD COLUMN IF NOT EXISTS fixed_amount REAL DEFAULT 0');
-    } catch {}
+    if (shouldRunRuntimeSchemaEnsures()) {
+      try {
+        await db().run('ALTER TABLE safety_bonus ADD COLUMN IF NOT EXISTS bonus_type TEXT DEFAULT \'per_mile\'');
+        await db().run('ALTER TABLE safety_bonus ADD COLUMN IF NOT EXISTS fixed_amount REAL DEFAULT 0');
+      } catch {}
+    }
 
     const row = await db().get(
       'SELECT * FROM safety_bonus WHERE user_id = $1',

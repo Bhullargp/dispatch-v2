@@ -6,11 +6,11 @@ import { useAuth } from './auth';
 import { LogoutButton } from './AuthGuard';
 
 const NAV_ITEMS = [
-  { name: 'Dashboard', path: '/dispatch/dashboard', icon: '📊' },
-  { name: 'Trips', path: '/dispatch/trips', icon: '📋' },
-  { name: 'Active', path: '/dispatch/active', icon: '🚛' },
-  { name: 'Documents', path: '/dispatch/documents', icon: '📄' },
-  { name: 'Fuel', path: '/dispatch/fuel-history', icon: '⛽' },
+  { name: 'Dashboard', path: '/dashboard', icon: '📊' },
+  { name: 'Trips', path: '/trips', icon: '📋' },
+  { name: 'Active', path: '/active', icon: '🚛' },
+  { name: 'Documents', path: '/documents', icon: '📄' },
+  { name: 'Fuel', path: '/fuel-history', icon: '⛽' },
 ];
 
 export default function GlobalNav() {
@@ -18,7 +18,7 @@ export default function GlobalNav() {
   const { user } = useAuth();
 
   // Don't show nav on login/setup pages
-  if (pathname === '/dispatch/login' || pathname === '/dispatch/setup') return null;
+  if (pathname === '/login' || pathname === '/setup') return null;
 
   return (
     <>
@@ -47,7 +47,7 @@ export default function GlobalNav() {
           </div>
           <div className="flex items-center gap-3">
             <Link
-              href="/dispatch/settings?tab=profile"
+              href="/settings?tab=profile"
               className="flex items-center gap-2 text-[11px] font-bold text-zinc-400 hover:text-white bg-white/[0.03] hover:bg-white/[0.06] px-3 py-1.5 rounded-lg border border-white/[0.06] hover:border-white/[0.1] transition-all backdrop-blur-sm"
               title="Edit Profile"
             >
@@ -64,7 +64,7 @@ export default function GlobalNav() {
       {/* Mobile bottom bar */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-black/60 backdrop-blur-2xl border-t border-white/[0.04] safe-area-bottom">
         <div className="flex justify-around items-center py-2 px-2">
-          {[...NAV_ITEMS, { name: 'Profile', path: '/dispatch/settings?tab=profile', icon: '👤' }].map((item) => {
+          {[...NAV_ITEMS, { name: 'Profile', path: '/settings?tab=profile', icon: '👤' }].map((item) => {
             const isActive = pathname === item.path;
             return (
               <Link

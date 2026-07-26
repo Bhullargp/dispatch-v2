@@ -21,6 +21,8 @@ export interface MileRates {
 export interface TripPayInput {
   total_miles: number | null;
   manual_rate: number | null;
+  manual_hours?: number | null;
+  rate_type?: string | null;
   extra_pay_json: string | null | any[];
   route: string | null;
   first_stop: string | null;
@@ -31,14 +33,18 @@ export interface TripPayInput {
 export interface TripPayResult {
   total: number;
   milePay: number;
+  basePay: number;
   extras: number;
   extraBreakdown: Record<string, number>;
   isCanada: boolean;
   ratePerMile: number;
   rateLabel: string;
+  rateUnit: 'mile' | 'hour';
+  baseQuantity: number;
 }
 
 export const PAYABLE_DEFAULTS: PayableItem[] = [
+  { name: 'Bonus Pay Mileage', rate: 0.05, unit: 'segment_mile' },
   { name: 'Trailer Switch', rate: 30, unit: 'qty' },
   { name: 'Extra Delivery', rate: 75, unit: 'qty' },
   { name: 'Extra Pickup', rate: 75, unit: 'qty' },
@@ -82,6 +88,45 @@ function isCanadaLocation(loc: string | null): boolean {
   return locationIsCanada(loc);
 }
 
+function toNumber(value: any): number {
+  const parsed = typeof value === 'number' ? value : Number.parseFloat(String(value ?? ''));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function extraQuantity(entry: any, item: PayableItem): number {
+  if (item.unit === 'hour') {
+    const duration = toNumber(entry.duration_hours);
+    if (duration > 0) return duration;
+
+    const quantity = toNumber(entry.quantity);
+    if (quantity > 0) return quantity;
+
+    const rate = toNumber(entry.rate) || item.rate;
+    const amount = toNumber(entry.amount);
+    if (rate > 0 && amount > 0) return amount / rate;
+
+    return 1;
+  }
+
+  const quantity = toNumber(entry.quantity);
+  return quantity > 0 ? quantity : 1;
+}
+
+function dollarAmount(entry: any): number {
+  const amount = toNumber(entry.amount);
+  if (amount > 0) return amount;
+  return toNumber(entry.quantity);
+}
+
+function segmentMileageAmount(entry: any, item: PayableItem): number {
+  const amount = toNumber(entry.amount);
+  if (amount > 0) return amount;
+
+  const miles = toNumber(entry.segment_miles) || toNumber(entry.quantity);
+  const rate = toNumber(entry.rate) || item.rate;
+  return miles * rate;
+}
+
 /**
  * Calculate extras from extra_pay_json matched against payable items.
  * Returns the total extras amount and a breakdown by type.
@@ -93,13 +138,36 @@ export function calcExtras(extraPayJson: string | null | any[], extraItems: Paya
   try {
     // extraPayJson may be a string (from client) or already-parsed array (from PostgreSQL json_agg)
     const arr = Array.isArray(extraPayJson) ? extraPayJson : JSON.parse(extraPayJson || '[]');
+    const grouped = new Map<string, any[]>();
+
     for (const e of arr) {
-      const item = extraItems.find(p => p.name === e.type);
+      if (!e?.type) continue;
+      const list = grouped.get(e.type) || [];
+      list.push(e);
+      grouped.set(e.type, list);
+    }
+
+    for (const [type, entries] of grouped.entries()) {
+      const item = extraItems.find(p => p.name === type);
       if (item) {
-        const qty = e.quantity || 1;
-        const val = item.rate * qty;
+        let val = 0;
+        if (item.unit === 'segment_mile') {
+          val = entries.reduce((sum, e) => sum + segmentMileageAmount(e, item), 0);
+        } else if (item.unit === 'dollar') {
+          val = entries.reduce((sum, e) => sum + dollarAmount(e), 0);
+        } else if (item.unit === 'hour') {
+          const quantities = entries.map(e => extraQuantity(e, item)).filter(q => q > 0);
+          const hasAggregateCityWork = type === 'City Work' && quantities.some(q => q > 1);
+          const qty = hasAggregateCityWork
+            ? Math.max(...quantities)
+            : quantities.reduce((sum, q) => sum + q, 0);
+          val = item.rate * qty;
+        } else {
+          const qty = entries.reduce((sum, e) => sum + extraQuantity(e, item), 0);
+          val = item.rate * qty;
+        }
         total += val;
-        breakdown[e.type] = (breakdown[e.type] || 0) + val;
+        breakdown[type] = (breakdown[type] || 0) + val;
       }
     }
   } catch {}
@@ -142,21 +210,55 @@ export function calcTripPay(
   extraItems: PayableItem[]
 ): TripPayResult {
   const miles = trip.total_miles || 0;
+  const manualRate = toNumber(trip.manual_rate);
+  const manualHours = toNumber(trip.manual_hours);
+  const rateType = String(trip.rate_type || '').toLowerCase();
 
-  // Calculate extras first (same regardless of rate)
-  const { total: extrasTotal, breakdown: extraBreakdown } = calcExtras(trip.extra_pay_json, extraItems);
+  const extrasInput = rateType === 'hourly'
+    ? (() => {
+        try {
+          const arr = Array.isArray(trip.extra_pay_json) ? trip.extra_pay_json : JSON.parse(trip.extra_pay_json || '[]');
+          return arr.filter((e: any) => e?.type !== 'City Work');
+        } catch {
+          return trip.extra_pay_json;
+        }
+      })()
+    : trip.extra_pay_json;
 
-  // Manual rate override
-  if (trip.manual_rate) {
-    const milePay = miles * trip.manual_rate;
+  // Calculate extras. When the trip itself is hourly, City Work is the base pay
+  // source, not an additional extra on top of hourly trip pay.
+  const { total: extrasTotal, breakdown: extraBreakdown } = calcExtras(extrasInput, extraItems);
+
+  if (rateType === 'hourly' && manualRate > 0) {
+    const milePay = manualRate * manualHours;
     return {
       total: milePay + extrasTotal,
       milePay,
+      basePay: milePay,
       extras: extrasTotal,
       extraBreakdown,
       isCanada: false,
-      ratePerMile: trip.manual_rate,
-      rateLabel: `MANUAL ($${trip.manual_rate}/mi)`,
+      ratePerMile: manualRate,
+      rateLabel: `HOURLY ($${manualRate}/hr${manualHours > 0 ? ` x ${manualHours} hr` : ''})`,
+      rateUnit: 'hour',
+      baseQuantity: manualHours,
+    };
+  }
+
+  // Manual rate override
+  if (manualRate > 0) {
+    const milePay = miles * manualRate;
+    return {
+      total: milePay + extrasTotal,
+      milePay,
+      basePay: milePay,
+      extras: extrasTotal,
+      extraBreakdown,
+      isCanada: false,
+      ratePerMile: manualRate,
+      rateLabel: `MANUAL ($${manualRate}/mi)`,
+      rateUnit: 'mile',
+      baseQuantity: miles,
     };
   }
 
@@ -174,10 +276,13 @@ export function calcTripPay(
   return {
     total: milePay + extrasTotal,
     milePay,
+    basePay: milePay,
     extras: extrasTotal,
     extraBreakdown,
     isCanada,
     ratePerMile: mileRate,
     rateLabel,
+    rateUnit: 'mile',
+    baseQuantity: miles,
   };
 }

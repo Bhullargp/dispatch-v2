@@ -3,6 +3,12 @@ import { db } from '@/lib/db';
 import { ensureDispatchAuthSchemaAndSeed } from '@/lib/dispatch-auth';
 import { ensureTripOwnership, requireAccess } from '@/lib/ownership';
 
+async function ensureStopsTrailerColumn() {
+  try {
+    await db().run('ALTER TABLE stops ADD COLUMN IF NOT EXISTS trailer_number TEXT');
+  } catch {}
+}
+
 export async function DELETE(request: Request, { params }: { params: Promise<{ id: string; stopId: string }> }) {
   try {
     await ensureDispatchAuthSchemaAndSeed();
@@ -32,7 +38,8 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
 
     const { id: trip_number, stopId } = await params;
     const body = await request.json();
-    const { location, date, stop_type, miles_from_last } = body;
+    const { location, date, stop_type, miles_from_last, notes, trailer_number } = body;
+    if (trailer_number !== undefined) await ensureStopsTrailerColumn();
 
     if (!(await ensureTripOwnership(access, trip_number))) return NextResponse.json({ error: 'Trip not found' }, { status: 404 });
 
@@ -43,6 +50,8 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     if (date !== undefined) { updates.push(`date = $${idx++}`); params2.push(date); }
     if (stop_type !== undefined) { updates.push(`stop_type = $${idx++}`); params2.push(stop_type); }
     if (miles_from_last !== undefined) { updates.push(`miles_from_last = $${idx++}`); params2.push(miles_from_last); }
+    if (notes !== undefined) { updates.push(`notes = $${idx++}`); params2.push(notes || null); }
+    if (trailer_number !== undefined) { updates.push(`trailer_number = $${idx++}`); params2.push(trailer_number || null); }
     if (updates.length === 0) return NextResponse.json({ error: 'Nothing to update' }, { status: 400 });
 
     params2.push(stopId, trip_number, access.adminMode ? true : false, access.session.userId);

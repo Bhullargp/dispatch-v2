@@ -79,6 +79,22 @@ interface SafetyBonus {
   enabled: boolean;
 }
 
+async function fetchDashboardJson<T = any>(url: string): Promise<T> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 15000);
+  try {
+    const res = await fetch(url, {
+      cache: 'no-store',
+      credentials: 'include',
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`${url} returned ${res.status}`);
+    return await res.json();
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
 // ── Pay period color system ──────────────────────────────────────────────
 const PERIOD_COLORS = [
   { accent: '#10b981', bg: 'rgba(16,185,129,0.08)', border: 'rgba(16,185,129,0.3)', label: 'emerald' },  // 15th periods
@@ -220,12 +236,11 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [dashRes, ratesRes, extraRes] = await Promise.all([
-        fetch('/api/dispatch/dashboard'),
-        fetch('/api/dispatch/rates/mileage'),
-        fetch('/api/dispatch/rates'),
+      const [dash, ratesData, extraData] = await Promise.all([
+        fetchDashboardJson<any>('/api/dispatch/dashboard'),
+        fetchDashboardJson<any>('/api/dispatch/rates/mileage'),
+        fetchDashboardJson<any>('/api/dispatch/rates'),
       ]);
-      const dash = await dashRes.json();
       if (dash.periods) setPeriods(dash.periods);
       if (dash.currentPeriod) setSelectedPeriod(dash.currentPeriod);
       if (dash.allTrips) setAllTrips(dash.allTrips);
@@ -236,15 +251,13 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
 
       // Load expenses
       try {
-        const expRes = await fetch('/api/dispatch/expenses');
-        const expData = await expRes.json();
+        const expData = await fetchDashboardJson<any>('/api/dispatch/expenses');
         if (expData.expenses) setExpenses(expData.expenses);
       } catch {}
 
       // Load safety bonus
       try {
-        const sbRes = await fetch('/api/dispatch/safety-bonus');
-        const sbData = await sbRes.json();
+        const sbData = await fetchDashboardJson<any>('/api/dispatch/safety-bonus');
         if (sbData.safety_bonus) setSafetyBonus(sbData.safety_bonus);
       } catch {}
 
@@ -260,7 +273,6 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
       }
       setTripStops(stopsMap);
 
-      const ratesData = await ratesRes.json();
       if (ratesData.mileage) {
         setRates({
           us: ratesData.mileage.us_per_mile,
@@ -269,7 +281,6 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
         });
       }
 
-      const extraData = await extraRes.json();
       // /api/dispatch/rates now returns { mileage, rates } but we only need the extra pay items
       const extraRates = extraData.rates || (Array.isArray(extraData) ? extraData : []);
       if (Array.isArray(extraRates) && extraRates.length > 0) {
@@ -281,8 +292,9 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
       }
     } catch (e) {
       console.error(e);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }, []);
 
   useEffect(() => { loadData(); }, [loadData]);
@@ -1119,7 +1131,7 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <Link
-                            href={`/dispatch/${trip.trip_number}?from=dashboard`}
+                            href={`/${trip.trip_number}?from=dashboard`}
                             className="text-sm font-black text-white hover:text-blue-400 transition-colors"
                             onClick={e => e.stopPropagation()}
                           >
@@ -1358,7 +1370,7 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
 
                         <div className="px-4 pb-3">
                           <Link
-                            href={`/dispatch/${trip.trip_number}?from=dashboard`}
+                            href={`/${trip.trip_number}?from=dashboard`}
                             className="inline-block text-[10px] font-black uppercase tracking-wider text-blue-400 hover:text-blue-300 transition-colors"
                           >
                             View Full Trip →
@@ -1445,7 +1457,7 @@ export default function DashboardClient({ isAdmin }: { isAdmin: boolean }) {
                 <span className="text-zinc-600"> (base: ${(rates.us - safetyBonus.rate_per_mile).toFixed(2)}/mi)</span>
               </div>
             )}
-            <Link href="/dispatch/settings#pay-rates" className="text-blue-500 font-black hover:text-blue-400 transition-colors">Edit Rates →</Link>
+            <Link href="/settings#pay-rates" className="text-blue-500 font-black hover:text-blue-400 transition-colors">Edit Rates →</Link>
           </div>
         </section>
 

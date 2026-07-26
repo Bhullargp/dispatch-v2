@@ -85,7 +85,7 @@ export default function LoginPage() {
           setSuccess('Your password was reset by an admin. Set a new password to continue.');
           return;
         }
-        router.push('/dispatch');
+        router.push('/dashboard');
         return;
       }
 
@@ -102,7 +102,7 @@ export default function LoginPage() {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Password change failed');
-        router.push('/dispatch');
+        router.push('/dashboard');
         return;
       }
 

@@ -18,6 +18,8 @@ export const metadata: Metadata = {
   description: "Trucking Dispatch Management",
 };
 
+export const preferredRegion = "sfo1";
+
 export default function RootLayout({
   children,
 }: Readonly<{

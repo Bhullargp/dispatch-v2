@@ -1,4 +1,4 @@
-import { db } from '@/lib/db';
+import { db, shouldRunRuntimeSchemaEnsures } from '@/lib/db';
 
 export type AdminDebugLogLevel = 'info' | 'warn' | 'error';
 
@@ -37,6 +37,8 @@ function sanitizeData(data?: Record<string, unknown> | null) {
 }
 
 export async function ensureAdminDebugLogsTable() {
+  if (!shouldRunRuntimeSchemaEnsures()) return;
+
   await db().run(`
     CREATE TABLE IF NOT EXISTS admin_debug_logs (
       id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,

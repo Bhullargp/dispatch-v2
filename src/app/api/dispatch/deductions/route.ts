@@ -51,11 +51,13 @@ export async function POST(request: Request) {
     }
 
     const result = await db().run(
-      'INSERT INTO deductions (user_id, pay_period, name, amount, is_recurring) VALUES ($1, $2, $3, $4, $5)',
+      `INSERT INTO deductions (user_id, pay_period, name, amount, is_recurring)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id`,
       [access.adminMode ? null : access.session.userId, pay_period, name, amount, is_recurring ? 1 : 0]
     );
 
-    return NextResponse.json({ success: true, id: result.changes });
+    return NextResponse.json({ success: true, id: result.rows?.[0]?.id || null });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
